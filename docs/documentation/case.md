@@ -943,7 +943,8 @@ When ``polytropic = 'F'``, the gas compression is modeled as non-polytropic due 
 | `write_void_evol`                | Logical | Write void fraction evolution data                              |
 | `epsilonb`                       | Real    | Standard deviation scaling for the Gaussian kernel              |
 | `valmaxvoid`                     | Real    | Maximum void fraction permitted                                 |
-| `mu_ref`                         | Real    | Fluid reference dynamic viscosity                               |
+| `mu_ref(i)`                      | Real    | $i$-th fluid reference dynamic viscosity                        |
+| `suth(i)`                        | Real    | $i$-th fluid sutherland parameter for viscosity                 |
 | `particle_pp%%rho0ref_particle`  | Real    | Reference particle material density                             |
 | `particle_pp%%cp_particle`       | Real    | Particle specific heat capacity                                 |
 | `particle_pp%%ksp_col`           | Real    | Spring stiffness multiplier for collisions                      |
@@ -963,7 +964,7 @@ When ``polytropic = 'F'``, the gas compression is modeled as non-polytropic due 
 
 - `interpolation_order` sets the order of the barycentric Lagrange polynomial used to interpolate Eulerian field quantities (pressure, velocity, density) to particle positions. Must be even; the interpolation stencil uses `N/2` points in each direction.
 
-- `mu_ref` is the fluids reference dynamic viscosity at 273.15 K. Used for particle drag if "viscous" is turned off. Only the air sutherland model is currently implemented. If "viscous" is enabled, the true fluid's viscosity is used.
+- `mu_ref(i)` is the $i$-th fluids reference dynamic viscosity at 273 K used for particle drag. Used if "viscous" is turned off. Used in conjunction with `suth(i)` for a sutherland-type model. If `suth(i)` is 0, mu(i) = mu_ref(i) * sqrt(fluid_temp/273). Viscosity is volume fraction weighted in multi-fluid case. If `chemistry` is True, then full species thermochem viscosity is computed.
 
 ### 10. Velocity Field Setup {#sec-velocity-field-setup}
 

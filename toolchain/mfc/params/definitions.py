@@ -1288,8 +1288,9 @@ def _load():
     for a in ["collision_force", "qs_fluct_force", "subcycle_collisions"]:
         _r(f"lag_params%{a}", LOG, {'particles'})
 
-    for a in ["mu_ref"]:
-        _r(f"lag_params%{a}", REAL, {"particles"})
+    for f in range(1, NF + 1):
+        for a in ["mu_ref", "suth"]:
+             _r(f"lag_params%{a}({f})", REAL, {"particles"})
 
     # chem_params
     for a in ["diffusion", "reactions"]:

@@ -403,6 +403,44 @@ contains
 
     end subroutine s_get_char_vol
 
+    subroutine s_interp_fluid_properties(pos, cell, q_prim_vf, wx, wy, wz, fluid_vel, fluid_rho, fluid_pres)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        real(wp), dimension(3), intent(in)                  :: pos
+        integer, dimension(3), intent(in)                   :: cell
+        type(scalar_field), dimension(sys_size), intent(in) :: q_prim_vf
+        type(scalar_field), dimension(:), intent(in)        :: wx, wy, wz
+        real(wp), dimension(3), intent(out)                 :: fluid_vel
+        real(wp), intent(out)                               :: fluid_rho, fluid_pres
+        integer                                             :: dir, l
+
+        fluid_rho = 0._wp
+
+        if (lag_params%interpolation_order > 1) then
+            do dir = 1, num_dims
+                fluid_vel(dir) = f_interp_barycentric(pos, cell, q_prim_vf, momxb + dir - 1, wx, wy, wz)
+            end do
+
+            do l = 1, num_fluids
+                fluid_rho = fluid_rho + f_interp_barycentric(pos, cell, q_prim_vf, l, wx, wy, wz)
+            end do
+
+            fluid_pres = f_interp_barycentric(pos, cell, q_prim_vf, E_idx, wx, wy, wz)
+        else
+            do dir = 1, num_dims
+                fluid_vel(dir) = q_prim_vf(momxb + dir - 1)%sf(cell(1), cell(2), cell(3))
+            end do
+
+            do l = 1, num_fluids
+                fluid_rho = fluid_rho + q_prim_vf(l)%sf(cell(1), cell(2), cell(3))
+            end do
+
+            fluid_pres = q_prim_vf(E_idx)%sf(cell(1), cell(2), cell(3))
+        end if
+
+    end subroutine s_interp_fluid_properties
+
     !! This function calculates the force on a particle based on the pressure gradient, velocity, and drag model.
     !! @param pos Position of the particle
     !! @param rad Radius of the particle
@@ -416,9 +454,9 @@ contains
     !! @return a Acceleration of the particle in direction i
     subroutine s_get_particle_force(pos, rad, vel_p, mass_p, Re, gamm, seed, fqsfluct, cell, q_prim_vf, q_cons_vf, q_particles, &
                                     & fieldvars, rhs_old, duidxj_id_loc, wx, wy, wz, force, rmass_add, new_seed, new_fqsfluct, &
-                                    & fluid_vel, fluid_rho)
+                                    & fluid_vel, fluid_rho, fluid_pres, cson)
         $:GPU_ROUTINE(parallelism='[seq]')
-        real(wp), intent(in)                                :: rad, mass_p, Re, gamm, fluid_rho
+        real(wp), intent(in)                                :: rad, mass_p, Re, gamm, fluid_rho, fluid_pres, cson
         real(wp), dimension(3), intent(in)                  :: pos
         integer, dimension(3), intent(in)                   :: cell
         integer, intent(in)                                 :: seed
@@ -434,9 +472,9 @@ contains
         real(wp), intent(out)                               :: rmass_add
         integer, intent(out)                                :: new_seed
         integer                                             :: seed_loc
-        real(wp)                                            :: a, vol, pressure_fluid, alpha_f
+        real(wp)                                            :: a, vol, alpha_f
         real(wp), dimension(3)                              :: v_rel, dp
-        real(wp)                                            :: particle_diam, gas_mu, vmag, cson
+        real(wp)                                            :: particle_diam, gas_mu, vmag
         real(wp)                                            :: slip_velocity_x, slip_velocity_y, slip_velocity_z, beta
         real(wp)                                            :: vol_frac
         integer                                             :: dir, l
@@ -467,7 +505,6 @@ contains
 
         !!Interpolation - either even ordered barycentric or 0th order
         if (lag_params%interpolation_order > 1) then
-            pressure_fluid = f_interp_barycentric(pos, cell, q_prim_vf, E_idx, wx, wy, wz)
             alpha_f = f_interp_barycentric(pos, cell, q_particles, alphaf_id_loc, wx, wy, wz)
             vol_frac = 1._wp - alpha_f
 
@@ -496,7 +533,6 @@ contains
                 end if
             end do
         else
-            pressure_fluid = q_prim_vf(E_idx)%sf(cell(1), cell(2), cell(3))
             alpha_f = q_particles(alphaf_id_loc)%sf(cell(1), cell(2), cell(3))
             vol_frac = 1._wp - alpha_f
 
@@ -537,21 +573,8 @@ contains
                 vmag = sqrt(slip_velocity_x*slip_velocity_x + slip_velocity_y*slip_velocity_y)
             end if
             particle_diam = rad*2._wp
-            if (fluid_rho > 0._wp) then
-                cson = sqrt((gamm*pressure_fluid)/fluid_rho)
-            else
-                cson = 1._wp
-            end if
+
             gas_mu = Re
-
-            if (.not. viscous) then
-                tref = 273.15_wp
-                R_fluid = 287.05_wp  ! J/kg-K for Air
-                suth = 110.4_wp
-                fluid_temp = pressure_fluid/(fluid_rho*R_fluid)
-
-                gas_mu = gas_mu*sqrt(fluid_temp/tref)*(1.0_wp + suth/tref)/(1.0_wp + suth/fluid_temp)
-            end if
         end if
 
         if (lag_params%added_mass_model > 0) then
@@ -672,6 +695,13 @@ contains
         real(wp), dimension(3)              :: slip_vel
         real(wp)                            :: denum, TwoPi
         real(wp), dimension(5)              :: UnifRnd
+        integer                             :: i
+
+        if (.not. ieee_is_finite(fqs_fluct_old(1)) .or. .not. ieee_is_finite(fqs_fluct_old(2)) &
+            & .or. .not. ieee_is_finite(fqs_fluct_old(3))) then
+            fqs_fluct_new = 0._wp
+            return
+        end if
 
         fqs_fluct_new = 0._wp
 
@@ -883,9 +913,7 @@ contains
 
         val = num_x/den_x
 
-        if (.not. ieee_is_finite(val)) then
-            val = field_vf(field_index)%sf(i, j, k)
-        else if (abs(val) <= eps) then
+        if (abs(val) <= eps) then
             val = 0._wp
         end if
 

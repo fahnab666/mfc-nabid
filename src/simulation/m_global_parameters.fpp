@@ -859,8 +859,9 @@ contains
         lag_params%collision_force = .false.
         lag_params%subcycle_collisions = .false.
         lag_params%qs_fluct_force = .false.
-        lag_params%mu_ref = dflt_real
         lag_params%N_collision_subcycles = dflt_int
+        lag_params%mu_ref(:) = dflt_real
+        lag_params%suth(:) = 0._wp
 
         lag_header = .false.
 

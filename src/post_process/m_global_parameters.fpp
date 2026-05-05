@@ -780,16 +780,6 @@ contains
                 sys_size = c_idx
             end if
 
-            if (bubbles_lagrange) then
-                beta_idx = sys_size + 1
-                sys_size = beta_idx
-            end if
-
-            if (particles_lagrange) then
-                beta_idx = sys_size + 1
-                sys_size = beta_idx
-            end if
-
             if (cont_damage) then
                 damage_idx = sys_size + 1
                 sys_size = damage_idx
@@ -820,6 +810,11 @@ contains
         else
             species_idx%beg = 1
             species_idx%end = 1
+        end if
+
+        if (bubbles_lagrange .or. particles_lagrange) then
+            beta_idx = sys_size + 1
+            sys_size = beta_idx
         end if
 
         if (output_partial_domain) then

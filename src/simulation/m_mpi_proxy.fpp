@@ -226,9 +226,11 @@ contains
                 call MPI_BCAST(lag_params%${VAR}$, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
             #:endfor
 
-            #:for VAR in ['epsilonb','charwidth','valmaxvoid','mu_ref']
+            #:for VAR in ['epsilonb','charwidth','valmaxvoid']
                 call MPI_BCAST(lag_params%${VAR}$, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)
             #:endfor
+            call MPI_BCAST(lag_params%mu_ref(1), num_fluids_max, mpi_p, 0, MPI_COMM_WORLD, ierr)
+            call MPI_BCAST(lag_params%suth(1), num_fluids_max, mpi_p, 0, MPI_COMM_WORLD, ierr)
 
             #:for VAR in [ 'lag_header']
                 call MPI_BCAST(${VAR}$, 1, MPI_LOGICAL, 0, MPI_COMM_WORLD, ierr)

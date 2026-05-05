@@ -397,7 +397,8 @@ contains
         lag_params%interpolation_order = dflt_int
         lag_params%charNz = dflt_int
         lag_params%valmaxvoid = dflt_real
-        lag_params%mu_ref = dflt_real
+        lag_params%mu_ref(:) = dflt_real
+        lag_params%suth(:) = 0._wp
 
         do i = 1, num_patches_max
             patch_icpp(i)%geometry = dflt_int

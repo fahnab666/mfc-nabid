@@ -22,6 +22,7 @@ module m_particles_EL
     use m_helper
     use m_mpi_common
     use m_ibm
+    use m_chemistry
 
     implicit none
 
@@ -164,7 +165,8 @@ module m_particles_EL
     real(wp)                              :: eps_overlap = 1.e-12
     real(wp), allocatable, dimension(:,:) :: fluid_vel_at_particle  !< fluid velocity at each particle
     real(wp), allocatable, dimension(:)   :: density_at_particle    !< density at each particle
-    $:GPU_DECLARE(create='[fluid_vel_at_particle, density_at_particle]')
+    real(wp), allocatable, dimension(:)   :: pres_at_particle       !< fluid pressure at each particle
+    $:GPU_DECLARE(create='[fluid_vel_at_particle, density_at_particle, pres_at_particle]')
 
 contains
 
@@ -174,17 +176,11 @@ contains
 
         type(scalar_field), dimension(sys_size), intent(inout)     :: q_cons_vf
         type(integer_field), dimension(1:num_dims,1:2), intent(in) :: bc_type
-        integer                                                    :: nParticles_glb, i, j, k, nf, l, npts
-
-        ! PRIM TO CONS VARIABLES
-        real(wp)               :: dyn_pres, pi_inf, qv, gamma, pres, T
-        real(wp)               :: rhou, alpharhou, rho_f, alpharho
-        real(wp), dimension(3) :: fluid_vel
-        real(wp)               :: rhoYks(1:num_species)
-        integer                :: save_count
-        real(wp)               :: qtime
-        integer                :: ind_end_loc
-        real(wp)               :: ksp, nu1, nu2, E1, E2, cor, log_cor, sqrt_log_cor2_pi2
+        integer                                                    :: nParticles_glb, i, j, k, l, npts
+        integer                                                    :: save_count
+        real(wp)                                                   :: qtime
+        integer                                                    :: ind_end_loc
+        real(wp)                                                   :: ksp, nu1, nu2, E1, E2, cor, log_cor, sqrt_log_cor2_pi2
 
         next_write_time = 0._wp
 
@@ -195,10 +191,6 @@ contains
             save_count = t_step_start
             qtime = t_step_start*dt
         end if
-
-        pi_inf = 0._wp
-        qv = 0._wp
-        gamma = gammas(1)
 
         ! Setting number of time-stages for selected time-stepping scheme
         lag_num_ts = time_stepper
@@ -340,6 +332,7 @@ contains
 
         @:ALLOCATE(fluid_vel_at_particle(1:nParticles_glb, 1:3))
         @:ALLOCATE(density_at_particle(1:nParticles_glb))
+        @:ALLOCATE(pres_at_particle(1:nParticles_glb))
 
         if (adap_dt .and. f_is_default(adap_dt_tol)) adap_dt_tol = dflt_adap_dt_tol
 
@@ -428,46 +421,17 @@ contains
         npts = (nWeights_grad - 1)/2
         call s_compute_fornberg_fd_weights(npts)  ! For finite differences
 
-        if (lag_params%solver_approach == 2) then
-            if (save_count == 0) then
-                !> Correcting initial conditions so they account for particles
-                $:GPU_PARALLEL_LOOP(private='[i, j, k, dyn_pres, fluid_vel, rho_f, alpharho, rhou, alpharhou]', collapse=3, &
-                                    & copyin = '[pi_inf, qv, gamma, rhoYks]')
-                do k = idwint(3)%beg, idwint(3)%end
-                    do j = idwint(2)%beg, idwint(2)%end
-                        do i = idwint(1)%beg, idwint(1)%end
-                            !!!!!!!!! Mass
-                            do l = 1, num_fluids  ! num_fluid is just 1 right now
-                                rho_f = q_cons_vf(l)%sf(i, j, k)
-                                alpharho = q_particles(alphaf_id)%sf(i, j, k)*rho_f
-                                q_cons_vf(l)%sf(i, j, k) = alpharho
-                            end do
-
-                            !!!!!!!!! Momentum
-                            dyn_pres = 0._wp
-                            do l = momxb, momxe
-                                fluid_vel(l - momxb + 1) = q_cons_vf(l)%sf(i, j, k)/rho_f
-                                rhou = q_cons_vf(l)%sf(i, j, k)
-                                alpharhou = q_particles(alphaf_id)%sf(i, j, k)*rhou
-                                q_cons_vf(l)%sf(i, j, k) = alpharhou
-                                dyn_pres = dyn_pres + q_cons_vf(l)%sf(i, j, k)*fluid_vel(l - momxb + 1)/2._wp
-                            end do
-
-                            !!!!!!!!!Energy
-                            call s_compute_pressure(q_cons_vf(E_idx)%sf(i, j, k), q_cons_vf(alf_idx)%sf(i, j, k), dyn_pres, &
-                                                    & pi_inf, gamma, alpharho, qv, rhoYks, pres, T)
-
-                            q_cons_vf(E_idx)%sf(i, j, k) = gamma*pres + dyn_pres + pi_inf + qv  ! Updating energy in cons
-
-                            do l = 1, sys_size
-                                rhs_old(l)%sf(i, j, k) = 0._wp
-                            end do
-                        end do
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[i, j, k, l]')
+        do k = idwint(3)%beg, idwint(3)%end
+            do j = idwint(2)%beg, idwint(2)%end
+                do i = idwint(1)%beg, idwint(1)%end
+                    do l = 1, sys_size
+                        rhs_old(l)%sf(i, j, k) = 0._wp
                     end do
                 end do
-                $:END_GPU_PARALLEL_LOOP()
-            end if
-        end if
+            end do
+        end do
+        $:END_GPU_PARALLEL_LOOP()
 
     end subroutine s_initialize_particles_EL_module
 
@@ -815,10 +779,21 @@ contains
         real(wp), dimension(idwbuff(1)%beg:,idwbuff(2)%beg:,idwbuff(3)%beg:,1:), intent(inout) :: vL_x, vL_y, vL_z
         real(wp), dimension(idwbuff(1)%beg:,idwbuff(2)%beg:,idwbuff(3)%beg:,1:), intent(inout) :: vR_x, vR_y, vR_z
         integer, dimension(3) :: cell
-        real(wp) :: myMass, myR, myBeta_c, myBeta_t, myR0, myRe, myGamma, rmass_add, func_sum, func_sum_sources, myFluidRho
+        real(wp) :: myMass, myR, myBeta_c, myBeta_t, myR0, myRe, myGamma, rmass_add, func_sum, func_sum_sources, myFluidRho, myPres
+        real(wp) :: qv, pi_inf, gamma, H, vel_sum, myvel_sum, c, pres, rho
+        real(wp), dimension(2) :: Re
+
+        #:if not MFC_CASE_OPTIMIZATION and USING_AMD
+            real(wp), dimension(3) :: vel    !< Cell-avg. velocity
+            real(wp), dimension(3) :: alpha  !< Cell-avg. volume fraction
+        #:else
+            real(wp), dimension(num_vels)   :: vel    !< Cell-avg. velocity
+            real(wp), dimension(num_fluids) :: alpha  !< Cell-avg. volume fraction
+        #:endif
+
         real(wp), dimension(3) :: myVel, myPos, force_vec, s_cell, myForce, my_fqs_fluct, new_fqs_fluct, myFluidVel
-        integer :: mySeed, new_seed
-        integer :: k, l, i, j, dir
+        integer                :: mySeed, new_seed
+        integer                :: k, l, i, j, dir
 
         if (lag_params%pressure_force .or. lag_params%added_mass_model > 0) then
             do l = 1, num_dims
@@ -853,20 +828,12 @@ contains
             end do
         end if
 
-        myGamma = (1._wp/fluid_pp(1)%gamma) + 1._wp
-        if (viscous) then
-            myRe = 1._wp/fluid_pp(1)%Re(1)
-        else
-            ! TODO: Wire to a fluid parameter for non-air flows
-            myRe = lag_params%mu_ref
-        end if
-
         call nvtxStartRange("LAGRANGE-PARTICLE-DYNAMICS")
 
         !> Compute Fluid-Particle Forces (drag/pressure/added mass) and convert to particle acceleration
         $:GPU_PARALLEL_LOOP(private='[i, k, l, cell, s_cell, myMass, myR, myR0, myPos, myVel, mySeed, my_fqs_fluct, &
-                            & new_fqs_fluct, force_vec, rmass_add, func_sum, new_seed, myFluidVel, myFluidRho]', copyin='[stage, &
-                            & myGamma, myRe]')
+                            & new_fqs_fluct, force_vec, rmass_add, func_sum, new_seed, myFluidVel, myFluidRho, myPres, qv, &
+                            & pi_inf, gamma, myGamma, H, vel_sum, vel, alpha, Re, myRe, myvel_sum]', copyin='[stage]')
         do k = 1, n_el_particles_loc
             f_p(k,:) = 0._wp
             p_owner_rank(k) = proc_rank
@@ -890,26 +857,34 @@ contains
             particle_dposdt(k,:,stage) = 0._wp
             particle_dveldt(k,:,stage) = 0._wp
             particle_draddt(k, stage) = 0._wp
+            density_at_particle(k) = 0._wp
 
-            if (lag_params%interpolation_order > 1) then
-                do dir = 1, num_dims
-                    fluid_vel_at_particle(k, dir) = f_interp_barycentric(myPos, cell, q_prim_vf, momxb + dir - 1, &
-                                          & weights_x_interp, weights_y_interp, weights_z_interp)
-                end do
-                density_at_particle(k) = f_interp_barycentric(myPos, cell, q_prim_vf, 1, weights_x_interp, weights_y_interp, &
-                                    & weights_z_interp)
-            else
-                do dir = 1, num_dims
-                    fluid_vel_at_particle(k, dir) = q_prim_vf(momxb + dir - 1)%sf(cell(1), cell(2), cell(3))
-                end do
-                density_at_particle(k) = q_prim_vf(1)%sf(cell(1), cell(2), cell(3))
+            call s_interp_fluid_properties(myPos, cell, q_prim_vf, weights_x_interp, weights_y_interp, weights_z_interp, &
+                                           & myFluidVel, myFluidRho, myPres)
+
+            fluid_vel_at_particle(k,:) = myFluidVel
+            density_at_particle(k) = myFluidRho
+            pres_at_particle(k) = myPres
+
+            myvel_sum = fluid_vel_at_particle(k, 1)**2 + fluid_vel_at_particle(k, 2)**2
+            if (num_dims == 3) then
+                myvel_sum = myvel_sum + fluid_vel_at_particle(k, 3)**2
             end if
 
-            myFluidVel = fluid_vel_at_particle(k,:)
-            myFluidRho = density_at_particle(k)
+            ! Compute mixture enthalpy
+            call s_compute_enthalpy(q_prim_vf, pres, rho, gamma, pi_inf, Re, H, alpha, vel, vel_sum, qv, cell(1), cell(2), cell(3))
+
+            ! Compute mixture sound speed
+            call s_compute_speed_of_sound(myPres, myFluidrho, gamma, pi_inf, H, alpha, myvel_sum, 0._wp, c, qv)
+
+            myGamma = (1._wp/gamma) + 1._wp
+
+            call s_get_drag_viscosity(q_prim_vf, myPres, myFluidrho, pi_inf, alpha, Re, myRe, cell(1), cell(2), cell(3))
+
             call s_get_particle_force(myPos, myR, myVel, myMass, myRe, myGamma, mySeed, my_fqs_fluct, cell, q_prim_vf, q_cons_vf, &
                                       & q_particles, field_vars, rhs_old, duidxj_id, weights_x_interp, weights_y_interp, &
-                                      & weights_z_interp, force_vec, rmass_add, new_seed, new_fqs_fluct, myFluidVel, myFluidRho)
+                                      & weights_z_interp, force_vec, rmass_add, new_seed, new_fqs_fluct, myFluidVel, myFluidRho, &
+                                      & myPres, c)
 
             p_AM(k) = rMass_add
             f_p(k,:) = f_p(k,:) + force_vec(:)
@@ -955,6 +930,51 @@ contains
         call nvtxEndRange
 
     end subroutine s_compute_particle_EL_dynamics
+
+    subroutine s_get_drag_viscosity(q_prim_vf, fluid_pres, fluid_rho, pi_inf_mix, alpha, Re_mix, mu, i, j, k)
+
+        $:GPU_ROUTINE(function_name='s_get_drag_viscosity',parallelism='[seq]', cray_inline=True)
+
+        type(scalar_field), dimension(sys_size), intent(in) :: q_prim_vf
+        real(wp), intent(in)                                :: fluid_pres, fluid_rho, pi_inf_mix
+        real(wp), dimension(num_fluids), intent(in)         :: alpha
+        real(wp), dimension(2), intent(in)                  :: Re_mix
+        real(wp), intent(out)                               :: mu
+        integer, intent(in)                                 :: i, j, k
+        real(wp), dimension(num_species)                    :: Ys
+        real(wp)                                            :: tref = 273._wp
+        real(wp)                                            :: mu_f
+        real(wp)                                            :: fluid_temp, mix_mol_weight, cv_mix
+        integer                                             :: l, d
+
+        if (chemistry) then
+            do d = 1, num_species
+                Ys(d) = q_prim_vf(chemxb + d - 1)%sf(i, j, k)
+            end do
+            call get_mixture_molecular_weight(Ys, mix_mol_weight)
+            fluid_temp = fluid_pres*mix_mol_weight/(gas_constant*fluid_rho)
+            call get_mixture_viscosity_mixavg(fluid_temp, Ys, mu)
+        else
+            if (viscous) then
+                mu = 1._wp/Re_mix(1)
+            else
+                mu = 0._wp
+                cv_mix = 0._wp
+                do l = 1, num_fluids
+                    cv_mix = cv_mix + alpha(l)*cvs(l)*gs_min(l)  ! cv * (1/gamma + 1)
+                end do
+                fluid_temp = (fluid_pres + pi_inf_mix)/(fluid_rho*cv_mix)
+                do l = 1, num_fluids
+                    if (lag_params%suth(l) > 0._wp) then
+                        mu_f = lag_params%mu_ref(l)*sqrt(fluid_temp/tref)*(1._wp + lag_params%suth(l)/tref)/(1._wp &
+                                                 & + lag_params%suth(l)/fluid_temp)
+                    end if
+                    mu = mu + alpha(l)*mu_f
+                end do
+            end if
+        end if
+
+    end subroutine s_get_drag_viscosity
 
     subroutine s_smear_field_contributions(bc_type, ind_start, ind_end, recompute_gSum)
 
@@ -1836,16 +1856,6 @@ contains
                 else if (particle_pos(k, 3, 2) >= z_cb(p)) then
                     keep_bubble(k) = 0
                 else if (particle_pos(k, 3, 2) < z_cb(-1)) then
-                    keep_bubble(k) = 0
-                end if
-            end if
-
-            if (keep_bubble(k) == 1) then
-                ! Remove bubbles that are no longer in a liquid
-                cell = fd_number - buff_size
-                call s_locate_cell(particle_pos(k,1:3,2), cell, particle_s(k,1:3,2))
-
-                if (q_prim_vf(advxb)%sf(cell(1), cell(2), cell(3)) < (1._wp - lag_params%valmaxvoid)) then
                     keep_bubble(k) = 0
                 end if
             end if
@@ -2824,6 +2834,7 @@ contains
 
         @:DEALLOCATE(fluid_vel_at_particle)
         @:DEALLOCATE(density_at_particle)
+        @:DEALLOCATE(pres_at_particle)
 
     end subroutine s_finalize_particle_lagrangian_solver
 
