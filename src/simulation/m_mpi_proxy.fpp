@@ -163,7 +163,7 @@ contains
             & 'num_probes', 'num_integrals', 'bubble_model', 'thermal',        &
             & 'num_source', 'relax_model', 'num_ibs', 'n_start',    &
             & 'num_bc_patches', 'num_igr_iters', 'num_igr_warm_start_iters', &
-            & 'adap_dt_max_iters' ]
+            & 'adap_dt_max_iters', 'int_comp', 'collision_model' ]
             call MPI_BCAST(${VAR}$, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
         #:endfor
 
@@ -177,10 +177,12 @@ contains
             & 'bc_x%grcbc_in', 'bc_x%grcbc_out', 'bc_x%grcbc_vel_out',          &
             & 'bc_y%grcbc_in', 'bc_y%grcbc_out', 'bc_y%grcbc_vel_out',          &
             & 'bc_z%grcbc_in', 'bc_z%grcbc_out', 'bc_z%grcbc_vel_out',          &
+            & 'bc_x%isothermal_in', 'bc_y%isothermal_in', 'bc_z%isothermal_in',        &
+            & 'bc_x%isothermal_out', 'bc_y%isothermal_out', 'bc_z%isothermal_out', &
             & 'cfl_adap_dt', 'cfl_const_dt', 'cfl_dt', 'surface_tension',       &
             & 'shear_stress', 'bulk_stress', 'bubbles_lagrange',                &
-            & 'hyperelasticity', 'down_sample', 'int_comp','fft_wrt', &
-            & 'hyper_cleaning', 'ib_state_wrt', 'particles_lagrange' ]
+            & 'hyperelasticity', 'down_sample', 'fft_wrt', &
+            & 'hyper_cleaning', 'ib_state_wrt', 'particles_lagrange']
             call MPI_BCAST(${VAR}$, 1, MPI_LOGICAL, 0, MPI_COMM_WORLD, ierr)
         #:endfor
 
@@ -245,16 +247,21 @@ contains
             & 'bc_y%vb1','bc_y%vb2','bc_y%vb3','bc_y%ve1','bc_y%ve2','bc_y%ve3', &
             & 'bc_z%vb1','bc_z%vb2','bc_z%vb3','bc_z%ve1','bc_z%ve2','bc_z%ve3', &
             & 'bc_x%pres_in','bc_x%pres_out','bc_y%pres_in','bc_y%pres_out', 'bc_z%pres_in','bc_z%pres_out', &
-            & 't_stop', 't_save', 'cfl_target', 'Bx0', 'alf_factor',  &
+            & 'x_domain%beg', 'x_domain%end', 'y_domain%beg', 'y_domain%end',    &
+            & 'z_domain%beg', 'z_domain%end', 'x_a', 'x_b', 'y_a', 'y_b', 'z_a', &
+            & 'bc_x%Twall_in', 'bc_x%Twall_out', 'bc_y%Twall_in', 'bc_y%Twall_out',  &
+            & 'bc_z%Twall_in', 'bc_z%Twall_out', &
+            & 'z_b', 't_stop', 't_save', 'cfl_target', 'Bx0', 'alf_factor',  &
             & 'tau_star', 'cont_damage_s', 'alpha_bar', 'adap_dt_tol', &
             & 'ic_eps', 'ic_beta', 'hyper_cleaning_speed', &
-            & 'hyper_cleaning_tau' ]
+            & 'hyper_cleaning_tau', 'coefficient_of_restitution', 'collision_time', &
+            & 'ib_coefficient_of_friction' ]
             call MPI_BCAST(${VAR}$, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)
         #:endfor
 
         do i = 1, 3
             #:for VAR in [ 'bc_x%vel_in', 'bc_x%vel_out', 'bc_y%vel_in', 'bc_y%vel_out',  &
-                & 'bc_z%vel_in', 'bc_z%vel_out']
+                & 'bc_z%vel_in', 'bc_z%vel_out' ]
                 call MPI_BCAST(${VAR}$ (i), 1, mpi_p, 0, MPI_COMM_WORLD, ierr)
             #:endfor
         end do

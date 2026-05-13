@@ -21,12 +21,7 @@ module m_ib_patches
 
     implicit none
 
-    private; public :: s_apply_ib_patches, s_update_ib_rotation_matrix, f_convert_cyl_to_cart, s_instantiate_STL_models, &
-        & s_decode_patch_periodicity
-
-    real(wp) :: cart_y, cart_z
-    $:GPU_DECLARE(create='[cart_y, cart_z]')
-    ! Variables to be used to hold cell locations in Cartesian coordinates if 3D simulation is using cylindrical coordinates
+    private; public :: s_apply_ib_patches, s_update_ib_rotation_matrix, s_instantiate_STL_models, s_decode_patch_periodicity
 
 contains
 
@@ -395,8 +390,8 @@ contains
         do l = ll, lr
             do j = jl, jr
                 do i = il, ir
-                    xyz_local = [x_cc(i) - center(1), y_cc(j) - center(2), &
-                                      & z_cc(l) - center(3)]  ! get coordinate frame centered on IB
+                    ! get coordinate frame centered on IB
+                    xyz_local = [x_cc(i) - center(1), y_cc(j) - center(2), z_cc(l) - center(3)]
                     xyz_local = matmul(inverse_rotation, xyz_local)  ! rotate the frame into the IB's coordinates
                     xyz_local = xyz_local - offset  ! airfoils are a patch that require a centroid offset
 
@@ -520,6 +515,13 @@ contains
         center(3) = patch_ib(patch_id)%z_centroid + real(zp, wp)*(glb_bounds(3)%end - glb_bounds(3)%beg)
         radius = patch_ib(patch_id)%radius
 
+        ! completely skip particles no in the domain
+        if (center(1) - radius > x_cc(m + gp_layers + 1) .or. center(1) + radius < x_cc(-gp_layers - 1) .or. center(2) &
+            & - radius > y_cc(n + gp_layers + 1) .or. center(2) + radius < y_cc(-gp_layers - 1) .or. center(3) - radius > z_cc(p &
+            & + gp_layers + 1) .or. center(3) + radius < z_cc(-gp_layers - 1)) then
+            return
+        end if
+
         ! encode the periodicity information into the patch_id
         call s_encode_patch_periodicity(patch_id, xp, yp, zp, encoded_patch_id)
 
@@ -534,19 +536,14 @@ contains
         call get_bounding_indices(center(2) - radius, center(2) + radius, y_cc, jl, jr)
         call get_bounding_indices(center(3) - radius, center(3) + radius, z_cc, kl, kr)
 
-        $:GPU_PARALLEL_LOOP(private='[i, j, k, cart_y, cart_z]', copyin='[encoded_patch_id, center, radius]', collapse=3)
+        ! Checking whether the sphere covers a particular cell in the domain and verifying whether the current patch has permission
+        ! to write to that cell. If both queries check out, the primitive variables of the current patch are assigned to this cell.
+        $:GPU_PARALLEL_LOOP(private='[i, j, k]', copyin='[encoded_patch_id, center, radius]', collapse=3)
         do k = kl, kr
             do j = jl, jr
                 do i = il, ir
-                    ! do i = -gp_layers, m+gp_layers
-                    if (grid_geometry == 3) then
-                        call s_convert_cylindrical_to_cartesian_coord(y_cc(j), z_cc(k))
-                    else
-                        cart_y = y_cc(j)
-                        cart_z = z_cc(k)
-                    end if
                     ! Updating the patch identities bookkeeping variable
-                    if (((x_cc(i) - center(1))**2 + (cart_y - center(2))**2 + (cart_z - center(3))**2 <= radius**2)) then
+                    if (((x_cc(i) - center(1))**2 + (y_cc(j) - center(2))**2 + (z_cc(k) - center(3))**2 <= radius**2)) then
                         ib_markers%sf(i, j, k) = encoded_patch_id
                     end if
                 end do
@@ -593,19 +590,12 @@ contains
 
         ! to write to to that cell. If both queries check out, the primitive variables of the current patch are assigned to this
         ! cell.
-        $:GPU_PARALLEL_LOOP(private='[i, j, k, xyz_local, cart_y, cart_z]', copyin='[encoded_patch_id, center, length, &
-                            & inverse_rotation]', collapse=3)
+        $:GPU_PARALLEL_LOOP(private='[i, j, k, xyz_local]', copyin='[encoded_patch_id, center, length, inverse_rotation]', &
+                            & collapse=3)
         do k = kl, kr
             do j = jl, jr
                 do i = il, ir
-                    if (grid_geometry == 3) then
-                        ! TODO :: This does not work and is not covered by any tests. This should be fixed
-                        call s_convert_cylindrical_to_cartesian_coord(y_cc(j), z_cc(k))
-                    else
-                        cart_y = y_cc(j)
-                        cart_z = z_cc(k)
-                    end if
-                    xyz_local = [x_cc(i), cart_y, cart_z] - center  ! get coordinate frame centered on IB
+                    xyz_local = [x_cc(i), y_cc(j), z_cc(k)] - center  ! get coordinate frame centered on IB
                     xyz_local = matmul(inverse_rotation, xyz_local)  ! rotate the frame into the IB's coordinates
 
                     if (-0.5*length(1) <= xyz_local(1) .and. 0.5*length(1) >= xyz_local(1) .and. -0.5*length(2) <= xyz_local(2) &
@@ -658,18 +648,12 @@ contains
         call get_bounding_indices(center(3) - corner_distance, center(3) + corner_distance, z_cc, kl, kr)
 
         ! this cell.
-        $:GPU_PARALLEL_LOOP(private='[i, j, k, xyz_local, cart_y, cart_z]', copyin='[encoded_patch_id, center, length, radius, &
+        $:GPU_PARALLEL_LOOP(private='[i, j, k, xyz_local]', copyin='[encoded_patch_id, center, length, radius, &
                             & inverse_rotation]', collapse=3)
         do k = kl, kr
             do j = jl, jr
                 do i = il, ir
-                    if (grid_geometry == 3) then
-                        call s_convert_cylindrical_to_cartesian_coord(y_cc(j), z_cc(k))
-                    else
-                        cart_y = y_cc(j)
-                        cart_z = z_cc(k)
-                    end if
-                    xyz_local = [x_cc(i), cart_y, cart_z] - center  ! get coordinate frame centered on IB
+                    xyz_local = [x_cc(i), y_cc(j), z_cc(k)] - center  ! get coordinate frame centered on IB
                     xyz_local = matmul(inverse_rotation, xyz_local)  ! rotate the frame into the IB's coordinates
 
                     if (((.not. f_is_default(length(1)) .and. xyz_local(2)**2 + xyz_local(3)**2 <= radius**2 .and. &
@@ -950,30 +934,6 @@ contains
 
     end subroutine s_update_ib_rotation_matrix
 
-    !> Converts cylindrical (r, theta) coordinates to Cartesian (y, z) and stores in module variables.
-    subroutine s_convert_cylindrical_to_cartesian_coord(cyl_y, cyl_z)
-
-        $:GPU_ROUTINE(parallelism='[seq]')
-
-        real(wp), intent(in) :: cyl_y, cyl_z
-
-        cart_y = cyl_y*sin(cyl_z)
-        cart_z = cyl_y*cos(cyl_z)
-
-    end subroutine s_convert_cylindrical_to_cartesian_coord
-
-    !> Converts a 3D cylindrical coordinate vector (x, r, theta) to Cartesian (x, y, z).
-    pure function f_convert_cyl_to_cart(cyl) result(cart)
-
-        $:GPU_ROUTINE(parallelism='[seq]')
-
-        real(wp), dimension(1:3), intent(in) :: cyl
-        real(wp), dimension(1:3)             :: cart
-
-        cart = (/cyl(1), cyl(2)*sin(cyl(3)), cyl(2)*cos(cyl(3))/)
-
-    end function f_convert_cyl_to_cart
-
     subroutine get_bounding_indices(left_bound, right_bound, cell_centers, left_index, right_index)
 
         real(wp), intent(in)                         :: left_bound, right_bound
@@ -1036,9 +996,10 @@ contains
 
         $:GPU_ROUTINE(parallelism='[seq]')
 
-        integer, intent(in)  :: encoded_patch_id
-        integer, intent(out) :: patch_id, x_periodicity, y_periodicity, z_periodicity
-        integer              :: offset, remainder, xp, yp, zp, base
+        integer, intent(in)            :: encoded_patch_id
+        integer, intent(out)           :: patch_id
+        integer, intent(out), optional :: x_periodicity, y_periodicity, z_periodicity
+        integer                        :: offset, remainder, xp, yp, zp, base
 
         base = num_ibs + 1
 
@@ -1051,9 +1012,11 @@ contains
         zp = remainder/3
 
         ! Reverse map: 2 -> -1, 0 -> 0, 1 -> 1
-        x_periodicity = xp; if (xp == 2) x_periodicity = -1
-        y_periodicity = yp; if (yp == 2) y_periodicity = -1
-        z_periodicity = zp; if (zp == 2) z_periodicity = -1
+        if (present(x_periodicity) .and. present(y_periodicity) .and. present(z_periodicity)) then
+            x_periodicity = xp; if (xp == 2) x_periodicity = -1
+            y_periodicity = yp; if (yp == 2) y_periodicity = -1
+            z_periodicity = zp; if (zp == 2) z_periodicity = -1
+        end if
 
     end subroutine s_decode_patch_periodicity
 
@@ -1065,19 +1028,28 @@ contains
 
         ! check domain wraps in x, y
 
-        #:for X, ID in [('x', 1), ('y', 2), ('z', 3)]
-            if (num_dims >= ${ID}$) then
-                ! check for periodicity
-                if (bc_${X}$%beg == BC_PERIODIC) then
-                    ${X}$p_lower = -1
-                    ${X}$p_upper = 1
-                else
-                    ! if it is not periodic, then both elements are 0
-                    ${X}$p_lower = 0
-                    ${X}$p_upper = 0
-                end if
+        #:for X in [('x'), ('y')]
+            ! check for periodicity
+            if (ib_bc_${X}$%beg == BC_PERIODIC) then
+                ${X}$p_lower = -1
+                ${X}$p_upper = 1
+            else
+                ! if it is not periodic, then both elements are 0
+                ${X}$p_lower = 0
+                ${X}$p_upper = 0
             end if
         #:endfor
+
+        ! z only if 3D
+        if (present(zp_lower) .and. p /= 0) then
+            if (ib_bc_z%beg == BC_PERIODIC) then
+                zp_lower = -1
+                zp_upper = 1
+            else
+                zp_lower = 0
+                zp_upper = 0
+            end if
+        end if
 
     end subroutine s_get_periodicities
 

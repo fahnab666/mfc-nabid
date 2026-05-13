@@ -133,7 +133,7 @@ PHYSICS_DOCS = {
     "check_muscl": {
         "title": "MUSCL Reconstruction",
         "category": "Numerical Schemes",
-        "explanation": "muscl_order must be 1 or 2. Second order requires muscl_lim in {1,2,3,4,5}.",
+        "explanation": "muscl_order must be 1 or 2. Second order requires muscl_lim in {0,1,2,3,4,5}.",
     },
     "check_time_stepping": {
         "title": "Time Stepping",
@@ -328,10 +328,14 @@ class CaseValidator:
     def check_weno(self):
         """Checks constraints regarding WENO order"""
         recon_type = self.get("recon_type", 1)
+        self.prohibit(recon_type not in [1, 2], "recon_type must be 1 (WENO) or 2 (MUSCL)")
 
         # WENO_TYPE = 1
         if recon_type != 1:
             return
+
+        for param in ["muscl_order", "muscl_lim"]:
+            self.prohibit(self.is_set(param), f"recon_type = 1 (WENO) is not compatible with {param}")
 
         weno_order = self.get("weno_order")
         m = self.get("m", 0)
@@ -349,13 +353,22 @@ class CaseValidator:
     def check_muscl(self):
         """Check constraints regarding MUSCL order"""
         recon_type = self.get("recon_type", 1)
-        int_comp = self.get("int_comp", "F") == "T"
-
-        self.prohibit(int_comp and recon_type != 2, "int_comp (THINC interface compression) requires recon_type = 2 (MUSCL)")
+        self.prohibit(recon_type not in [1, 2], "recon_type must be 1 (WENO) or 2 (MUSCL)")
 
         # MUSCL_TYPE = 2
         if recon_type != 2:
             return
+
+        weno_log_params = ["mapped_weno", "wenoz", "teno", "mp_weno", "weno_avg", "null_weights", "weno_Re_flux"]
+        for param in weno_log_params:
+            self.prohibit(self.get(param) == "T", f"recon_type = 2 (MUSCL) is not compatible with {param} = T")
+
+        weno_numeric_params = ["wenoz_q", "teno_CT", "weno_eps"]
+        for param in weno_numeric_params:
+            self.prohibit(self.is_set(param), f"recon_type = 2 (MUSCL) is not compatible with {param}")
+
+        weno_order = self.get("weno_order")
+        self.prohibit(weno_order is not None and weno_order != 0, f"recon_type = 2 (MUSCL) requires weno_order unset or 0, but got {weno_order}")
 
         muscl_order = self.get("muscl_order")
         m = self.get("m", 0)
@@ -369,6 +382,28 @@ class CaseValidator:
         self.prohibit(m + 1 < muscl_order, f"m must be at least muscl_order - 1 (= {muscl_order - 1})")
         self.prohibit(n is not None and n > 0 and n + 1 < muscl_order, f"For 2D simulation, n must be at least muscl_order - 1 (= {muscl_order - 1})")
         self.prohibit(p is not None and p > 0 and p + 1 < muscl_order, f"For 3D simulation, p must be at least muscl_order - 1 (= {muscl_order - 1})")
+
+    def check_interface_compression(self):
+        """Check constraints regarding interface compression"""
+        int_comp = self.get("int_comp", 0)
+        n = self.get("n", 0)
+        num_fluids = self.get("num_fluids", 0)
+        model_eqns = self.get("model_eqns", 2)
+        self.prohibit(int_comp not in [0, 1, 2], "int_comp must be 0 (off), 1 (THINC), or 2 (MTHINC)")
+        self.prohibit(int_comp == 2 and n == 0, "int_comp = 2 (MTHINC) requires at least 2D (n > 0)")
+        self.prohibit(int_comp != 0 and num_fluids != 2, "int_comp > 0 requires num_fluids = 2")
+        self.prohibit(
+            int_comp != 0 and model_eqns == 3,
+            "int_comp > 0 is not supported with model_eqns = 3: THINC does not update per-fluid internal energies, leaving thermodynamically inconsistent face states",
+        )
+
+        recon_type = self.get("recon_type", 1)
+        if recon_type == 1:  # WENO
+            weno_order = self.get("weno_order")
+            self.prohibit(weno_order == 1 and int_comp != 0, "int_comp must be 0 (off) when weno_order = 1")
+        elif recon_type == 2:  # MUSCL
+            muscl_order = self.get("muscl_order")
+            self.prohibit(muscl_order == 1 and int_comp != 0, "int_comp must be 0 (off) when muscl_order = 1")
 
     def check_boundary_conditions(self):
         """Checks constraints on boundary conditions"""
@@ -561,10 +596,10 @@ class CaseValidator:
 
         self.prohibit(ib and n <= 0, "Immersed Boundaries do not work in 1D (requires n > 0)")
         self.prohibit(ib and num_ibs <= 0, "num_ibs must be >= 1 when ib is enabled")
-        num_patches_max = get_fortran_constants().get("num_patches_max", 1000)
+        num_ib_patches_max = get_fortran_constants().get("num_ib_patches_max", 100000)
         self.prohibit(
-            ib and num_ibs > num_patches_max,
-            f"num_ibs must be <= {num_patches_max} (num_patches_max in m_constants.fpp)",
+            ib and num_ibs > num_ib_patches_max,
+            f"num_ibs must be <= {num_ib_patches_max} (num_ib_patches_max in m_constants.fpp)",
         )
         self.prohibit(not ib and num_ibs > 0, "num_ibs is set, but ib is not enabled")
         self.prohibit(ib_state_wrt and not ib, "ib_state_wrt requires ib to be enabled")
@@ -643,16 +678,16 @@ class CaseValidator:
         cyl_coord = self.get("cyl_coord", "F") == "T"
         viscous = self.get("viscous", "F") == "T"
 
+        self.prohibit(riemann_solver is None, "riemann_solver must be specified (1=HLL, 2=HLLC, 4=HLLD, 5=Lax-Friedrichs)")
         if riemann_solver is None:
             return
 
-        self.prohibit(riemann_solver < 1 or riemann_solver > 5, "riemann_solver must be 1, 2, 3, 4 or 5")
+        self.prohibit(riemann_solver not in [1, 2, 4, 5], "riemann_solver must be 1 (HLL), 2 (HLLC), 4 (HLLD), or 5 (Lax-Friedrichs)")
         self.prohibit(riemann_solver != 2 and model_eqns == 3, "6-equation model (model_eqns = 3) requires riemann_solver = 2 (HLLC)")
         self.prohibit(wave_speeds is not None and wave_speeds not in [1, 2], "wave_speeds must be 1 or 2")
-        self.prohibit(riemann_solver == 3 and wave_speeds is not None, "Exact Riemann (riemann_solver = 3) does not support wave_speeds")
         self.prohibit(avg_state is not None and avg_state not in [1, 2], "avg_state must be 1 or 2")
-        self.prohibit(riemann_solver not in [3, 5] and wave_speeds is None, "wave_speeds must be set if riemann_solver != 3,5")
-        self.prohibit(riemann_solver not in [3, 5] and avg_state is None, "avg_state must be set if riemann_solver != 3,5")
+        self.prohibit(riemann_solver != 5 and wave_speeds is None, "wave_speeds must be set for riemann_solver 1, 2, or 4")
+        self.prohibit(riemann_solver != 5 and avg_state is None, "avg_state must be set for riemann_solver 1, 2, or 4")
         self.prohibit(low_Mach not in [0, 1, 2], "low_Mach must be 0, 1, or 2")
         self.prohibit(riemann_solver != 2 and low_Mach == 2, "low_Mach = 2 requires riemann_solver = 2")
         self.prohibit(low_Mach != 0 and model_eqns not in [2, 3], "low_Mach = 1 or 2 requires model_eqns = 2 or 3")
@@ -717,6 +752,13 @@ class CaseValidator:
 
     def check_weno_simulation(self):
         """Checks WENO-specific constraints for simulation"""
+        recon_type = self.get("recon_type", 1)
+        self.prohibit(recon_type not in [1, 2], "recon_type must be 1 (WENO) or 2 (MUSCL)")
+
+        # WENO_TYPE = 1
+        if recon_type != 1:
+            return
+
         weno_order = self.get("weno_order")
         weno_eps = self.get("weno_eps")
         wenoz = self.get("wenoz", "F") == "T"
@@ -751,14 +793,24 @@ class CaseValidator:
 
     def check_muscl_simulation(self):
         """Checks MUSCL-specific constraints for simulation"""
+        recon_type = self.get("recon_type", 1)
+        self.prohibit(recon_type not in [1, 2], "recon_type must be 1 (WENO) or 2 (MUSCL)")
+
+        # MUSCL_TYPE = 2
+        if recon_type != 2:
+            return
+
         muscl_order = self.get("muscl_order")
         muscl_lim = self.get("muscl_lim")
+        muscl_eps = self.get("muscl_eps")
 
         if muscl_order is None:
             return
 
         self.prohibit(muscl_order == 2 and muscl_lim is None, "muscl_lim must be defined if using muscl_order = 2")
-        self.prohibit(muscl_lim is not None and (muscl_lim < 1 or muscl_lim > 5), "muscl_lim must be 1, 2, 3, 4, or 5")
+        self.prohibit(muscl_lim is not None and (muscl_lim < 0 or muscl_lim > 5), "muscl_lim must be 0 (unlimited), 1, 2, 3, 4, or 5")
+        if muscl_eps is not None:
+            self.prohibit(muscl_eps < 0, "muscl_eps must be >= 0 (use 0 for textbook limiter behavior)")
 
     def check_model_eqns_simulation(self):
         """Checks model equation constraints specific to simulation"""
@@ -875,6 +927,7 @@ class CaseValidator:
         hyperelasticity = self.get("hyperelasticity", "F") == "T"
         cyl_coord = self.get("cyl_coord", "F") == "T"
         probe_wrt = self.get("probe_wrt", "F") == "T"
+        int_comp = self.get("int_comp", 0)
 
         self.prohibit(num_igr_iters is not None and num_igr_iters < 0, "num_igr_iters must be greater than or equal to 0")
         self.prohibit(num_igr_warm_start_iters is not None and num_igr_warm_start_iters < 0, "num_igr_warm_start_iters must be greater than or equal to 0")
@@ -893,6 +946,7 @@ class CaseValidator:
         self.prohibit(hyperelasticity, "IGR does not support hyperelasticity")
         self.prohibit(cyl_coord, "IGR does not support cylindrical or axisymmetric coordinates")
         self.prohibit(probe_wrt, "IGR does not support probe writes")
+        self.prohibit(int_comp > 0, "IGR does not support int_comp > 0")
 
         # Check BCs - IGR does not support characteristic BCs
         # Characteristic BCs are BC_CHAR_SLIP_WALL (-5) through BC_CHAR_SUP_OUTFLOW (-12)
@@ -1288,6 +1342,44 @@ class CaseValidator:
         is provided. No static validation is performed here - chemistry will fail at
         runtime if misconfigured.
         """
+        # Fetch global chemistry and diffusion flags
+        chemistry = self.get("chemistry", "F") == "T"
+        diffusion = self.get("chem_params%diffusion", "F") == "T"
+
+        # Define what constitutes a wall (-15 for slip, -16 for no-slip)
+        wall_bcs = [-15, -16]
+
+        for dir in ["x", "y", "z"]:
+            isothermal_in = self.get(f"bc_{dir}%isothermal_in", "F") == "T"
+            isothermal_out = self.get(f"bc_{dir}%isothermal_out", "F") == "T"
+            bc_beg = self.get(f"bc_{dir}%beg")
+            bc_end = self.get(f"bc_{dir}%end")
+
+            if isothermal_in:
+                # Prohibit isothermal boundaries if chemistry or diffusion are disabled
+                self.prohibit(not chemistry or not diffusion, f"Isothermal In (bc_{dir}%isothermal_in) requires both chemistry='T' and chem_params%diffusion='T' to calculate heat conduction.")
+
+                # Prohibit if neither beg nor end is set to a valid wall condition
+                self.prohibit(bc_beg not in wall_bcs, f"Isothermal In (bc_{dir}%isothermal_in) requires a wall. Set bc_{dir}%beg to -15 (slip) or -16 (no-slip).")
+
+                # Check that the wall temperature is defined and physically valid (> 0 K)
+                tw_in = self.get(f"bc_{dir}%Twall_in")
+                self.prohibit(tw_in is None, f"Isothermal In (bc_{dir}%isothermal_in) requires a wall temperature to be set (e.g., bc_{dir}%Twall_in).")
+                if tw_in is not None and self._is_numeric(tw_in):
+                    self.prohibit(tw_in <= 0.0, f"Wall temperature bc_{dir}%Twall_in must be strictly positive for thermodynamics (got {tw_in}).")
+
+            if isothermal_out:
+                # Prohibit isothermal boundaries if chemistry or diffusion are disabled
+                self.prohibit(not chemistry or not diffusion, f"Isothermal Out (bc_{dir}%isothermal_out) requires both chemistry='T' and chem_params%diffusion='T' to calculate heat conduction.")
+
+                # Prohibit if neither beg nor end is set to a valid wall condition
+                self.prohibit(bc_end not in wall_bcs, f"Isothermal Out (bc_{dir}%isothermal_out) requires a wall. Set bc_{dir}%end to -15 (slip) or -16 (no-slip).")
+
+                # Check that the wall temperature is defined and physically valid (> 0 K)
+                tw_out = self.get(f"bc_{dir}%Twall_out")
+                self.prohibit(tw_out is None, f"Isothermal Out (bc_{dir}%isothermal_out) requires a wall temperature to be set (e.g., bc_{dir}%Twall_out).")
+                if tw_out is not None and self._is_numeric(tw_out):
+                    self.prohibit(tw_out <= 0.0, f"Wall temperature bc_{dir}%Tw_out must be strictly positive for thermodynamics (got {tw_out}).")
 
     def check_misc_pre_process(self):
         """Checks miscellaneous pre-process constraints"""
@@ -1987,6 +2079,7 @@ class CaseValidator:
         self.check_eos_parameter_sanity()
         self.check_surface_tension()
         self.check_mhd()
+        self.check_chemistry()
 
     def validate_simulation(self):
         """Validate simulation-specific parameters"""
@@ -1997,6 +2090,7 @@ class CaseValidator:
         self.check_riemann_solver()
         self.check_weno_simulation()
         self.check_muscl_simulation()
+        self.check_interface_compression()
         self.check_model_eqns_simulation()
         self.check_bubbles_euler_simulation()
         self.check_body_forces()
@@ -2010,6 +2104,7 @@ class CaseValidator:
         self.check_continuum_damage()
         self.check_grcbc()
         self.check_probe_integral_output()
+        self.check_chemistry()
 
     def validate_pre_process(self):
         """Validate pre-process-specific parameters"""
@@ -2047,6 +2142,7 @@ class CaseValidator:
         self.check_schlieren()
         self.check_surface_tension_post()
         self.check_no_flow_variables()
+        self.check_chemistry()
 
     def validate(self, stage: str = "simulation"):
         """Main validation method

@@ -178,6 +178,7 @@ _FALLBACK_PARAMS = {
         "hyperelasticity",
         "hypoelasticity",
         "ib",
+        "ib_state_wrt",
         "ic_beta",
         "ic_eps",
         "igr",
@@ -324,6 +325,7 @@ _FALLBACK_PARAMS = {
         "hyperelasticity",
         "hypoelasticity",
         "ib",
+        "ib_state_wrt",
         "igr",
         "igr_order",
         "lag_betaC_wrt",
@@ -496,7 +498,9 @@ def get_fortran_constants() -> Dict[str, int]:
     """
     Get Fortran compile-time constants from m_constants.fpp.
 
-    Cached after first call. Returns empty dict if source unavailable.
+    Cached after first call. Returns an empty dict when the Fortran source is
+    unavailable (e.g. Homebrew installs where src/ is not shipped); callers
+    supply their own inline defaults via _fc(name, default) in definitions.py.
     """
     global _FORTRAN_CONSTANTS_CACHE  # noqa: PLW0603
     if _FORTRAN_CONSTANTS_CACHE is None:

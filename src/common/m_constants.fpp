@@ -23,7 +23,8 @@ module m_constants
     integer, parameter  :: fourier_rings = 5                   !< Fourier filter ring limit
     integer, parameter  :: num_fluids_max = 10                 !< Maximum number of fluids in the simulation
     integer, parameter  :: num_probes_max = 10                 !< Maximum number of flow probes in the simulation
-    integer, parameter  :: num_patches_max = 1000              !< Maximum number of IC patches
+    integer, parameter  :: num_patches_max = 10                !< Maximum number of IC patches
+    integer, parameter  :: num_ib_patches_max = 50000          !< Maximum number of immersed boundary patches (patch_ib)
     integer, parameter  :: num_bc_patches_max = 10             !< Maximum number of boundary condition patches
     integer, parameter  :: max_2d_fourier_modes = 10           !< Max Fourier mode index for 2D modal patch (geometry 13)
     integer, parameter  :: max_sph_harm_degree = 5             !< Max degree L for 3D spherical harmonic patch (geometry 14)
@@ -48,10 +49,10 @@ module m_constants
     integer, parameter :: MUSCL_TYPE = 2  !< Using MUSCL for reconstruction type
 
     ! Interface Compression
-    real(wp), parameter :: dflt_ic_eps = 1e-4_wp    !< Ensure compression is only applied to surface cells in THINC
-    real(wp), parameter :: dflt_ic_beta = 1.6_wp    !< Sharpness parameter's default value used in THINC
-    real(wp), parameter :: moncon_cutoff = 1e-8_wp  !< Monotonicity constraint's limiter to prevent extremas in THINC
-
+    real(wp), parameter :: dflt_ic_eps = 1e-4_wp        !< Ensure compression is only applied to surface cells in THINC
+    real(wp), parameter :: dflt_ic_beta = 1.6_wp        !< Sharpness parameter's default value used in THINC
+    real(wp), parameter :: moncon_cutoff = 1e-8_wp      !< Monotonicity constraint's limiter to prevent extremas in THINC
+    real(wp), parameter :: mthinc_align_tol = 1.e-8_wp  !< Grid aligned snap tolerance for MTHINC normals
     ! Chemistry
     real(wp), parameter :: dflt_T_guess = 1200._wp  !< Default guess for temperature (when a previous value is not available)
 

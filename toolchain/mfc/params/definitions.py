@@ -13,21 +13,25 @@ from .registry import REGISTRY, IndexedFamily
 from .schema import ParamDef, ParamType
 
 # Index limits — sourced from Fortran compile-time constants (m_constants.fpp).
-# These must stay in sync with Fortran; we error if the source can't be parsed.
+# Falls back to the inline default when src/ is unavailable (e.g. Homebrew).
+# Default must match src/common/m_constants.fpp — enforced by co-location.
 _FC = get_fortran_constants()
 
 
-def _fc(name: str) -> int:
-    """Get a required Fortran constant, raising if unavailable."""
-    if name not in _FC:
-        raise RuntimeError(f"Fortran constant '{name}' not found in m_constants.fpp. Toolchain is out of sync with Fortran source.")
-    return _FC[name]
+def _fc(name: str, default: int) -> int:
+    """Get a Fortran constant, using the inline default when m_constants.fpp is unavailable."""
+    if _FC:
+        if name not in _FC:
+            raise RuntimeError(f"Fortran constant '{name}' not found in m_constants.fpp. Toolchain is out of sync with Fortran source.")
+        return _FC[name]
+    return default
 
 
-NF = _fc("num_fluids_max")  # fluid_pp
-NPR = _fc("num_probes_max")  # probe, acoustic, integral
-NB = _fc("num_bc_patches_max")  # patch_bc
-NUM_PATCHES_MAX = _fc("num_patches_max")  # patch_icpp, patch_ib (Fortran array bound)
+NF = _fc("num_fluids_max", 10)  # fluid_pp
+NPR = _fc("num_probes_max", 10)  # probe, acoustic, integral
+NB = _fc("num_bc_patches_max", 10)  # patch_bc
+NUM_PATCHES_MAX = _fc("num_patches_max", 10)  # patch_icpp (Fortran array bound)
+NIB = _fc("num_ib_patches_max", 50000)  # patch_ib (Fortran array bound)
 # Enumeration limits for families not yet converted to IndexedFamily.
 # These are smaller than the Fortran array bounds to keep the registry compact.
 # The CONSTRAINTS dict below uses the Fortran constants for validation.
@@ -116,6 +120,8 @@ _ATTR_DESCS = {
     "grcbc_in": "Enable GRCBC inlet",
     "grcbc_out": "Enable GRCBC outlet",
     "grcbc_vel_out": "Enable GRCBC velocity outlet",
+    "isothermal_in": "Enable isothermal wall at the domain entrance (minimum coordinate)",
+    "isothermal_out": "Enable isothermal wall at the domain exit (maximum coordinate)",
     # Acoustic
     "loc": "Location",
     "mag": "Magnitude",
@@ -223,6 +229,10 @@ _SIMPLE_DESCS = {
     "hyperelasticity": "Enable hyperelastic model",
     "relativity": "Enable special relativity",
     "ib": "Enable immersed boundaries",
+    "collision_model": "Collision model for immersed boundaries (0=none, 1=soft sphere)",
+    "coefficient_of_restitution": "Coefficient of restitution for IB collisions",
+    "collision_time": "Characteristic collision time for IB collisions",
+    "ib_coefficient_of_friction": "Coefficient of friction for IB collisions",
     "acoustic_source": "Enable acoustic sources",
     # Output
     "parallel_io": "Enable parallel I/O",
@@ -249,6 +259,7 @@ _SIMPLE_DESCS = {
     "recon_type": "Reconstruction type",
     "muscl_order": "MUSCL reconstruction order",
     "muscl_lim": "MUSCL limiter type",
+    "muscl_eps": "MUSCL limiter slope-product threshold",
     "low_Mach": "Low Mach number correction",
     "bubble_model": "Bubble dynamics model",
     "Ca": "Cavitation number",
@@ -397,6 +408,8 @@ HINTS = {
         "ve1": "Boundary velocity component 1 at domain end",
         "ve2": "Boundary velocity component 2 at domain end",
         "ve3": "Boundary velocity component 3 at domain end",
+        "Twall_in": "Temperature of the entrance-side isothermal wall.",
+        "Twall_out": "Temperature of the exit-side isothermal wall.",
     },
     "patch_bc": {
         "geometry": "Patch shape: 1=line, 2=circle, 3=rectangle",
@@ -599,8 +612,12 @@ CONSTRAINTS = {
         "value_labels": {1: "1st order", 2: "2nd order"},
     },
     "muscl_lim": {
-        "choices": [1, 2, 3, 4, 5],
-        "value_labels": {1: "minmod", 2: "MC", 3: "Van Albada", 4: "Van Leer", 5: "SUPERBEE"},
+        "choices": [0, 1, 2, 3, 4, 5],
+        "value_labels": {0: "unlimited", 1: "minmod", 2: "MC", 3: "Van Albada", 4: "Van Leer", 5: "SUPERBEE"},
+    },
+    "int_comp": {
+        "choices": [0, 1, 2],
+        "value_labels": {0: "off", 1: "THINC", 2: "MTHINC"},
     },
     # Time stepping
     "time_stepper": {
@@ -609,8 +626,8 @@ CONSTRAINTS = {
     },
     # Riemann solver
     "riemann_solver": {
-        "choices": [1, 2, 3, 4, 5],
-        "value_labels": {1: "HLL", 2: "HLLC", 3: "Exact", 4: "HLLD", 5: "Lax-Friedrichs"},
+        "choices": [1, 2, 4, 5],
+        "value_labels": {1: "HLL", 2: "HLLC", 4: "HLLD", 5: "Lax-Friedrichs"},
     },
     "wave_speeds": {
         "choices": [1, 2],
@@ -648,6 +665,8 @@ CONSTRAINTS = {
     "cfl_target": {"min": 0},
     # WENO
     "weno_eps": {"min": 0},
+    # MUSCL
+    "muscl_eps": {"min": 0},
     # Physics (must be non-negative)
     "R0ref": {"min": 0},
     "sigma": {"min": 0},
@@ -706,6 +725,11 @@ DEPENDENCIES = {
     "ib": {
         "when_true": {
             "requires": ["num_ibs"],
+        }
+    },
+    "collision_model": {
+        "when_set": {
+            "requires": ["ib", "coefficient_of_restitution", "collision_time"],
         }
     },
     "acoustic_source": {
@@ -852,6 +876,7 @@ def _load():
     _r("recon_type", INT)
     _r("muscl_order", INT)
     _r("muscl_lim", INT)
+    _r("muscl_eps", REAL)
     _r("weno_eps", REAL, {"weno"}, math=r"\f$\varepsilon\f$")
     _r("teno_CT", REAL, {"weno"}, math=r"\f$C_T\f$")
     _r("wenoz_q", REAL, {"weno"})
@@ -906,6 +931,10 @@ def _load():
     # Immersed boundary
     _r("num_ibs", INT, {"ib"})
     _r("ib", LOG, {"ib"})
+    _r("collision_model", INT, {"ib"})
+    _r("coefficient_of_restitution", REAL, {"ib"})
+    _r("collision_time", REAL, {"ib"})
+    _r("ib_coefficient_of_friction", REAL, {"ib"})
 
     # Probes
     for n in ["num_probes", "num_integrals"]:
@@ -1042,11 +1071,11 @@ def _load():
         "mixture_err",
         "rdma_mpi",
         "igr_pres_lim",
-        "int_comp",
         "nv_uvm_out_of_core",
         "nv_uvm_pref_gpu",
     ]:
         _r(n, LOG)
+    _r("int_comp", INT)
     _r("case_dir", STR)
 
     # Body force
@@ -1165,7 +1194,9 @@ def _load():
         _r(f"particle_pp%{a}", REAL, {"particles"})
 
     # patch_ib (immersed boundaries) — registered as indexed family for O(1) lookup.
-    # max_index is sourced from Fortran's num_patches_max in m_constants.fpp.
+    # max_index is None so the parameter registry stays compact (no enumeration).
+    # The Fortran-side upper bound (num_ib_patches_max in m_constants.fpp) is parsed
+    # and enforced by the case_validator, not by max_index here.
     _ib_tags = {"ib"}
     _ib_attrs: Dict[str, tuple] = {}
     for a in ["geometry", "moving_ibm"]:
@@ -1190,7 +1221,7 @@ def _load():
             base_name="patch_ib",
             attrs=_ib_attrs,
             tags=_ib_tags,
-            max_index=NUM_PATCHES_MAX,
+            max_index=NIB,
         )
     )
 
@@ -1248,6 +1279,11 @@ def _load():
             _r(f"{px}vel_in({j})", REAL, {"bc"})
             _r(f"{px}vel_out({j})", REAL, {"bc"})
 
+        for a in ["Twall_in", "Twall_out"]:
+            _r(f"{px}{a}", REAL, {"bc"})
+        for a in ["isothermal_in", "isothermal_out"]:
+            _r(f"{px}{a}", LOG, {"bc"})
+
     # patch_bc (10 BC patches)
     for i in range(1, NB + 1):
         px = f"patch_bc({i})%"
@@ -1286,11 +1322,11 @@ def _load():
         _r(f"lag_params%{a}", INT, {"particles"})
 
     for a in ["collision_force", "qs_fluct_force", "subcycle_collisions"]:
-        _r(f"lag_params%{a}", LOG, {'particles'})
+        _r(f"lag_params%{a}", LOG, {"particles"})
 
     for f in range(1, NF + 1):
         for a in ["mu_ref", "suth"]:
-             _r(f"lag_params%{a}({f})", REAL, {"particles"})
+            _r(f"lag_params%{a}({f})", REAL, {"particles"})
 
     # chem_params
     for a in ["diffusion", "reactions"]:

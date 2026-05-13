@@ -69,8 +69,7 @@ contains
                    & gauss_sigma_dist(1:num_source), gauss_sigma_time(1:num_source), foc_length(1:num_source), &
                    & aperture(1:num_source), npulse(1:num_source), pulse(1:num_source), dir(1:num_source), delay(1:num_source), &
                    & element_polygon_ratio(1:num_source), rotate_angle(1:num_source), element_spacing_angle(1:num_source), &
-                   & num_elements(1:num_source), element_on(1:num_source), bb_num_freq(1:num_source), bb_bandwidth(1:num_source), &
-                                  & bb_lowest_freq(1:num_source))
+                   & num_elements(1:num_source), element_on(1:num_source), bb_num_freq(1:num_source), bb_bandwidth(1:num_source), bb_lowest_freq(1:num_source))
 
         do i = 1, num_source
             do j = 1, 3
@@ -225,7 +224,7 @@ contains
                     $:GPU_LOOP(parallelism='[seq]')
                     do q = 1, num_fluids
                         myalpha_rho(q) = q_cons_vf(q)%sf(j, k, l)
-                        myalpha(q) = q_cons_vf(advxb + q - 1)%sf(j, k, l)
+                        myalpha(q) = q_cons_vf(eqn_idx%adv%beg + q - 1)%sf(j, k, l)
                     end do
 
                     if (bubbles_euler) then
@@ -253,7 +252,7 @@ contains
                     end if
 
                     small_gamma = 1._wp/small_gamma + 1._wp
-                    c = sqrt(small_gamma*(q_prim_vf(E_idx)%sf(j, k, l) + ((small_gamma - 1._wp)/small_gamma)*B_tait)/myRho)
+                    c = sqrt(small_gamma*(q_prim_vf(eqn_idx%E)%sf(j, k, l) + ((small_gamma - 1._wp)/small_gamma)*B_tait)/myRho)
 
                     ! Wavelength to frequency conversion
                     if (pulse(ai) == 1 .or. pulse(ai) == 3) frequency_local = f_frequency_local(freq_conv_flag, ai, c)
@@ -318,14 +317,14 @@ contains
             do k = 0, n
                 do j = 0, m
                     $:GPU_LOOP(parallelism='[seq]')
-                    do q = contxb, contxe
+                    do q = eqn_idx%cont%beg, eqn_idx%cont%end
                         rhs_vf(q)%sf(j, k, l) = rhs_vf(q)%sf(j, k, l) + mass_src(j, k, l)
                     end do
                     $:GPU_LOOP(parallelism='[seq]')
-                    do q = momxb, momxe
-                        rhs_vf(q)%sf(j, k, l) = rhs_vf(q)%sf(j, k, l) + mom_src(q - contxe, j, k, l)
+                    do q = eqn_idx%mom%beg, eqn_idx%mom%end
+                        rhs_vf(q)%sf(j, k, l) = rhs_vf(q)%sf(j, k, l) + mom_src(q - eqn_idx%cont%end, j, k, l)
                     end do
-                    rhs_vf(E_idx)%sf(j, k, l) = rhs_vf(E_idx)%sf(j, k, l) + e_src(j, k, l)
+                    rhs_vf(eqn_idx%E)%sf(j, k, l) = rhs_vf(eqn_idx%E)%sf(j, k, l) + e_src(j, k, l)
                 end do
             end do
         end do
@@ -465,14 +464,16 @@ contains
                 call s_mpi_abort('Fatal Error: Inconsistent allocation of source_spatials')
             end if
 
-            $:GPU_UPDATE(device='[source_spatials(ai)%coord]')
-            $:GPU_UPDATE(device='[source_spatials(ai)%val]')
-            if (support(ai) >= 5) then
-                if (dim == 2) then
-                    $:GPU_UPDATE(device='[source_spatials(ai)%angle]')
-                end if
-                if (dim == 3) then
-                    $:GPU_UPDATE(device='[source_spatials(ai)%xyz_to_r_ratios]')
+            if (count > 0) then
+                $:GPU_UPDATE(device='[source_spatials(ai)%coord]')
+                $:GPU_UPDATE(device='[source_spatials(ai)%val]')
+                if (support(ai) >= 5) then
+                    if (dim == 2) then
+                        $:GPU_UPDATE(device='[source_spatials(ai)%angle]')
+                    end if
+                    if (dim == 3) then
+                        $:GPU_UPDATE(device='[source_spatials(ai)%xyz_to_r_ratios]')
+                    end if
                 end if
             end if
         end do
@@ -547,8 +548,8 @@ contains
         else if (support(ai) == 2 .or. support(ai) == 3) then  ! 2D or 3D
             ! If we let unit vector e = (cos(dir), sin(dir)),
             dist = r(1)*cos(dir(ai)) + r(2)*sin(dir(ai))  ! dot(r,e)
-            if ((r(1) - dist*cos(dir(ai)))**2._wp + (r(2) - dist*sin(dir(ai)))**2._wp < 0.25_wp*length(ai)**2._wp) &
-                & then  ! |r - dist*e| < length/2
+            ! |r - dist*e| < length/2
+            if ((r(1) - dist*cos(dir(ai)))**2._wp + (r(2) - dist*sin(dir(ai)))**2._wp < 0.25_wp*length(ai)**2._wp) then
                 if (support(ai) /= 3 .or. abs(r(3)) < 0.25_wp*height(ai)) then  ! additional height constraint for 3D
                     source = 1._wp/(sqrt(2._wp*pi)*sig/2._wp)*exp(-0.5_wp*(dist/(sig/2._wp))**2._wp)
                 end if

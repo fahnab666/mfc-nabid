@@ -61,7 +61,9 @@ contains
             & 'perturb_flow_mag', 'pref', 'rhoref', 'poly_sigma', 'R0ref',     &
             & 'Web', 'Ca', 'Re_inv', 'sigR', 'sigV', 'rhoRV', 'palpha_eps',    &
             & 'ptgalpha_eps', 'sigma', 'pi_fac', 'mixlayer_vel_coef', 'Bx0',   &
-            & 'mixlayer_perturb_k0']
+            & 'mixlayer_perturb_k0', 'bc_x%Twall_in', 'bc_x%Twall_out',        &
+            & 'bc_y%Twall_in', 'bc_y%Twall_out', 'bc_z%Twall_in',              &
+            & 'bc_z%Twall_out']
             call MPI_BCAST(${VAR}$, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)
         #:endfor
 
@@ -116,8 +118,9 @@ contains
             if (chemistry) then
                 call MPI_BCAST(patch_icpp(i)%Y, size(patch_icpp(i)%Y), mpi_p, 0, MPI_COMM_WORLD, ierr)
             end if
-            ! Broadcast IB variables: patch_ib is indexed 1:num_patches_max, not 1:num_bc_patches_max, so these must live in the
-            ! num_patches_max loop.
+        end do
+
+        do i = 1, num_ibs
             #:for VAR in ['vel', 'angular_vel', 'angles']
                 call MPI_BCAST(patch_ib(i)%${VAR}$, size(patch_ib(i)%${VAR}$), mpi_p, 0, MPI_COMM_WORLD, ierr)
             #:endfor
