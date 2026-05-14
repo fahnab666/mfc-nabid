@@ -118,6 +118,14 @@ module m_rhs
     integer :: iglob
     $:GPU_DECLARE(create='[iglob]')
 
+    ! Edge states used for particle solver
+    real(wp), allocatable, dimension(:,:,:,:) :: qL_rsx_save, qR_rsx_save
+    real(wp), allocatable, dimension(:,:,:,:) :: qL_rsy_save, qR_rsy_save
+    real(wp), allocatable, dimension(:,:,:,:) :: qL_rsz_save, qR_rsz_save
+    $:GPU_DECLARE(create='[qL_rsx_save, qR_rsx_save]')
+    $:GPU_DECLARE(create='[qL_rsy_save, qR_rsy_save]')
+    $:GPU_DECLARE(create='[qL_rsz_save, qR_rsz_save]')
+
 contains
 
     !> The computation of parameters, the allocation of memory, the association of pointers and/or the execution of any other
@@ -296,6 +304,21 @@ contains
                        & 1:sys_size))
             @:ALLOCATE(qR_rsx_vf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, idwbuff(3)%beg:idwbuff(3)%end, &
                        & 1:sys_size))
+
+            if (particles_lagrange) then
+                @:ALLOCATE(qL_rsx_save(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end, 1:sys_size))
+                @:ALLOCATE(qR_rsx_save(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end, 1:sys_size))
+                @:ALLOCATE(qL_rsy_save(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end, 1:sys_size))
+                @:ALLOCATE(qR_rsy_save(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end, 1:sys_size))
+                @:ALLOCATE(qL_rsz_save(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end, 1:sys_size))
+                @:ALLOCATE(qR_rsz_save(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end, 1:sys_size))
+            end if
 
             if (.not. viscous) then
                 do i = 1, num_dims
@@ -690,6 +713,49 @@ contains
                     end if
                 end if
 
+                if (particles_lagrange) then
+                    if (id == 1) then
+                        $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
+                        do i = 1, sys_size
+                            do l = idwbuff(3)%beg, idwbuff(3)%end
+                                do k = idwbuff(2)%beg, idwbuff(2)%end
+                                    do j = idwbuff(1)%beg, idwbuff(1)%end
+                                        qL_rsx_save(j, k, l, i) = qL_rsx_vf(j, k, l, i)
+                                        qR_rsx_save(j, k, l, i) = qR_rsx_vf(j, k, l, i)
+                                    end do
+                                end do
+                            end do
+                        end do
+                        $:END_GPU_PARALLEL_LOOP()
+                    else if (id == 2) then
+                        $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
+                        do i = 1, sys_size
+                            do l = idwbuff(3)%beg, idwbuff(3)%end
+                                do k = idwbuff(2)%beg, idwbuff(2)%end
+                                    do j = idwbuff(1)%beg, idwbuff(1)%end
+                                        qL_rsy_save(j, k, l, i) = qL_rsx_vf(j, k, l, i)
+                                        qR_rsy_save(j, k, l, i) = qR_rsx_vf(j, k, l, i)
+                                    end do
+                                end do
+                            end do
+                        end do
+                        $:END_GPU_PARALLEL_LOOP()
+                    else if (id == 3) then
+                        $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
+                        do i = 1, sys_size
+                            do l = idwbuff(3)%beg, idwbuff(3)%end
+                                do k = idwbuff(2)%beg, idwbuff(2)%end
+                                    do j = idwbuff(1)%beg, idwbuff(1)%end
+                                        qL_rsz_save(j, k, l, i) = qL_rsx_vf(j, k, l, i)
+                                        qR_rsz_save(j, k, l, i) = qR_rsx_vf(j, k, l, i)
+                                    end do
+                                end do
+                            end do
+                        end do
+                        $:END_GPU_PARALLEL_LOOP()
+                    end if
+                end if
+
                 ! Reconstruct viscous derivatives for viscosity
                 if (weno_Re_flux) then
                     iv%beg = eqn_idx%mom%beg; iv%end = eqn_idx%mom%end
@@ -829,7 +895,7 @@ contains
 
             if (lag_params%solver_approach == 2) then
                 call nvtxStartRange("RHS-EL-BUBBLES-SRC")
-                call s_compute_bubbles_EL_source(q_cons_qp%vf(1:sys_size), q_prim_qp%vf(1:sys_size), rhs_vf)
+                call s_compute_bubbles_EL_source(q_cons_qp%vf(1:sys_size), q_prim_qp%vf(1:sys_size), rhs_vf, bc_type)
                 call nvtxEndRange
             end if
         end if
@@ -837,8 +903,8 @@ contains
         if (particles_lagrange) then
             ! Compute particle dynamics, forces, dvdt
             call nvtxStartRange("RHS-EL-PARTICLES-DYN")
-            call s_compute_particle_EL_dynamics(q_cons_qp%vf(1:sys_size), q_prim_qp%vf(1:sys_size), bc_type, stage, qL_rsx_vf, &
-                                                & qL_rsy_vf, qL_rsz_vf, qR_rsx_vf, qR_rsy_vf, qR_rsz_vf, rhs_vf)
+            call s_compute_particle_EL_dynamics(q_cons_qp%vf(1:sys_size), q_prim_qp%vf(1:sys_size), bc_type, stage, qL_rsx_save, &
+                                                & qL_rsy_save, qL_rsz_save, qR_rsx_save, qR_rsy_save, qR_rsz_save, rhs_vf)
             call nvtxEndRange
 
             ! RHS additions for sub-grid particles_lagrange
@@ -1866,6 +1932,12 @@ contains
             end do
 
             @:DEALLOCATE(flux_n, flux_src_n, flux_gsrc_n)
+        end if
+
+        if (particles_lagrange) then
+            @:DEALLOCATE(qL_rsx_save, qR_rsx_save)
+            @:DEALLOCATE(qL_rsy_save, qR_rsy_save)
+            @:DEALLOCATE(qL_rsz_save, qR_rsz_save)
         end if
 
     end subroutine s_finalize_rhs_module

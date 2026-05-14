@@ -201,7 +201,9 @@ contains
             q_particles_idx = 7  ! For tracking volume fraction, alpha_p u_p (x(2),y(3),z(4)), alpha_p u_p^2 (x(5),y(6),z(7))
         else if (lag_params%solver_approach == 2) then
             ! Two-way coupling
-            q_particles_idx = 11  ! For tracking volume fraction(1), alpha_p u_p (x(2),y(3),z(4)), alpha_p u_p^2 (x(5),y(6),z(7)), x-mom(8), y-mom(9), z-mom(10), and energy(11) sources
+            ! For tracking volume fraction(1), alpha_p u_p (x(2),y(3),z(4)), alpha_p u_p^2 (x(5),y(6),z(7)), x-mom(8), y-mom(9),
+            ! z-mom(10), and energy(11) sources
+            q_particles_idx = 11
         else
             call s_mpi_abort('Please check the lag_params%solver_approach input')
         end if
@@ -798,19 +800,19 @@ contains
         if (lag_params%pressure_force .or. lag_params%added_mass_model > 0) then
             do l = 1, num_dims
                 if (l == 1) then
-                    call s_gradient_field(vL_x, vR_x, field_vars(dPx_id)%sf, l, E_idx)
+                    call s_gradient_field(vL_x, vR_x, field_vars(dPx_id)%sf, l, eqn_idx%E)
                     do dir = 1, num_dims
-                        call s_gradient_field(vL_x, vR_x, field_vars(duidxj_id(dir, l))%sf, l, momxb + dir - 1)
+                        call s_gradient_field(vL_x, vR_x, field_vars(duidxj_id(dir, l))%sf, l, eqn_idx%mom%beg + dir - 1)
                     end do
                 else if (l == 2) then
-                    call s_gradient_field(vL_y, vR_y, field_vars(dPy_id)%sf, l, E_idx)
+                    call s_gradient_field(vL_y, vR_y, field_vars(dPy_id)%sf, l, eqn_idx%E)
                     do dir = 1, num_dims
-                        call s_gradient_field(vL_y, vR_y, field_vars(duidxj_id(dir, l))%sf, l, momxb + dir - 1)
+                        call s_gradient_field(vL_y, vR_y, field_vars(duidxj_id(dir, l))%sf, l, eqn_idx%mom%beg + dir - 1)
                     end do
                 else if (l == 3) then
-                    call s_gradient_field(vL_z, vR_z, field_vars(dPz_id)%sf, l, E_idx)
+                    call s_gradient_field(vL_z, vR_z, field_vars(dPz_id)%sf, l, eqn_idx%E)
                     do dir = 1, num_dims
-                        call s_gradient_field(vL_z, vR_z, field_vars(duidxj_id(dir, l))%sf, l, momxb + dir - 1)
+                        call s_gradient_field(vL_z, vR_z, field_vars(duidxj_id(dir, l))%sf, l, eqn_idx%mom%beg + dir - 1)
                     end do
                 end if
             end do
@@ -949,7 +951,7 @@ contains
 
         if (chemistry) then
             do d = 1, num_species
-                Ys(d) = q_prim_vf(chemxb + d - 1)%sf(i, j, k)
+                Ys(d) = q_prim_vf(eqn_idx%species%beg + d - 1)%sf(i, j, k)
             end do
             call get_mixture_molecular_weight(Ys, mix_mol_weight)
             fluid_temp = fluid_pres*mix_mol_weight/(gas_constant*fluid_rho)
@@ -1505,7 +1507,7 @@ contains
                         udot_gradalpha = 0._wp
                         do l = 1, num_dims
                             dalphapdt = dalphapdt + field_vars(dalphap_upx_id + l - 1)%sf(i, j, k)
-                            udot_gradalpha = udot_gradalpha + q_prim_vf(momxb + l - 1)%sf(i, j, &
+                            udot_gradalpha = udot_gradalpha + q_prim_vf(eqn_idx%mom%beg + l - 1)%sf(i, j, &
                                 & k)*field_vars(dalphafx_id + l - 1)%sf(i, j, k)
                         end do
                         dalphapdt = -dalphapdt
@@ -1513,42 +1515,43 @@ contains
 
                         !> Step 1: Source terms for volume fraction corrections
                         ! cons_var/alpha_f * (dalpha_p/dt - u dot grad(alpha_f))
-                        do l = 1, E_idx
+                        do l = 1, eqn_idx%E
                             rhs_vf(l)%sf(i, j, k) = rhs_vf(l)%sf(i, j, k) + (q_cons_vf(l)%sf(i, j, &
                                    & k)/alpha_f)*(dalphapdt - udot_gradalpha)
                         end do
 
                         ! momentum term -1/alpha_f * (p*grad(alpha_f) - Tau^v dot grad(alpha_f)) !Viscous term not implemented
                         do l = 1, num_dims
-                            rhs_vf(momxb + l - 1)%sf(i, j, k) = rhs_vf(momxb + l - 1)%sf(i, j, &
-                                   & k) - ((1._wp/alpha_f)*(q_prim_vf(E_idx)%sf(i, j, k)*field_vars(dalphafx_id + l - 1)%sf(i, j, &
-                                   & k)))
+                            rhs_vf(eqn_idx%mom%beg + l - 1)%sf(i, j, k) = rhs_vf(eqn_idx%mom%beg + l - 1)%sf(i, j, &
+                                   & k) - ((1._wp/alpha_f)*(q_prim_vf(eqn_idx%E)%sf(i, j, &
+                                   & k)*field_vars(dalphafx_id + l - 1)%sf(i, j, k)))
                         end do
 
                         ! energy term -1/alpha_f * (p*u dot grad(alpha_f) - (Tau^v dot u) dot grad(alpha_f)) !Viscous term not
                         ! implemented
-                        rhs_vf(E_idx)%sf(i, j, k) = rhs_vf(E_idx)%sf(i, j, k) - ((1._wp/alpha_f)*(q_prim_vf(E_idx)%sf(i, j, &
-                               & k)*udot_gradalpha))
+                        rhs_vf(eqn_idx%E)%sf(i, j, k) = rhs_vf(eqn_idx%E)%sf(i, j, &
+                               & k) - ((1._wp/alpha_f)*(q_prim_vf(eqn_idx%E)%sf(i, j, k)*udot_gradalpha))
 
                         !> Step 2: Add the drag/pressure/added mass forces to the fluid
-                        rhs_vf(momxb)%sf(i, j, k) = rhs_vf(momxb)%sf(i, j, k) + q_particles(Smx_id)%sf(i, j, k)*(1._wp/alpha_f)
-                        rhs_vf(momxb + 1)%sf(i, j, k) = rhs_vf(momxb + 1)%sf(i, j, k) + q_particles(Smy_id)%sf(i, j, &
+                        rhs_vf(eqn_idx%mom%beg)%sf(i, j, k) = rhs_vf(eqn_idx%mom%beg)%sf(i, j, k) + q_particles(Smx_id)%sf(i, j, &
                                & k)*(1._wp/alpha_f)
+                        rhs_vf(eqn_idx%mom%beg + 1)%sf(i, j, k) = rhs_vf(eqn_idx%mom%beg + 1)%sf(i, j, &
+                               & k) + q_particles(Smy_id)%sf(i, j, k)*(1._wp/alpha_f)
 
                         ! Energy source
-                        rhs_vf(E_idx)%sf(i, j, k) = rhs_vf(E_idx)%sf(i, j, k) + (q_particles(Smx_id)%sf(i, j, &
-                               & k)*q_prim_vf(momxb)%sf(i, j, k) + q_particles(Smy_id)%sf(i, j, k)*q_prim_vf(momxb + 1)%sf(i, j, &
-                               & k) + q_particles(SE_id)%sf(i, j, k))*(1._wp/alpha_f)
+                        rhs_vf(eqn_idx%E)%sf(i, j, k) = rhs_vf(eqn_idx%E)%sf(i, j, k) + (q_particles(Smx_id)%sf(i, j, &
+                               & k)*q_prim_vf(eqn_idx%mom%beg)%sf(i, j, k) + q_particles(Smy_id)%sf(i, j, &
+                               & k)*q_prim_vf(eqn_idx%mom%beg + 1)%sf(i, j, k) + q_particles(SE_id)%sf(i, j, k))*(1._wp/alpha_f)
 
                         if (num_dims == 3) then
-                            rhs_vf(momxb + 2)%sf(i, j, k) = rhs_vf(momxb + 2)%sf(i, j, k) + q_particles(Smz_id)%sf(i, j, &
-                                   & k)*(1._wp/alpha_f)
+                            rhs_vf(eqn_idx%mom%beg + 2)%sf(i, j, k) = rhs_vf(eqn_idx%mom%beg + 2)%sf(i, j, &
+                                   & k) + q_particles(Smz_id)%sf(i, j, k)*(1._wp/alpha_f)
                             ! Energy source
-                            rhs_vf(E_idx)%sf(i, j, k) = rhs_vf(E_idx)%sf(i, j, k) + (q_particles(Smz_id)%sf(i, j, &
-                                   & k)*q_prim_vf(momxb + 2)%sf(i, j, k))*(1._wp/alpha_f)
+                            rhs_vf(eqn_idx%E)%sf(i, j, k) = rhs_vf(eqn_idx%E)%sf(i, j, k) + (q_particles(Smz_id)%sf(i, j, &
+                                   & k)*q_prim_vf(eqn_idx%mom%beg + 2)%sf(i, j, k))*(1._wp/alpha_f)
                         end if
 
-                        do l = 1, E_idx
+                        do l = 1, eqn_idx%E
                             rhs_old(l)%sf(i, j, k) = rhs_vf(l)%sf(i, j, k)
                         end do
                     end if
@@ -1749,8 +1752,7 @@ contains
         call nvtxStartRange("LAG-BC-DEV2HOST")
         $:GPU_UPDATE(host='[p_owner_rank, particle_R0, Rmax_stats_part, Rmin_stats_part, particle_mass, particle_seed, f_p, &
                      & fqs_fluct, lag_part_id, particle_rad, particle_pos, particle_posPrev, particle_vel, particle_s, &
-                     & particle_draddt, particle_dposdt, particle_dveldt, keep_bubble, n_el_particles_loc, wrap_bubble_dir, &
-                         & wrap_bubble_loc]')
+                     & particle_draddt, particle_dposdt, particle_dveldt, keep_bubble, n_el_particles_loc, wrap_bubble_dir, wrap_bubble_loc]')
         call nvtxEndRange
 
         ! Handle MPI transfer of particles going to another processor's local domain
@@ -1867,8 +1869,7 @@ contains
             call nvtxStartRange("LAG-BC-DEV2HOST")
             $:GPU_UPDATE(host='[p_owner_rank, particle_R0, Rmax_stats_part, Rmin_stats_part, particle_mass, particle_seed, f_p, &
                          & fqs_fluct, lag_part_id, particle_rad, particle_pos, particle_posPrev, particle_vel, particle_s, &
-                         & particle_draddt, particle_dposdt, particle_dveldt, keep_bubble, n_el_particles_loc, wrap_bubble_dir, &
-                             & wrap_bubble_loc]')
+                         & particle_draddt, particle_dposdt, particle_dveldt, keep_bubble, n_el_particles_loc, wrap_bubble_dir, wrap_bubble_loc]')
             call nvtxEndRange
 
             newBubs = 0

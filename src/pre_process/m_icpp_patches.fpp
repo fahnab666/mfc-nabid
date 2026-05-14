@@ -268,10 +268,7 @@ contains
                 if ((logic_grid(i, j, 0) == 1)) then
                     call s_assign_patch_primitive_variables(patch_id, i, j, 0, eta, q_prim_vf, patch_id_fp)
 
-                    @:analytical()
-                    if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                        @:Hardcoded2D()
-                    end if
+                    ! @:analytical() if (patch_icpp(patch_id)%hcid /= dflt_int) then     @:Hardcoded2D() end if
 
                     ! Updating the patch identities bookkeeping variable
                     if (1._wp - eta < sgm_eps) patch_id_fp(i, j, 0) = patch_id
@@ -330,10 +327,7 @@ contains
                     & 0) == smooth_patch_id) then
                     call s_assign_patch_primitive_variables(patch_id, i, j, 0, eta, q_prim_vf, patch_id_fp)
 
-                    @:analytical()
-                    if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                        @:Hardcoded2D()
-                    end if
+                    ! @:analytical() if (patch_icpp(patch_id)%hcid /= dflt_int) then     @:Hardcoded2D() end if
                 end if
             end do
         end do
@@ -387,7 +381,7 @@ contains
 
                     @:analytical()
                     if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                        @:Hardcoded2D()
+                        ! @:Hardcoded2D()
                     end if
 
                     ! Updating the patch identities bookkeeping variable
@@ -453,7 +447,7 @@ contains
 
                         @:analytical()
                         if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                            @:Hardcoded3D()
+                            ! @:Hardcoded3D()
                         end if
 
                         ! Updating the patch identities bookkeeping variable
@@ -518,7 +512,7 @@ contains
 
                     @:analytical()
                     if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                        @:Hardcoded2D()
+                        ! @:Hardcoded2D()
                     end if
 
                     ! Updating the patch identities bookkeeping variable
@@ -593,7 +587,7 @@ contains
 
                         @:analytical()
                         if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                            @:Hardcoded3D()
+                            ! @:Hardcoded3D()
                         end if
 
                         ! Updating the patch identities bookkeeping variable
@@ -661,7 +655,7 @@ contains
                         @:analytical()
 
                         if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                            @:Hardcoded2D()
+                            ! @:Hardcoded2D()
                         end if
 
                         if ((q_prim_vf(1)%sf(i, j, 0) < 1.e-10) .and. (model_eqns == 4)) then
@@ -733,7 +727,7 @@ contains
 
                     @:analytical()
                     if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                        @:Hardcoded3D()
+                        ! @:Hardcoded3D()
                     end if
 
                     ! Updating the patch identities bookkeeping variable
@@ -800,7 +794,7 @@ contains
 
                     @:analytical()
                     if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                        @:Hardcoded2D()
+                        ! @:Hardcoded2D()
                     end if
 
                     ! Updating the patch identities bookkeeping variable
@@ -1061,7 +1055,7 @@ contains
 
                         @:analytical()
                         if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                            @:Hardcoded3D()
+                            ! @:Hardcoded3D()
                         end if
                     end if
                 end do
@@ -1132,7 +1126,7 @@ contains
 
                             @:analytical()
                             if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                                @:Hardcoded3D()
+                                ! @:Hardcoded3D()
                             end if
 
                             ! Updating the patch identities bookkeeping variable
@@ -1232,7 +1226,7 @@ contains
 
                         @:analytical()
                         if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                            @:Hardcoded3D()
+                            ! @:Hardcoded3D()
                         end if
 
                         ! Updating the patch identities bookkeeping variable
@@ -1308,7 +1302,7 @@ contains
 
                         @:analytical()
                         if (patch_icpp(patch_id)%hcid /= dflt_int) then
-                            @:Hardcoded3D()
+                            ! @:Hardcoded3D()
                         end if
 
                         ! Updating the patch identities bookkeeping variable

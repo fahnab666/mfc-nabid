@@ -237,11 +237,14 @@ module m_global_parameters
     $:GPU_DECLARE(create='[bc_x, bc_y, bc_z]')
     $:GPU_DECLARE(create='[ib_bc_x, ib_bc_y, ib_bc_z]')
 #endif
-
-    logical :: parallel_io       !< Format of the data files
-    logical :: file_per_process  !< shared file or not when using parallel io
-    integer :: precision         !< Precision of output files
-    logical :: down_sample       !< down sample the output files
+    type(bounds_info) :: x_domain, y_domain, z_domain
+    $:GPU_DECLARE(create='[x_domain, y_domain, z_domain]')
+    real(wp) :: x_a, y_a, z_a
+    real(wp) :: x_b, y_b, z_b
+    logical  :: parallel_io       !< Format of the data files
+    logical  :: file_per_process  !< shared file or not when using parallel io
+    integer  :: precision         !< Precision of output files
+    logical  :: down_sample       !< down sample the output files
     $:GPU_DECLARE(create='[down_sample]')
 
     integer, allocatable, dimension(:)           :: proc_coords  !< Processor coordinates in MPI_CART_COMM
@@ -648,6 +651,10 @@ contains
         glb_bounds(1)%beg = dflt_real; glb_bounds(1)%end = dflt_real
         glb_bounds(2)%beg = dflt_real; glb_bounds(2)%end = dflt_real
         glb_bounds(3)%beg = dflt_real; glb_bounds(3)%end = dflt_real
+
+        x_domain%beg = dflt_real; x_domain%end = dflt_real
+        y_domain%beg = dflt_real; y_domain%end = dflt_real
+        z_domain%beg = dflt_real; z_domain%end = dflt_real
 
         ! Fluids physical parameters
         do i = 1, num_fluids_max

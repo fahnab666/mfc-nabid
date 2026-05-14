@@ -32,7 +32,13 @@ module m_data_output
     real(wp), allocatable, dimension(:,:,:)       :: vcfl_sf  !< VCFL stability criterion
     real(wp), allocatable, dimension(:,:,:)       :: Rc_sf    !< Rc stability criterion
     real(wp), public, allocatable, dimension(:,:) :: c_mass
-    $:GPU_DECLARE(create='[c_mass]')
+    $:GPU_DECLARE(create='[icfl_sf, vcfl_sf, Rc_sf, c_mass]')
+
+    real(wp) :: icfl_max_loc, icfl_max_glb  !< ICFL stability extrema on local and global grids
+    real(wp) :: vcfl_max_loc, vcfl_max_glb  !< VCFL stability extrema on local and global grids
+    real(wp) :: Rc_min_loc, Rc_min_glb      !< Rc stability extrema on local and global grids
+    $:GPU_DECLARE(create='[icfl_max_loc, icfl_max_glb, vcfl_max_loc, vcfl_max_glb]')
+    $:GPU_DECLARE(create='[Rc_min_loc, Rc_min_glb]')
 
     !> @name ICFL, VCFL, and Rc stability criteria extrema over all the time-steps
     !> @{
@@ -184,27 +190,19 @@ contains
             real(wp), dimension(num_fluids) :: alpha  !< Cell-avg. volume fraction
             real(wp), dimension(num_vels)   :: vel    !< Cell-avg. velocity
         #:endif
-        real(wp)               :: vel_sum                     !< Cell-avg. velocity sum
-        real(wp)               :: pres                        !< Cell-avg. pressure
-        real(wp)               :: gamma                       !< Cell-avg. sp. heat ratio
-        real(wp)               :: pi_inf                      !< Cell-avg. liquid stiffness function
-        real(wp)               :: qv                          !< Cell-avg. internal energy reference value
-        real(wp)               :: c                           !< Cell-avg. sound speed
-        real(wp)               :: H                           !< Cell-avg. enthalpy
-        real(wp), dimension(2) :: Re                          !< Cell-avg. Reynolds numbers
+        real(wp)               :: vel_sum  !< Cell-avg. velocity sum
+        real(wp)               :: pres     !< Cell-avg. pressure
+        real(wp)               :: gamma    !< Cell-avg. sp. heat ratio
+        real(wp)               :: pi_inf   !< Cell-avg. liquid stiffness function
+        real(wp)               :: qv       !< Cell-avg. internal energy reference value
+        real(wp)               :: c        !< Cell-avg. sound speed
+        real(wp)               :: H        !< Cell-avg. enthalpy
+        real(wp), dimension(2) :: Re       !< Cell-avg. Reynolds numbers
         integer                :: j, k, l
-        real(wp)               :: icfl_max_loc, icfl_max_glb  !< ICFL stability extrema on local and global grids
-        real(wp)               :: vcfl_max_loc, vcfl_max_glb  !< VCFL stability extrema on local and global grids
-        real(wp)               :: ccfl_max_loc, ccfl_max_glb  !< CCFL stability extrema on local and global grids
-        real(wp)               :: Rc_min_loc, Rc_min_glb      !< Rc stability extrema on local and global grids
-        real(wp)               :: icfl, vcfl, Rc
 
-        icfl_max_loc = 0._wp
-        vcfl_max_loc = 0._wp
-        Rc_min_loc = huge(1.0_wp)
         ! Computing Stability Criteria at Current Time-step
-        $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, vel, alpha, Re, rho, vel_sum, pres, gamma, pi_inf, c, H, qv, icfl, &
-                            & vcfl, Rc]', reduction='[[icfl_max_loc, vcfl_max_loc], [Rc_min_loc]]', reductionOp='[max, min]')
+
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, vel, alpha, Re, rho, vel_sum, pres, gamma, pi_inf, c, H, qv]')
         do l = 0, p
             do k = 0, n
                 do j = 0, m
@@ -213,19 +211,14 @@ contains
                     call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv)
 
                     if (viscous) then
-                        call s_compute_stability_from_dt(vel, c, rho, Re, j, k, l, icfl, vcfl, Rc)
+                        call s_compute_stability_from_dt(vel, c, rho, Re, j, k, l, icfl_sf, vcfl_sf, Rc_sf)
                     else
-                        call s_compute_stability_from_dt(vel, c, rho, Re, j, k, l, icfl)
+                        call s_compute_stability_from_dt(vel, c, rho, Re, j, k, l, icfl_sf)
                     end if
-
-                    icfl_max_loc = max(icfl_max_loc, icfl)
-                    vcfl_max_loc = max(vcfl_max_loc, merge(vcfl, 0.0_wp, viscous))
-                    Rc_min_loc = min(Rc_min_loc, merge(Rc, huge(1.0_wp), viscous))
                 end do
             end do
         end do
         $:END_GPU_PARALLEL_LOOP()
-        ! end: Computing Stability Criteria at Current Time-step
 
 #ifdef _CRAYFTN
         $:GPU_UPDATE(host='[icfl_sf]')
@@ -1725,13 +1718,16 @@ contains
 
         integer :: i, m_ds, n_ds, p_ds
 
-        ! Allocating/initializing ICFL, VCFL, CCFL and Rc stability criteria
-
         if (run_time_info) then
+            @:ALLOCATE(icfl_sf(0:m, 0:n, 0:p))
             icfl_max = 0._wp
+
             if (viscous) then
+                @:ALLOCATE(vcfl_sf(0:m, 0:n, 0:p))
+                @:ALLOCATE(Rc_sf  (0:m, 0:n, 0:p))
+
                 vcfl_max = 0._wp
-                Rc_min = 1.e12_wp
+                Rc_min = 1.e3_wp
             end if
         end if
 

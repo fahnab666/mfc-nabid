@@ -419,24 +419,24 @@ contains
 
         if (lag_params%interpolation_order > 1) then
             do dir = 1, num_dims
-                fluid_vel(dir) = f_interp_barycentric(pos, cell, q_prim_vf, momxb + dir - 1, wx, wy, wz)
+                fluid_vel(dir) = f_interp_barycentric(pos, cell, q_prim_vf, eqn_idx%mom%beg + dir - 1, wx, wy, wz)
             end do
 
             do l = 1, num_fluids
                 fluid_rho = fluid_rho + f_interp_barycentric(pos, cell, q_prim_vf, l, wx, wy, wz)
             end do
 
-            fluid_pres = f_interp_barycentric(pos, cell, q_prim_vf, E_idx, wx, wy, wz)
+            fluid_pres = f_interp_barycentric(pos, cell, q_prim_vf, eqn_idx%E, wx, wy, wz)
         else
             do dir = 1, num_dims
-                fluid_vel(dir) = q_prim_vf(momxb + dir - 1)%sf(cell(1), cell(2), cell(3))
+                fluid_vel(dir) = q_prim_vf(eqn_idx%mom%beg + dir - 1)%sf(cell(1), cell(2), cell(3))
             end do
 
             do l = 1, num_fluids
                 fluid_rho = fluid_rho + q_prim_vf(l)%sf(cell(1), cell(2), cell(3))
             end do
 
-            fluid_pres = q_prim_vf(E_idx)%sf(cell(1), cell(2), cell(3))
+            fluid_pres = q_prim_vf(eqn_idx%E)%sf(cell(1), cell(2), cell(3))
         end if
 
     end subroutine s_interp_fluid_properties
@@ -525,7 +525,8 @@ contains
                 end if
                 if (lag_params%added_mass_model > 0) then
                     grad_rho(dir) = f_interp_barycentric(pos, cell, fieldvars, drhox_id_loc + dir - 1, wx, wy, wz)
-                    rhoDuDt(dir) = (rhs_old(momxb + dir - 1)%sf(cell(1), cell(2), cell(3)) - fluid_vel(dir)*drhodt)/fluid_rho
+                    rhoDuDt(dir) = (rhs_old(eqn_idx%mom%beg + dir - 1)%sf(cell(1), cell(2), &
+                            & cell(3)) - fluid_vel(dir)*drhodt)/fluid_rho
                     do l = 1, num_dims
                         udot_gradu(dir) = udot_gradu(dir) + fluid_vel(l)*f_interp_barycentric(pos, cell, fieldvars, &
                                    & duidxj_id_loc(dir, l), wx, wy, wz)
@@ -551,7 +552,8 @@ contains
                 end if
                 if (lag_params%added_mass_model > 0) then
                     grad_rho(dir) = fieldvars(drhox_id_loc + dir - 1)%sf(cell(1), cell(2), cell(3))
-                    rhoDuDt(dir) = (rhs_old(momxb + dir - 1)%sf(cell(1), cell(2), cell(3)) - fluid_vel(dir)*drhodt)/fluid_rho
+                    rhoDuDt(dir) = (rhs_old(eqn_idx%mom%beg + dir - 1)%sf(cell(1), cell(2), &
+                            & cell(3)) - fluid_vel(dir)*drhodt)/fluid_rho
                     do l = 1, num_dims
                         udot_gradu(dir) = udot_gradu(dir) + fluid_vel(l)*fieldvars(duidxj_id_loc(dir, l))%sf(cell(1), cell(2), &
                                    & cell(3))
