@@ -828,7 +828,6 @@ contains
                 end do
                 $:END_GPU_PARALLEL_LOOP()
             end do
-            $:END_GPU_PARALLEL_LOOP()
         else
             $:GPU_PARALLEL_LOOP(private='[i, j, k, l]', collapse=4)
             do k = idwint(3)%beg, idwint(3)%end
