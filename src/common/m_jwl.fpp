@@ -556,6 +556,7 @@ contains
         $:GPU_UPDATE(device='[jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, jwl_E0s]')
         $:GPU_UPDATE(device='[jwl_air_e0s, jwl_air_rho0s, jwl_air_gammas, jwl_idx]')
         $:GPU_UPDATE(device='[jwl_cv_prod, jwl_cv_air]')
+        $:GPU_UPDATE(device='[jwl_mix_type]')
 
     end subroutine s_initialize_jwl_module
 
