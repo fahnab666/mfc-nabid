@@ -440,6 +440,7 @@ See @ref equations "Equations" for the mathematical models these parameters cont
 | `bc_[x,y,z]%%vb[1,2,3]`‡   | Real    | Velocity in the (x,1), (y, 2), (z,3) direction applied to `bc_[x,y,z]%%beg` |
 | `bc_[x,y,z]%%ve[1,2,3]`‡   | Real    | Velocity in the (x,1), (y, 2), (z,3) direction applied to `bc_[x,y,z]%%end` |
 | `model_eqns`               | Integer | Multicomponent model: [1] \f$\Gamma/\Pi_\infty\f$; [2] 5-equation; [3] 6-equation; [4] 4-equation |
+| `jwl_mix_type`             | Integer | JWL mixture closure: [0] isobaric; [1] Kuhl; [2] p-T equilibrium; [3] Rocflu blend |
 | `alt_soundspeed` *         | Logical | Alternate sound speed and \f$K \nabla \cdot u\f$ for 5-equation model |
 | `adv_n`   	               | Logical | Solving directly for the number density (in the method of classes) and compute void fraction from the number density |
 | `mpp_lim`	                 | Logical | Mixture physical parameters limits |

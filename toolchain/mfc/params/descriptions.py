@@ -50,6 +50,8 @@ DESCRIPTIONS = {
     "adap_dt": "Enable adaptive time stepping",
     "adap_dt_tol": "Tolerance for adaptive time stepping",
     "adap_dt_max_iters": "Maximum iterations for adaptive time stepping",
+    # JWL EOS
+    "jwl_mix_type": "JWL mixture rule: 0=isobaric, 1=Kuhl additive, 2=p-T equilibrium, 3=Rocflu blend",
     # Model equations
     "model_eqns": "Model equations",
     "num_fluids": "Number of fluid components",

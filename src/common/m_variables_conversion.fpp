@@ -10,7 +10,9 @@ module m_variables_conversion
 
     use m_derived_types
     use m_global_parameters
+    use m_jwl
     use m_mpi_proxy
+    use m_mpi_common, only: s_mpi_allreduce_integer_sum
     use m_helper_basic
     use m_helper
     use m_constants, only: riemann_solver_hll, riemann_solver_hlld, model_eqns_gamma_law, model_eqns_5eq, model_eqns_6eq, &
@@ -32,6 +34,15 @@ module m_variables_conversion
               s_convert_primitive_to_conservative_variables, &
               s_convert_primitive_to_flux_variables, &
               s_compute_pressure, &
+              s_jwl_pcold, &
+              s_jwl_sound_speed_squared, &
+              s_jwl_energy_pr, &
+              s_jwl_mix_pressure_er, &
+              s_jwl_mix_energy_pr, &
+              s_jwl_kuhl_pressure_er, &
+              s_jwl_kuhl_energy_pr, &
+              s_jwl_kuhl_sound_speed_squared, &
+              jwl_idx, &
               s_compute_species_fraction, &
 #ifndef MFC_PRE_PROCESS
     s_compute_speed_of_sound, &
@@ -41,8 +52,9 @@ module m_variables_conversion
 
     ! In simulation, gammas, pi_infs, and qvs are already declared in m_global_variables
 #ifndef MFC_SIMULATION
+    integer, allocatable, public, dimension(:)  :: eos_idxs
     real(wp), allocatable, public, dimension(:) :: gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps
-    $:GPU_DECLARE(create='[gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps]')
+    $:GPU_DECLARE(create='[eos_idxs, gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps]')
 #endif
 
     real(wp), allocatable, dimension(:)   :: Gs_vc
@@ -329,6 +341,7 @@ contains
 
         $:GPU_ENTER_DATA(copyin='[is1b, is1e, is2b, is2e, is3b, is3e]')
 
+        @:ALLOCATE(eos_idxs(1:num_fluids))
         @:ALLOCATE(gammas (1:num_fluids))
         @:ALLOCATE(gs_min (1:num_fluids))
         @:ALLOCATE(pi_infs(1:num_fluids))
@@ -338,7 +351,10 @@ contains
         @:ALLOCATE(qvps    (1:num_fluids))
         @:ALLOCATE(Gs_vc     (1:num_fluids))
 
+        call s_initialize_jwl_module
+
         do i = 1, num_fluids
+            eos_idxs(i) = fluid_pp(i)%eos
             gammas(i) = fluid_pp(i)%gamma
             gs_min(i) = 1.0_wp/gammas(i) + 1.0_wp
             pi_infs(i) = fluid_pp(i)%pi_inf
@@ -347,8 +363,11 @@ contains
             cvs(i) = fluid_pp(i)%cv
             qvs(i) = fluid_pp(i)%qv
             qvps(i) = fluid_pp(i)%qvp
+            if (eos_idxs(i) /= 1 .and. eos_idxs(i) /= 2) then
+                call s_mpi_abort('Unsupported fluid_pp%eos selector. Use 1 for stiffened gas or 2 for JWL.')
+            end if
         end do
-        $:GPU_UPDATE(device='[gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc]')
+        $:GPU_UPDATE(device='[eos_idxs, gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc]')
 
 #ifdef MFC_SIMULATION
         if (viscous) then
@@ -1233,12 +1252,14 @@ contains
 #endif
 
 #ifdef MFC_SIMULATION
-        @:DEALLOCATE(gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc)
+        @:DEALLOCATE(eos_idxs, gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc)
+        call s_finalize_jwl_module
         if (bubbles_euler) then
             @:DEALLOCATE(bubrs_vc)
         end if
 #else
-        @:DEALLOCATE(gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc)
+        @:DEALLOCATE(eos_idxs, gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc)
+        call s_finalize_jwl_module
         if (bubbles_euler) then
             @:DEALLOCATE(bubrs_vc)
         end if

@@ -335,6 +335,12 @@ CONSTRAINTS = {
         "value_labels": {1: "Roe", 2: "arithmetic"},
         "names": {"roe": 1, "arithmetic": 2},
     },
+    # JWL mixture closure
+    "jwl_mix_type": {
+        "choices": [0, 1, 2, 3],
+        "value_labels": {0: "Isobaric", 1: "Kuhl", 2: "p-T equilibrium", 3: "Rocflu blend"},
+        "names": {"isobaric": 0, "kuhl": 1, "ptequil": 2, "rocflu": 3},
+    },
     # Model equations
     "model_eqns": {
         "choices": [1, 2, 3, 4],
@@ -707,6 +713,9 @@ def _load():
     # Relativity
     _r("relativity", LOG, {"relativity"})
 
+    # JWL
+    _r("jwl_mix_type", INT)
+
     # Other (no specific feature tag)
     for n in [
         "model_eqns",
@@ -860,6 +869,17 @@ def _load():
         _r(f"{px}mu_min", REAL, {"viscosity"}, math=r"\mu_{\min,k}")
         _r(f"{px}mu_max", REAL, {"viscosity"}, math=r"\mu_{\max,k}")
         _r(f"{px}mu_bulk", REAL, {"viscosity"}, math=r"\mu_{\mathrm{bulk},k}")
+        _r(f"{px}eos", INT, math=r"\mathrm{EOS}_k")
+        _r(f"{px}jwl_A", REAL, math=r"\f$A_k\f$")
+        _r(f"{px}jwl_B", REAL, math=r"\f$B_k\f$")
+        _r(f"{px}jwl_R1", REAL, math=r"\f$R_{1,k}\f$")
+        _r(f"{px}jwl_R2", REAL, math=r"\f$R_{2,k}\f$")
+        _r(f"{px}jwl_omega", REAL, math=r"\f$\omega_k\f$")
+        _r(f"{px}jwl_rho0", REAL, math=r"\f$\rho_{0,k}\f$")
+        _r(f"{px}jwl_E0", REAL, math=r"\f$E_{0,k}\f$")
+        _r(f"{px}jwl_air_e0", REAL, math=r"\f$e_{\mathrm{air},k}\f$")
+        _r(f"{px}jwl_air_rho0", REAL, math=r"\f$\rho_{\mathrm{air},k}\f$")
+        _r(f"{px}jwl_air_gamma", REAL, math=r"\f$(\gamma_{\mathrm{air}}-1)_k\f$")
 
     # bub_pp (bubble properties)
     for a, sym in [
@@ -1184,6 +1204,7 @@ _nv(
     "cfl_const_dt",
     "n_start",
     "model_eqns",
+    "jwl_mix_type",
     "mpp_lim",
     "relax",
     "relax_model",

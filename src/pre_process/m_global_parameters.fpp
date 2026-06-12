@@ -353,6 +353,17 @@ contains
             fluid_pp(i)%mu_min = dflt_real
             fluid_pp(i)%mu_max = dflt_real
             fluid_pp(i)%mu_bulk = dflt_real
+            fluid_pp(i)%eos = 1
+            fluid_pp(i)%jwl_A = dflt_real
+            fluid_pp(i)%jwl_B = dflt_real
+            fluid_pp(i)%jwl_R1 = dflt_real
+            fluid_pp(i)%jwl_R2 = dflt_real
+            fluid_pp(i)%jwl_omega = dflt_real
+            fluid_pp(i)%jwl_rho0 = dflt_real
+            fluid_pp(i)%jwl_E0 = dflt_real
+            fluid_pp(i)%jwl_air_e0 = 2.5575e5_wp
+            fluid_pp(i)%jwl_air_rho0 = 1._wp
+            fluid_pp(i)%jwl_air_gamma = 0.4_wp
         end do
 
         ! Subgrid bubble parameters
