@@ -1159,6 +1159,14 @@ contains
                         T_K = pres_K/rho_K/R_gas
                         call get_mixture_energy_mass(T_K, Y_K, E_K)
                         E_K = rho_K*E_K + 5.e-1_wp*rho_K*vel_K_sum
+                    else if (jwl_idx > 0 .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
+                        block
+                            real(wp) :: e_mix_jwl, Y_j, alpha_j
+                            alpha_j = min(max(qK_prim_vf(j, k, l, eqn_idx%adv%beg + jwl_idx - 1), 0._wp), 1._wp)
+                            Y_j = min(max(qK_prim_vf(j, k, l, jwl_idx)/max(rho_K, sgm_eps), 0._wp), 1._wp)
+                            call s_jwl_mix_energy_pr(rho_K, pres_K, Y_j, alpha_j, jwl_idx, e_mix_jwl)
+                            E_K = rho_K*e_mix_jwl + 5.e-1_wp*rho_K*vel_K_sum + qv_K
+                        end block
                     else
                         ! Computing the energy from the pressure
                         E_K = gamma_K*pres_K + pi_inf_K + 5.e-1_wp*rho_K*vel_K_sum + qv_K
@@ -1326,7 +1334,7 @@ contains
             block
                 real(wp) :: c2, Y_j, alpha_j
                 alpha_j = min(max(adv(jwl_idx), 0._wp), 1._wp)
-                if (present(alpha_rho_j)) then
+                if (present(alpha_rho_j) .and. alpha_rho_j == alpha_rho_j) then
                     Y_j = min(max(alpha_rho_j/max(rho, sgm_eps), 0._wp), 1._wp)
                 else
                     Y_j = min(max(alpha_j*jwl_rho0s(jwl_idx)/max(rho, sgm_eps), 0._wp), 1._wp)

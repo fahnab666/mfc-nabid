@@ -193,7 +193,8 @@ contains
                 do j = 0, m
                     call s_compute_enthalpy(q_prim_vf, pres, rho, gamma, pi_inf, Re, H, alpha, vel, vel_sum, qv, j, k, l)
 
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv)
+                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv, &
+                                                  & alpha_rho_j=q_prim_vf(max(1, jwl_idx))%sf(j, k, l))
 
                     if (any_non_newtonian) then
                         Re(1) = 0._wp

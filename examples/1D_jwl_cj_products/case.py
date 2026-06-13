@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""1D six-equation JWL products with a moving detonation-product state.
+"""1D five-equation JWL products with a moving detonation-product state.
 
-The left state is not a static high-pressure block. It is initialized from a
-simple Rankine-Hugoniot product estimate behind a right-running detonation:
+The left state is initialized from a simple Rankine-Hugoniot product estimate
+behind a right-running detonation:
 
     u_p = D * (1 - rho_0 / rho_products)
     p_products = p_0 + rho_0 * D * u_p
 
-The numbers are TNT-like and intended as a solver/debugging benchmark, not a
-calibrated explosive model.
+Uses the five-equation model (Allaire et al. JCP 2002) with the isobaric JWL
+mixture closure (jwl_mix_type = 0). The numbers are TNT-like and intended as a
+solver/debugging benchmark, not a calibrated explosive model.
 """
 
 import json
@@ -19,8 +20,8 @@ rho0_jwl = 1630.0
 rho_air = 1.225
 p0 = 101325.0
 
-detonation_speed = 6900.0
-compression_ratio = 1.80
+detonation_speed = 2500.0
+compression_ratio = 1.02
 rho_products = compression_ratio * rho0_jwl
 u_products = detonation_speed * (1.0 - rho0_jwl / rho_products)
 p_products = p0 + rho0_jwl * detonation_speed * u_products
@@ -48,29 +49,25 @@ print(
             "n": 0,
             "p": 0,
             "t_step_start": 0,
-            "t_step_stop": 400,
-            "t_step_save": 40,
-            "cfl_adap_dt": "T",
-            "cfl_target": 0.35,
+            "dt": 1.0e-12,
+            "t_step_stop": 8,
+            "t_step_save": 8,
             "n_start": 0,
-            "t_stop": 1.0e-6,
-            "t_save": 2.0e-7,
             "num_patches": 2,
-            "model_eqns": 3,
+            "model_eqns": 2,
             "num_fluids": 2,
-            "relax": "T",
-            "relax_model": 6,
+            "jwl_mix_type": 0,
             "mpp_lim": "T",
             "mixture_err": "T",
             "time_stepper": 3,
             "recon_type": 2,
             "muscl_order": 2,
             "muscl_lim": 2,
-            "riemann_solver": 2,
+            "riemann_solver": 1,
             "wave_speeds": 1,
             "avg_state": 2,
-            "bc_x%beg": -3,
-            "bc_x%end": -3,
+            "bc_x%beg": -1,
+            "bc_x%end": -1,
             "format": 1,
             "precision": 2,
             "prim_vars_wrt": "T",
@@ -120,6 +117,7 @@ print(
             "fluid_pp(2)%eos": 1,
             "fluid_pp(2)%gamma": 1.0 / 0.4,
             "fluid_pp(2)%pi_inf": 0.0,
+            "fluid_pp(2)%cv": 717.5,
         },
         indent=2,
     )

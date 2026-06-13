@@ -509,6 +509,10 @@ contains
                                 q_cons_ts(1)%vf(i)%sf(j, k, l) = (rk_coef(s, 1)*q_cons_ts(1)%vf(i)%sf(j, k, l) + rk_coef(s, &
                                           & 2)*q_cons_ts(stor)%vf(i)%sf(j, k, l) + rk_coef(s, 3)*dt*rhs_vf(i)%sf(j, k, &
                                           & l))/rk_coef(s, 4)
+                                if (jwl_idx > 0 .and. i == eqn_idx%E .and. q_cons_ts(1)%vf(i)%sf(j, k, &
+                                    & l) /= q_cons_ts(1)%vf(i)%sf(j, k, l)) then
+                                    q_cons_ts(1)%vf(i)%sf(j, k, l) = q_cons_ts(stor)%vf(i)%sf(j, k, l)
+                                end if
                             end if
                         end do
                     end do
@@ -655,7 +659,8 @@ contains
                     end if
 
                     ! Compute mixture sound speed
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv)
+                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv, &
+                                                  & alpha_rho_j=q_prim_vf(max(1, jwl_idx))%sf(j, k, l))
 
                     if (any_non_newtonian) then
                         Re(1) = 0._wp

@@ -161,7 +161,7 @@ contains
         pref1 = A*(1._wp - omega0*rho1/(R1*rho0))*exp(-R1*rho0/rho1) + B*(1._wp - omega0*rho1/(R2*rho0))*exp(-R2*rho0/rho1)
         Kj = 1._wp/max(omega0, sgm_eps)
 
-        pres = (rhoe + a_j*Kj*pref1)/max(a_j*Kj + a_a/max(air_gamma, sgm_eps), sgm_eps)
+        pres = max((rhoe + a_j*Kj*pref1)/max(a_j*Kj + a_a/max(air_gamma, sgm_eps), sgm_eps), sgm_eps)
 
     end subroutine s_jwl_pressure_er
 
@@ -490,6 +490,8 @@ contains
                                    & jwl_air_gammas(jidx), pres)
         end select
 
+        if (pres /= pres .or. pres < sgm_eps) pres = sgm_eps
+
     end subroutine s_jwl_mix_pressure_er
 
     !> Dispatch the JWL/ideal-gas mixture energy-from-pressure to the active closure jwl_mix_type (inverse of
@@ -519,6 +521,8 @@ contains
                                  & jwl_omegas(jidx), jwl_rho0s(jidx), jwl_E0s(jidx), jwl_air_e0s(jidx), jwl_air_rho0s(jidx), &
                                  & jwl_air_gammas(jidx), e)
         end select
+
+        if (e /= e .or. e < 0._wp) e = 0._wp
 
     end subroutine s_jwl_mix_energy_pr
 

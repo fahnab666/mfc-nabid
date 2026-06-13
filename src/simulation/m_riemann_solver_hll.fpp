@@ -321,9 +321,13 @@ contains
                                     ! alpha_rho_L/R(jwl_idx) are the JWL partial densities; alpha_L/R(jwl_idx) are
                                     ! the JWL volume fractions, both assembled from primitives in the loops above.
                                     block
-                                        real(wp) :: e_L, e_R, Y_jL, Y_jR
-                                        Y_jL = alpha_rho_L(jwl_idx)/max(rho_L, sgm_eps)
-                                        Y_jR = alpha_rho_R(jwl_idx)/max(rho_R, sgm_eps)
+                                        real(wp) :: e_L, e_R, Y_jL, Y_jR, arho_jL, arho_jR
+                                        arho_jL = alpha_rho_L(max(1, jwl_idx))
+                                        arho_jR = alpha_rho_R(max(1, jwl_idx))
+                                        if (arho_jL /= arho_jL) arho_jL = alpha_L(jwl_idx)*jwl_rho0s(jwl_idx)
+                                        if (arho_jR /= arho_jR) arho_jR = alpha_R(jwl_idx)*jwl_rho0s(jwl_idx)
+                                        Y_jL = min(max(arho_jL/max(rho_L, sgm_eps), 0._wp), 1._wp)
+                                        Y_jR = min(max(arho_jR/max(rho_R, sgm_eps), 0._wp), 1._wp)
                                         call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jL, alpha_L(jwl_idx), jwl_idx, e_L)
                                         call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jR, alpha_R(jwl_idx), jwl_idx, e_R)
                                         E_L = rho_L*e_L + 5.e-1*rho_L*vel_L_rms + qv_L
@@ -372,16 +376,17 @@ contains
                             @:compute_average_state()
 
                             call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, c_L, &
-                                                          & qv_L, alpha_rho_j=alpha_rho_L(jwl_idx))
+                                                          & qv_L, alpha_rho_j=alpha_rho_L(max(1, jwl_idx)))
 
                             call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, c_R, &
-                                                          & qv_R, alpha_rho_j=alpha_rho_R(jwl_idx))
+                                                          & qv_R, alpha_rho_j=alpha_rho_R(max(1, jwl_idx)))
 
                             !> The computation of c_avg does not require all the variables, and therefore the non '_avg'
                             ! variables are placeholders to call the subroutine.
 
                             call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &
-                                                          & c_sum_Yi_Phi, c_avg, qv_avg)
+                                                          & c_sum_Yi_Phi, c_avg, qv_avg, alpha_rho_j=5.e-1_wp*(alpha_rho_L(max(1, &
+                                                          & jwl_idx)) + alpha_rho_R(max(1, jwl_idx))))
 
                             if (mhd) then
                                 call s_compute_fast_magnetosonic_speed(rho_L, c_L, B%L, norm_dir, c_fast%L, H_L)
