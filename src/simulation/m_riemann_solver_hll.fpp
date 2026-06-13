@@ -12,6 +12,7 @@ module m_riemann_solver_hll
     use m_derived_types
     use m_global_parameters
     use m_variables_conversion
+    use m_jwl
     use m_constants, only: riemann_solver_hll, riemann_solver_hllc, riemann_solver_lax_friedrichs, avg_state_roe, &
         & avg_state_arithmetic, wave_speeds_direct, wave_speeds_pressure
     use m_chemistry
@@ -315,8 +316,23 @@ contains
                                 ! stagnation enthalpy here excludes magnetic energy (only used to find speed of sound)
                                 H_R = (E_R + pres_R - pres_mag%R)/rho_R
                             else
-                                E_L = gamma_L*pres_L + pi_inf_L + 5.e-1*rho_L*vel_L_rms + qv_L
-                                E_R = gamma_R*pres_R + pi_inf_R + 5.e-1*rho_R*vel_R_rms + qv_R
+                                if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
+                                    ! JWL: reconstruct total energy from p(rho,Y,alpha) via the inverse EOS.
+                                    ! alpha_rho_L/R(jwl_idx) are the JWL partial densities; alpha_L/R(jwl_idx) are
+                                    ! the JWL volume fractions, both assembled from primitives in the loops above.
+                                    block
+                                        real(wp) :: e_L, e_R, Y_jL, Y_jR
+                                        Y_jL = alpha_rho_L(jwl_idx)/max(rho_L, sgm_eps)
+                                        Y_jR = alpha_rho_R(jwl_idx)/max(rho_R, sgm_eps)
+                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jL, alpha_L(jwl_idx), jwl_idx, e_L)
+                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jR, alpha_R(jwl_idx), jwl_idx, e_R)
+                                        E_L = rho_L*e_L + 5.e-1*rho_L*vel_L_rms + qv_L
+                                        E_R = rho_R*e_R + 5.e-1*rho_R*vel_R_rms + qv_R
+                                    end block
+                                else
+                                    E_L = gamma_L*pres_L + pi_inf_L + 5.e-1*rho_L*vel_L_rms + qv_L
+                                    E_R = gamma_R*pres_R + pi_inf_R + 5.e-1*rho_R*vel_R_rms + qv_R
+                                end if
                                 H_L = (E_L + pres_L)/rho_L
                                 H_R = (E_R + pres_R)/rho_R
                             end if
@@ -356,10 +372,10 @@ contains
                             @:compute_average_state()
 
                             call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, c_L, &
-                                                          & qv_L)
+                                                          & qv_L, alpha_rho_j=alpha_rho_L(jwl_idx))
 
                             call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, c_R, &
-                                                          & qv_R)
+                                                          & qv_R, alpha_rho_j=alpha_rho_R(jwl_idx))
 
                             !> The computation of c_avg does not require all the variables, and therefore the non '_avg'
                             ! variables are placeholders to call the subroutine.

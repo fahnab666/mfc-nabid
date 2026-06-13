@@ -35,6 +35,7 @@ module m_variables_conversion
               s_compute_pressure, &
               s_jwl_pcold, &
               s_jwl_sound_speed_squared, &
+              s_jwl_mixture_sound_speed_squared, &
               s_jwl_energy_pr, &
               s_jwl_mix_pressure_er, &
               s_jwl_mix_energy_pr, &
@@ -693,6 +694,18 @@ contains
                     call s_compute_pressure(qK_cons_vf(eqn_idx%E)%sf(j, k, l), qK_cons_vf(eqn_idx%alf)%sf(j, k, l), dyn_pres_K, &
                                             & pi_inf_K, gamma_K, rho_K, qv_K, rhoYks, pres, T, pres_mag=pres_mag)
 
+                    ! JWL override: when a JWL fluid is present in a 5-equation model, replace the stiffened-gas
+                    ! pressure with the correct JWL mixture inversion. alpha_rho_K(jwl_idx)/rho_K gives the true
+                    ! products mass fraction Y; alpha_K(jwl_idx) gives the JWL volume fraction. Both are already
+                    ! assembled (and clamped via mpp_lim) by s_convert_species_to_mixture_variables_acc above.
+                    #:if not chemistry
+                        if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq .and. (.not. bubbles_euler)) then
+                            call s_jwl_mix_pressure_er(rho_K, (real(qK_cons_vf(eqn_idx%E)%sf(j, k, l), &
+                                                       & wp) - dyn_pres_K)/max(rho_K, sgm_eps), alpha_rho_K(jwl_idx)/max(rho_K, &
+                                                       & sgm_eps), alpha_K(jwl_idx), jwl_idx, pres)
+                        end if
+                    #:endif
+
                     qK_prim_vf(eqn_idx%E)%sf(j, k, l) = pres
 
                     if (chemistry) then
@@ -939,6 +952,16 @@ contains
                             ! MHD energy includes magnetic pressure contribution
                             q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*q_prim_vf(eqn_idx%E)%sf(j, k, &
                                       & l) + dyn_pres + pres_mag + pi_inf + qv
+                        else if (jwl_idx > 0 .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
+                            ! JWL five-equation model: E = rho*e_mix(rho,p,Y,alpha) + 0.5*rho*|u|^2 + qv.
+                            ! Y = alpha_rho_j/rho, alpha_j from the primitive adv slot.
+                            block
+                                real(wp) :: e_mix_jwl, Y_j, alpha_j
+                                alpha_j = q_prim_vf(eqn_idx%adv%beg + jwl_idx - 1)%sf(j, k, l)
+                                Y_j = q_prim_vf(jwl_idx)%sf(j, k, l)/max(rho, sgm_eps)
+                                call s_jwl_mix_energy_pr(rho, q_prim_vf(eqn_idx%E)%sf(j, k, l), Y_j, alpha_j, jwl_idx, e_mix_jwl)
+                                q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_mix_jwl + dyn_pres + qv
+                            end block
                         else if ((model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
                             ! Five-equation model (Allaire et al. JCP 2002): E = Gamma*p + 0.5*rho*|u|^2 + pi_inf + qv
                             q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*q_prim_vf(eqn_idx%E)%sf(j, k, l) + dyn_pres + pi_inf + qv
@@ -1268,7 +1291,7 @@ contains
 
 #ifndef MFC_PRE_PROCESS
     !> Compute the speed of sound from thermodynamic state variables, supporting multiple equation-of-state models.
-    subroutine s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, adv, vel_sum, c_c, c, qv)
+    subroutine s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, adv, vel_sum, c_c, c, qv, alpha_rho_j)
 
         $:GPU_ROUTINE(parallelism='[seq]')
 
@@ -1280,11 +1303,12 @@ contains
         #:else
             real(wp), dimension(num_fluids), intent(in) :: adv
         #:endif
-        real(wp), intent(in)  :: vel_sum
-        real(wp), intent(in)  :: c_c
-        real(wp), intent(out) :: c
-        real(wp)              :: blkmod1, blkmod2
-        integer               :: q
+        real(wp), intent(in)           :: vel_sum
+        real(wp), intent(in)           :: c_c
+        real(wp), intent(out)          :: c
+        real(wp), intent(in), optional :: alpha_rho_j  !< JWL partial density alpha_j*rho_j for correct Y_j
+        real(wp)                       :: blkmod1, blkmod2
+        integer                        :: q
 
         if (chemistry) then  ! Reacting mixture sound speed
             if (avg_state == avg_state_roe .and. abs(c_c) > verysmall) then
@@ -1294,6 +1318,25 @@ contains
             end if
         else if (relativity) then  ! Relativistic sound speed
             c = sqrt((1._wp + 1._wp/gamma)*pres/rho/H)
+        else if (jwl_idx > 0) then
+            ! JWL mixture sound speed: frozen (mass-weighted) rule.
+            ! Y_j = alpha_rho_j / rho  (correct: uses the actual phasic partial density).
+            ! If alpha_rho_j is not passed (e.g. avg-state call), fall back to the rho0 proxy
+            ! alpha_j*rho0/rho which is exact at initial conditions and only a wave-speed bound.
+            block
+                real(wp) :: c2, Y_j, alpha_j
+                alpha_j = min(max(adv(jwl_idx), 0._wp), 1._wp)
+                if (present(alpha_rho_j)) then
+                    Y_j = min(max(alpha_rho_j/max(rho, sgm_eps), 0._wp), 1._wp)
+                else
+                    Y_j = min(max(alpha_j*jwl_rho0s(jwl_idx)/max(rho, sgm_eps), 0._wp), 1._wp)
+                end if
+                call s_jwl_mixture_sound_speed_squared(rho, pres, Y_j, alpha_j, jwl_As(jwl_idx), jwl_Bs(jwl_idx), &
+                                                       & jwl_R1s(jwl_idx), jwl_R2s(jwl_idx), jwl_omegas(jwl_idx), &
+                                                       & jwl_rho0s(jwl_idx), jwl_E0s(jwl_idx), jwl_air_e0s(jwl_idx), &
+                                                       & jwl_air_rho0s(jwl_idx), jwl_air_gammas(jwl_idx), c2)
+                c = sqrt(max(c2, sgm_eps))
+            end block
         else
             if (alt_soundspeed) then  ! Wood's mixture sound speed via bulk moduli
                 blkmod1 = ((gammas(1) + 1._wp)*pres + pi_infs(1))/gammas(1)

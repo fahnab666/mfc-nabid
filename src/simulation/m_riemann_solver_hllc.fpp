@@ -12,6 +12,7 @@ module m_riemann_solver_hllc
     use m_derived_types
     use m_global_parameters
     use m_variables_conversion
+    use m_jwl
     use m_bubbles
     use m_constants, only: riemann_solver_hll, riemann_solver_hllc, riemann_solver_lax_friedrichs, model_eqns_5eq, &
         & model_eqns_6eq, model_eqns_4eq, avg_state_roe, avg_state_arithmetic, wave_speeds_direct, wave_speeds_pressure
@@ -242,8 +243,22 @@ contains
                                     end do
                                 end if
 
-                                E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
-                                E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
+                                if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
+                                    ! JWL: reconstruct total energy from p(rho,Y,alpha) via the inverse EOS,
+                                    ! then add kinetic energy. alpha_rho_j = qL/R_prim_rsx_vf(*,jwl_idx).
+                                    block
+                                        real(wp) :: e_L, e_R, Y_jL, Y_jR
+                                        Y_jL = qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps)
+                                        Y_jR = qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps)
+                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jL, alpha_L(jwl_idx), jwl_idx, e_L)
+                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jR, alpha_R(jwl_idx), jwl_idx, e_R)
+                                        E_L = rho_L*e_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
+                                        E_R = rho_R*e_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
+                                    end block
+                                else
+                                    E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
+                                    E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
+                                end if
 
                                 ! ENERGY ADJUSTMENTS FOR HYPOELASTIC ENERGY
                                 if (hypoelasticity) then
@@ -612,8 +627,22 @@ contains
                                 pres_L = qL_prim_rsx_vf(${SF('')}$, eqn_idx%E)
                                 pres_R = qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%E)
 
-                                E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
-                                E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
+                                if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
+                                    ! JWL: reconstruct total energy from p(rho,Y,alpha) via the inverse EOS,
+                                    ! then add kinetic energy. alpha_rho_j = qL/R_prim_rsx_vf(*,jwl_idx).
+                                    block
+                                        real(wp) :: e_L, e_R, Y_jL, Y_jR
+                                        Y_jL = qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps)
+                                        Y_jR = qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps)
+                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jL, alpha_L(jwl_idx), jwl_idx, e_L)
+                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jR, alpha_R(jwl_idx), jwl_idx, e_R)
+                                        E_L = rho_L*e_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
+                                        E_R = rho_R*e_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
+                                    end block
+                                else
+                                    E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
+                                    E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
+                                end if
 
                                 H_L = (E_L + pres_L)/rho_L
                                 H_R = (E_R + pres_R)/rho_R
@@ -871,8 +900,20 @@ contains
                                 pres_L = qL_prim_rsx_vf(${SF('')}$, eqn_idx%E)
                                 pres_R = qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%E)
 
-                                E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms
-                                E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms
+                                if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
+                                    block
+                                        real(wp) :: e_L, e_R, Y_jL, Y_jR
+                                        Y_jL = qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps)
+                                        Y_jR = qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps)
+                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jL, alpha_L(jwl_idx), jwl_idx, e_L)
+                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jR, alpha_R(jwl_idx), jwl_idx, e_R)
+                                        E_L = rho_L*e_L + 5.e-1_wp*rho_L*vel_L_rms
+                                        E_R = rho_R*e_R + 5.e-1_wp*rho_R*vel_R_rms
+                                    end block
+                                else
+                                    E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms
+                                    E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms
+                                end if
 
                                 H_L = (E_L + pres_L)/rho_L
                                 H_R = (E_R + pres_R)/rho_R
@@ -1313,8 +1354,20 @@ contains
                                     H_L = (E_L + pres_L)/rho_L
                                     H_R = (E_R + pres_R)/rho_R
                                 else
-                                    E_L = gamma_L*pres_L + pi_inf_L + 5.e-1*rho_L*vel_L_rms + qv_L
-                                    E_R = gamma_R*pres_R + pi_inf_R + 5.e-1*rho_R*vel_R_rms + qv_R
+                                    if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
+                                        block
+                                            real(wp) :: e_L, e_R, Y_jL, Y_jR
+                                            Y_jL = qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps)
+                                            Y_jR = qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps)
+                                            call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jL, alpha_L(jwl_idx), jwl_idx, e_L)
+                                            call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jR, alpha_R(jwl_idx), jwl_idx, e_R)
+                                            E_L = rho_L*e_L + 5.e-1*rho_L*vel_L_rms + qv_L
+                                            E_R = rho_R*e_R + 5.e-1*rho_R*vel_R_rms + qv_R
+                                        end block
+                                    else
+                                        E_L = gamma_L*pres_L + pi_inf_L + 5.e-1*rho_L*vel_L_rms + qv_L
+                                        E_R = gamma_R*pres_R + pi_inf_R + 5.e-1*rho_R*vel_R_rms + qv_R
+                                    end if
 
                                     H_L = (E_L + pres_L)/rho_L
                                     H_R = (E_R + pres_R)/rho_R
