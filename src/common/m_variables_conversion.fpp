@@ -12,7 +12,6 @@ module m_variables_conversion
     use m_global_parameters
     use m_jwl
     use m_mpi_proxy
-    use m_mpi_common, only: s_mpi_allreduce_integer_sum
     use m_helper_basic
     use m_helper
     use m_constants, only: riemann_solver_hll, riemann_solver_hlld, model_eqns_gamma_law, model_eqns_5eq, model_eqns_6eq, &

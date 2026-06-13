@@ -72,16 +72,16 @@ contains
 
         real(wp), intent(in)  :: rho, pres, A, B, R1, R2, omega, rho0
         real(wp), intent(out) :: c2
-        real(wp)              :: rho_safe, exp1, exp2, v, e
+        real(wp)              :: rho_safe, pcold, dpcold_drho, e
 
+        ! c^2 = dp/drho|_e + (p/rho^2)*dp/de|_rho with p = pcold(rho) + omega*rho*e, so
+        ! c^2 = dpcold/drho + omega*e + omega*p/rho, with e recovered from p and pcold.
         rho_safe = max(rho, sgm_eps)
-        v = rho0/rho_safe
-        exp1 = exp(-R1*v)
-        exp2 = exp(-R2*v)
+        call s_jwl_pcold(rho_safe, A, B, R1, R2, omega, rho0, pcold)
+        call s_jwl_dpcold_drho(rho_safe, A, B, R1, R2, omega, rho0, dpcold_drho)
 
-        e = (pres - A*(1._wp - omega/(R1*v))*exp1 - B*(1._wp - omega/(R2*v))*exp2)/(omega*rho_safe)
-        c2 = A*exp1*(omega/(R1*v**2._wp) - R1*(1._wp - omega/(R1*v))) + B*exp2*(omega/(R2*v**2._wp) - R2*(1._wp - omega/(R2*v)))
-        c2 = c2*(-rho0/(rho_safe*rho_safe)) + omega*e + omega*pres/rho_safe
+        e = (pres - pcold)/(omega*rho_safe)
+        c2 = dpcold_drho + omega*e + omega*pres/rho_safe
         c2 = max(c2, sgm_eps)
 
     end subroutine s_jwl_sound_speed_squared
@@ -320,6 +320,7 @@ contains
             T = max((e - Y_s*ecold)/cv_mix, sgm_eps)
             pj = A*exp(-R1*V) + B*exp(-R2*V) + omega0*rj*cv_j*T; pa = air_gamma*ra*cv_a*T
             f_m = pj - pa; pres = 0.5_wp*(pj + pa)
+            if (abs(f_m) <= 1.e-12_wp*max(abs(pres), sgm_eps)) exit
             if (f_lo*f_m > 0._wp) then
                 a_lo = a_m; f_lo = f_m
             else
@@ -359,12 +360,21 @@ contains
         pj = A*exp(-R1*V) + B*exp(-R2*V) + omega0*rj*cv_j*T
         g_lo = pj - p_s
 
+        ! Check bracket at a_hi: if sign matches a_lo, no root exists in (0,1); fall back to pure-JWL energy.
+        rj = max(Y_s*rho_s/a_hi, sgm_eps); V = rho0/rj
+        pj = A*exp(-R1*V) + B*exp(-R2*V)
+        if (g_lo*(pj - p_s) >= 0._wp) then
+            call s_jwl_pcold(rho_s, A, B, R1, R2, omega0, rho0, pcg)
+            e = max((p_s - pcg)/max(omega0*rho_s, sgm_eps), 0._wp); return
+        end if
+
         do it = 1, 60
             a_m = 0.5_wp*(a_lo + a_hi)
             rj = max(Y_s*rho_s/a_m, sgm_eps); ra = max((1._wp - Y_s)*rho_s/(1._wp - a_m), sgm_eps); V = rho0/rj
             T = p_s/max(air_gamma*ra*cv_a, sgm_eps)
             pj = A*exp(-R1*V) + B*exp(-R2*V) + omega0*rj*cv_j*T
             g_m = pj - p_s
+            if (abs(g_m) <= 1.e-12_wp*p_s) exit
             if (g_lo*g_m > 0._wp) then
                 a_lo = a_m; g_lo = g_m
             else
@@ -395,7 +405,7 @@ contains
         if (Y_s <= 1.e-4_wp) then
             pres = max(air_gamma*rho_s*e, sgm_eps)
             return
-        else if (Y_s >= 0.99_wp) then
+        else if (Y_s >= 1._wp - 1.e-4_wp) then
             call s_jwl_pcold(rho_s, A, B, R1, R2, omega0, rho0, cab)
             pres = max(cab + omega0*rho_s*e, sgm_eps)
             return
@@ -428,7 +438,7 @@ contains
         if (Y_s <= 1.e-4_wp) then
             e = max(pres/max(air_gamma*rho_s, sgm_eps), 0._wp)
             return
-        else if (Y_s >= 0.99_wp) then
+        else if (Y_s >= 1._wp - 1.e-4_wp) then
             call s_jwl_pcold(rho_s, A, B, R1, R2, omega0, rho0, cab)
             e = max((pres - cab)/max(omega0*rho_s, sgm_eps), 0._wp)
             return
@@ -516,7 +526,10 @@ contains
     !! products/air specific heats used by the p-T-equilibrium closure. Called from the variables-conversion module initializer.
     impure subroutine s_initialize_jwl_module
 
-        integer :: i
+        use m_mpi_common, only: s_mpi_abort
+        use m_helper_basic, only: f_is_default
+
+        integer :: i, n_jwl
 
         @:ALLOCATE(jwl_As    (1:num_fluids))
         @:ALLOCATE(jwl_Bs    (1:num_fluids))
@@ -530,6 +543,7 @@ contains
         @:ALLOCATE(jwl_air_gammas (1:num_fluids))
 
         jwl_idx = 0
+        n_jwl = 0
         do i = 1, num_fluids
             jwl_As(i) = fluid_pp(i)%jwl_A
             jwl_Bs(i) = fluid_pp(i)%jwl_B
@@ -541,8 +555,27 @@ contains
             jwl_air_e0s(i) = fluid_pp(i)%jwl_air_e0
             jwl_air_rho0s(i) = fluid_pp(i)%jwl_air_rho0
             jwl_air_gammas(i) = fluid_pp(i)%jwl_air_gamma
-            if (fluid_pp(i)%eos == 2) jwl_idx = i
+            if (fluid_pp(i)%eos == 2) then
+                jwl_idx = i
+                n_jwl = n_jwl + 1
+                ! Fail fast on the dflt_real sentinel: unset JWL parameters would otherwise
+                ! propagate as -1e6 through exp() and produce NaNs deep in the solver.
+                if (f_is_default(fluid_pp(i)%jwl_A) .or. f_is_default(fluid_pp(i)%jwl_B) .or. f_is_default(fluid_pp(i)%jwl_R1) &
+                    & .or. f_is_default(fluid_pp(i)%jwl_R2) .or. f_is_default(fluid_pp(i)%jwl_omega) &
+                    & .or. f_is_default(fluid_pp(i)%jwl_rho0)) then
+                    call s_mpi_abort('fluid_pp%eos = 2 (JWL) requires jwl_A, jwl_B, jwl_R1, jwl_R2, ' &
+                                     & // 'jwl_omega, and jwl_rho0 to all be set.')
+                end if
+                if (fluid_pp(i)%jwl_R1 <= 0._wp .or. fluid_pp(i)%jwl_R2 <= 0._wp .or. fluid_pp(i)%jwl_omega <= 0._wp &
+                    & .or. fluid_pp(i)%jwl_rho0 <= 0._wp) then
+                    call s_mpi_abort('JWL parameters jwl_R1, jwl_R2, jwl_omega, and jwl_rho0 must be positive.')
+                end if
+            end if
         end do
+
+        if (n_jwl > 1) then
+            call s_mpi_abort('At most one fluid may use the JWL EOS (fluid_pp%eos = 2); found more than one.')
+        end if
 
         ! Specific heats for the p-T-equilibrium closure: products from the JWL fluid, air from the first ideal-gas fluid.
         jwl_cv_prod = 0._wp; jwl_cv_air = 0._wp
@@ -552,6 +585,15 @@ contains
                 jwl_cv_air = fluid_pp(i)%cv; exit
             end if
         end do
+
+        ! The Kuhl (1) and p-T-equilibrium (2) closures split energy via specific heats; an unset
+        ! cv (dflt_real sentinel) or nonpositive cv silently corrupts T and p.
+        if (jwl_idx > 0 .and. (jwl_mix_type == 1 .or. jwl_mix_type == 2)) then
+            if (f_is_default(jwl_cv_prod) .or. jwl_cv_prod <= 0._wp .or. f_is_default(jwl_cv_air) .or. jwl_cv_air <= 0._wp) then
+                call s_mpi_abort('jwl_mix_type = 1 (Kuhl) and 2 (p-T equilibrium) require positive ' &
+                                 & // 'fluid_pp%cv for both the JWL fluid and the ideal-gas fluid.')
+            end if
+        end if
 
         $:GPU_UPDATE(device='[jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, jwl_E0s]')
         $:GPU_UPDATE(device='[jwl_air_e0s, jwl_air_rho0s, jwl_air_gammas, jwl_idx]')
