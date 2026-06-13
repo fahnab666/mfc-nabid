@@ -1334,10 +1334,16 @@ contains
             block
                 real(wp) :: c2, Y_j, alpha_j
                 alpha_j = min(max(adv(jwl_idx), 0._wp), 1._wp)
-                if (present(alpha_rho_j) .and. alpha_rho_j == alpha_rho_j) then
-                    Y_j = min(max(alpha_rho_j/max(rho, sgm_eps), 0._wp), 1._wp)
-                else
-                    Y_j = min(max(alpha_j*jwl_rho0s(jwl_idx)/max(rho, sgm_eps), 0._wp), 1._wp)
+                ! Compute the rho0-proxy fallback first; override with the actual
+                ! phasic partial density when it is present and not NaN.
+                ! NOTE: the present() guard must be a separate if-block - Fortran
+                ! does not short-circuit .and., so writing
+                !   present(alpha_rho_j) .and. alpha_rho_j == alpha_rho_j
+                ! in a single expression triggers undefined behaviour (null-ptr
+                ! dereference) when alpha_rho_j is absent.
+                Y_j = min(max(alpha_j*jwl_rho0s(jwl_idx)/max(rho, sgm_eps), 0._wp), 1._wp)
+                if (present(alpha_rho_j)) then
+                    if (alpha_rho_j == alpha_rho_j) Y_j = min(max(alpha_rho_j/max(rho, sgm_eps), 0._wp), 1._wp)
                 end if
                 call s_jwl_mixture_sound_speed_squared(rho, pres, Y_j, alpha_j, jwl_As(jwl_idx), jwl_Bs(jwl_idx), &
                                                        & jwl_R1s(jwl_idx), jwl_R2s(jwl_idx), jwl_omegas(jwl_idx), &

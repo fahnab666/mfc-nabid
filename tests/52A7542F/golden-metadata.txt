@@ -1,78 +1,10 @@
-This file was created on 2026-06-13 04:51:52.615053.
+This file was created on 2026-06-13 15:46:02.317776.
 
 mfc.sh:
 
-    Invocation: test --generate --no-build -f 52A7542F -t 52A7542F -j 1
+    Invocation: test --only jwl_cj_products --generate -j 4
     Lock:       mpi=Yes & gpu=No & debug=No & reldebug=Yes & gcov=No & unified=No & single=No & mixed=No & fastmath=No
-    Git:        5e9d62961b3134888b75d9ccd9365297a2ae0350 on jwl-upstream-rebase (clean)
-
-simulation:
-
-    CMake Configuration:
-    
-        CMake v4.3.2 on Fahads-MacBook-Pro.local
-    
-        C       : AppleClang v21.0.0.21000099 (/usr/bin/cc)
-        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
-    
-        PRE_PROCESS   : OFF
-        SIMULATION    : ON
-        POST_PROCESS  : OFF
-        SYSCHECK      : OFF
-        DOCUMENTATION : OFF
-        ALL           : OFF
-    
-        MPI     : ON
-        OpenACC : OFF
-        OpenMP  : OFF
-    
-        Fypp    : /Users/fahadnabid/Documents/default/MFC/build/venv/bin/fypp
-        Doxygen : 
-    
-        Build Type : RelDebug
-    
-    Configuration Environment:
-    
-        CC       : /usr/bin/cc
-        CXX      : /usr/bin/c++
-        FC       : /opt/homebrew/bin/gfortran
-        OMPI_CC  : 
-        OMPI_CXX : 
-        OMPI_FC  : 
-
-post_process:
-
-    CMake Configuration:
-    
-        CMake v4.3.2 on Fahads-MacBook-Pro.local
-    
-        C       : AppleClang v21.0.0.21000099 (/usr/bin/cc)
-        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
-    
-        PRE_PROCESS   : OFF
-        SIMULATION    : OFF
-        POST_PROCESS  : ON
-        SYSCHECK      : OFF
-        DOCUMENTATION : OFF
-        ALL           : OFF
-    
-        MPI     : ON
-        OpenACC : OFF
-        OpenMP  : OFF
-    
-        Fypp    : /Users/fahadnabid/Documents/default/MFC/build/venv/bin/fypp
-        Doxygen : 
-    
-        Build Type : RelDebug
-    
-    Configuration Environment:
-    
-        CC       : /usr/bin/cc
-        CXX      : /usr/bin/c++
-        FC       : /opt/homebrew/bin/gfortran
-        OMPI_CC  : 
-        OMPI_CXX : 
-        OMPI_FC  : 
+    Git:        cdb34a7d077c70f171a331b19fe79c386cbf01dc on jwl-upstream-rebase (dirty)
 
 syscheck:
 
@@ -108,6 +40,40 @@ syscheck:
         OMPI_CXX : 
         OMPI_FC  : 
 
+simulation:
+
+    CMake Configuration:
+    
+        CMake v4.3.2 on Fahads-MacBook-Pro.local
+    
+        C       : AppleClang v21.0.0.21000099 (/usr/bin/cc)
+        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
+    
+        PRE_PROCESS   : OFF
+        SIMULATION    : ON
+        POST_PROCESS  : OFF
+        SYSCHECK      : OFF
+        DOCUMENTATION : OFF
+        ALL           : OFF
+    
+        MPI     : ON
+        OpenACC : OFF
+        OpenMP  : OFF
+    
+        Fypp    : /Users/fahadnabid/Documents/default/MFC/build/venv/bin/fypp
+        Doxygen : 
+    
+        Build Type : RelDebug
+    
+    Configuration Environment:
+    
+        CC       : /usr/bin/cc
+        CXX      : /usr/bin/c++
+        FC       : /opt/homebrew/bin/gfortran
+        OMPI_CC  : 
+        OMPI_CXX : 
+        OMPI_FC  : 
+
 pre_process:
 
     CMake Configuration:
@@ -120,6 +86,40 @@ pre_process:
         PRE_PROCESS   : ON
         SIMULATION    : OFF
         POST_PROCESS  : OFF
+        SYSCHECK      : OFF
+        DOCUMENTATION : OFF
+        ALL           : OFF
+    
+        MPI     : ON
+        OpenACC : OFF
+        OpenMP  : OFF
+    
+        Fypp    : /Users/fahadnabid/Documents/default/MFC/build/venv/bin/fypp
+        Doxygen : 
+    
+        Build Type : RelDebug
+    
+    Configuration Environment:
+    
+        CC       : /usr/bin/cc
+        CXX      : /usr/bin/c++
+        FC       : /opt/homebrew/bin/gfortran
+        OMPI_CC  : 
+        OMPI_CXX : 
+        OMPI_FC  : 
+
+post_process:
+
+    CMake Configuration:
+    
+        CMake v4.3.2 on Fahads-MacBook-Pro.local
+    
+        C       : AppleClang v21.0.0.21000099 (/usr/bin/cc)
+        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
+    
+        PRE_PROCESS   : OFF
+        SIMULATION    : OFF
+        POST_PROCESS  : ON
         SYSCHECK      : OFF
         DOCUMENTATION : OFF
         ALL           : OFF

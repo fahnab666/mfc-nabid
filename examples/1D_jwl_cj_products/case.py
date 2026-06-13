@@ -20,8 +20,8 @@ rho0_jwl = 1630.0
 rho_air = 1.225
 p0 = 101325.0
 
-detonation_speed = 2500.0
-compression_ratio = 1.02
+detonation_speed = 6900.0
+compression_ratio = 1.80
 rho_products = compression_ratio * rho0_jwl
 u_products = detonation_speed * (1.0 - rho0_jwl / rho_products)
 p_products = p0 + rho0_jwl * detonation_speed * u_products
