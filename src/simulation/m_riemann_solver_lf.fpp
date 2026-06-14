@@ -318,17 +318,17 @@ contains
                                     ! JWL: reconstruct total energy from p(rho,Y,alpha) via the inverse EOS.
                                     ! alpha_rho_L/R(jwl_idx) are the JWL partial densities populated above.
                                     block
-                                        real(wp) :: e_L, e_R, Y_jL, Y_jR, arho_jL, arho_jR
+                                        real(wp) :: e_jwl_L, e_jwl_R, Y_jL, Y_jR, arho_jL, arho_jR
                                         arho_jL = alpha_rho_L(max(1, jwl_idx))
                                         arho_jR = alpha_rho_R(max(1, jwl_idx))
                                         if (arho_jL /= arho_jL) arho_jL = alpha_L(jwl_idx)*jwl_rho0s(jwl_idx)
                                         if (arho_jR /= arho_jR) arho_jR = alpha_R(jwl_idx)*jwl_rho0s(jwl_idx)
                                         Y_jL = min(max(arho_jL/max(rho_L, sgm_eps), 0._wp), 1._wp)
                                         Y_jR = min(max(arho_jR/max(rho_R, sgm_eps), 0._wp), 1._wp)
-                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jL, alpha_L(jwl_idx), jwl_idx, e_L)
-                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jR, alpha_R(jwl_idx), jwl_idx, e_R)
-                                        E_L = rho_L*e_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
-                                        E_R = rho_R*e_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
+                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jL, alpha_L(jwl_idx), jwl_idx, e_jwl_L)
+                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jR, alpha_R(jwl_idx), jwl_idx, e_jwl_R)
+                                        E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
+                                        E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
                                     end block
                                 else
                                     E_L = gamma_L*pres_L + pi_inf_L + 5.e-1*rho_L*vel_L_rms + qv_L

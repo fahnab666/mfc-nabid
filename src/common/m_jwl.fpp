@@ -16,8 +16,9 @@ module m_jwl
 
     private
     public :: s_initialize_jwl_module, s_finalize_jwl_module, s_jwl_pcold, s_jwl_sound_speed_squared, &
-        & s_jwl_mixture_sound_speed_squared, s_jwl_pressure_er, s_jwl_energy_pr, s_jwl_mix_pressure_er, s_jwl_mix_energy_pr, &
-        & s_jwl_kuhl_pressure_er, s_jwl_kuhl_energy_pr, s_jwl_kuhl_sound_speed_squared, jwl_idx
+        & s_jwl_mixture_sound_speed_squared, s_jwl_rocflu_sound_speed_squared, s_jwl_pressure_er, s_jwl_energy_pr, &
+        & s_jwl_mix_pressure_er, s_jwl_mix_energy_pr, s_jwl_kuhl_pressure_er, s_jwl_kuhl_energy_pr, &
+        & s_jwl_kuhl_sound_speed_squared, jwl_idx
 
     ! Per-fluid JWL parameter tables. In simulation these live in m_global_parameters
     ! (shared with the solver hot path); for pre/post_process they are declared here.
@@ -461,6 +462,74 @@ contains
 
     end subroutine s_jwl_rocflu_energy_pr
 
+    !> Isentropic sound-speed squared for the Rocflu single-fluid blended EOS (Garno 2020). The Rocflu EOS is p = g_e*cab(rho,om) +
+    !! om(rho)*rho*e, where om blends linearly with density (g_rho) and g_e blends the cold-curve contribution with energy.
+    !! Re-written as a Gruneisen form p = (kab + om*rho)*e - air_e0*kab (kab = cab/(e0s-air_e0)) the sound speed follows directly
+    !! from c^2 = dp/drho|_e + dp/de|_rho * p/rho^2. Unlike s_jwl_mixture_sound_speed_squared, this never forms phasic densities
+    !! rho_k = Y*rho/alpha_j, so it is safe for Rocflu cells where alpha_j is a blending marker rather than a two-fluid volume
+    !! fraction.
+    subroutine s_jwl_rocflu_sound_speed_squared(rho, pres, Y, A, B, R1, R2, omega0, rho0, E0, air_e0, air_rho0, air_gamma, c2)
+
+        $:GPU_ROUTINE(function_name='s_jwl_rocflu_sound_speed_squared',parallelism='[seq]', cray_noinline=True)
+
+        real(wp), intent(in) :: rho, pres, Y, A, B, R1, R2, omega0, rho0, E0, air_e0, air_rho0, air_gamma
+        real(wp), intent(out) :: c2
+        real(wp) :: rho_s, Y_s, V, g_rho, om, e0s, kab_scale, exp1, exp2, cab, kab, dom_drho, dcab_drho, dcab_dom, e, g_e
+
+        rho_s = max(rho, sgm_eps)
+        Y_s = min(max(Y, 0._wp), 1._wp)
+
+        ! Endpoint guards: pure air or pure products bypass the blend entirely.
+        if (Y_s <= 1.e-4_wp) then
+            c2 = max((air_gamma + 1._wp)*pres/rho_s, sgm_eps)
+            return
+        else if (Y_s >= 1._wp - 1.e-4_wp) then
+            call s_jwl_sound_speed_squared(rho_s, pres, A, B, R1, R2, omega0, rho0, c2)
+            return
+        end if
+
+        ! Blended Gruneisen coefficient om(rho) and cold-curve cab(rho, om).
+        V = rho0/rho_s
+        g_rho = min(max((rho_s - air_rho0)/max(rho0 - air_rho0, sgm_eps), 0._wp), 1._wp)
+        om = air_gamma + (omega0 - air_gamma)*g_rho
+        e0s = E0/max(rho0, sgm_eps)
+        kab_scale = max(e0s - air_e0, sgm_eps)
+        exp1 = exp(-R1*V)
+        exp2 = exp(-R2*V)
+        cab = A*(1._wp - om/(R1*V))*exp1 + B*(1._wp - om/(R2*V))*exp2
+        kab = cab/kab_scale
+
+        ! Recover e from (rho, pres) using the Rocflu inverse (matches s_jwl_rocflu_energy_pr).
+        e = max((pres + air_e0*kab)/max(kab + om*rho_s, sgm_eps), 0._wp)
+        g_e = (e - air_e0)/kab_scale
+
+        ! d(om)/d(rho): non-zero only in the g_rho interior.
+        if (g_rho > sgm_eps .and. 1._wp - g_rho > sgm_eps) then
+            dom_drho = (omega0 - air_gamma)/max(rho0 - air_rho0, sgm_eps)
+        else
+            dom_drho = 0._wp
+        end if
+
+        ! d(cab)/d(rho): frozen-om part plus om-variation part (dcab_dom * dom_drho).
+        call s_jwl_dpcold_drho(rho_s, A, B, R1, R2, om, rho0, dcab_drho)
+        dcab_dom = -(A*exp1/(R1*V) + B*exp2/(R2*V))
+        dcab_drho = dcab_drho + dcab_dom*dom_drho
+
+        ! c^2 = dp/drho|_e + dp/de|_rho * p/rho^2. Three cases based on g_e saturation.
+        if (g_e <= 0._wp) then
+            ! g_e clamped at 0: p = om*rho*e, pure Mie-Gruneisen with blended om.
+            c2 = max((dom_drho*rho_s + om)*e + om*pres/rho_s, sgm_eps)
+        else if (g_e >= 1._wp) then
+            ! g_e clamped at 1: p = cab + om*rho*e, JWL form at blended om.
+            c2 = max(dcab_drho + (dom_drho*rho_s + om)*e + om*pres/rho_s, sgm_eps)
+        else
+            ! Unsaturated interior: dp/drho|_e = (dcab/drho/kab_scale)*(e-air_e0) + (dom/drho*rho+om)*e
+            !                       dp/de|_rho = kab + om*rho
+            c2 = max((dcab_drho/kab_scale)*(e - air_e0) + (dom_drho*rho_s + om)*e + (kab + om*rho_s)*pres/rho_s**2, sgm_eps)
+        end if
+
+    end subroutine s_jwl_rocflu_sound_speed_squared
+
     !> Dispatch the JWL/ideal-gas mixture pressure-from-energy to the active closure jwl_mix_type: 0 isobaric (default), 1 Kuhl
     !! additive, 2 thermal+pressure equilibrium, 3 Rocflu blend. Keeps the per-mode argument lists in one place so call sites stay
     !! one line. jidx is the JWL fluid index into the module jwl_*s arrays.
@@ -471,6 +540,16 @@ contains
         real(wp), intent(in)  :: rho, e, Y, alpha_j
         integer, intent(in)   :: jidx
         real(wp), intent(out) :: pres
+
+        if (Y <= sgm_eps .or. alpha_j <= sgm_eps) then
+            pres = max(jwl_air_gammas(jidx)*max(rho, sgm_eps)*e, sgm_eps)
+            return
+        else if (Y >= 1._wp - 1.e-12_wp .and. alpha_j >= 1._wp - 1.e-12_wp) then
+            call s_jwl_pcold(max(rho, sgm_eps), jwl_As(jidx), jwl_Bs(jidx), jwl_R1s(jidx), jwl_R2s(jidx), jwl_omegas(jidx), &
+                             & jwl_rho0s(jidx), pres)
+            pres = max(pres + jwl_omegas(jidx)*max(rho, sgm_eps)*e, sgm_eps)
+            return
+        end if
 
         select case (jwl_mix_type)
         case (1)
@@ -490,7 +569,8 @@ contains
                                    & jwl_air_gammas(jidx), pres)
         end select
 
-        if (pres /= pres .or. pres < sgm_eps) pres = sgm_eps
+        if (pres /= pres) pres = sgm_eps
+        if (pres < sgm_eps) pres = sgm_eps
 
     end subroutine s_jwl_mix_pressure_er
 
@@ -503,6 +583,16 @@ contains
         real(wp), intent(in)  :: rho, pres, Y, alpha_j
         integer, intent(in)   :: jidx
         real(wp), intent(out) :: e
+
+        if (Y <= sgm_eps .or. alpha_j <= sgm_eps) then
+            e = max(pres/max(jwl_air_gammas(jidx)*max(rho, sgm_eps), sgm_eps), 0._wp)
+            return
+        else if (Y >= 1._wp - 1.e-12_wp .and. alpha_j >= 1._wp - 1.e-12_wp) then
+            call s_jwl_pcold(max(rho, sgm_eps), jwl_As(jidx), jwl_Bs(jidx), jwl_R1s(jidx), jwl_R2s(jidx), jwl_omegas(jidx), &
+                             & jwl_rho0s(jidx), e)
+            e = max((pres - e)/max(jwl_omegas(jidx)*max(rho, sgm_eps), sgm_eps), 0._wp)
+            return
+        end if
 
         select case (jwl_mix_type)
         case (1)
@@ -522,7 +612,8 @@ contains
                                  & jwl_air_gammas(jidx), e)
         end select
 
-        if (e /= e .or. e < 0._wp) e = 0._wp
+        if (e /= e) e = 0._wp
+        if (e < 0._wp) e = 0._wp
 
     end subroutine s_jwl_mix_energy_pr
 
