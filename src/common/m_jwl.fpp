@@ -581,6 +581,10 @@ contains
             call s_mpi_abort('At most one fluid may use the JWL EOS (fluid_pp%eos = 2); found more than one.')
         end if
 
+        if (jwl_idx > 0 .and. model_eqns /= model_eqns_5eq) then
+            call s_mpi_abort('JWL EOS (fluid_pp%eos = 2) is only supported with ' // 'model_eqns = 2 (five-equation model).')
+        end if
+
         ! Specific heats for the p-T-equilibrium closure: products from the JWL fluid, air from the first ideal-gas fluid.
         jwl_cv_prod = 0._wp; jwl_cv_air = 0._wp
         if (jwl_idx > 0) jwl_cv_prod = fluid_pp(jwl_idx)%cv

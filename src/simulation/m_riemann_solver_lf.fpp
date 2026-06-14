@@ -12,6 +12,7 @@ module m_riemann_solver_lf
     use m_derived_types
     use m_global_parameters
     use m_variables_conversion
+    use m_jwl
     use m_constants, only: riemann_solver_hll, riemann_solver_hllc, riemann_solver_lax_friedrichs
     use m_thermochem, only: gas_constant, get_mixture_molecular_weight, get_mixture_specific_heat_cv_mass, &
         & get_mixture_energy_mass, get_species_specific_heats_r, get_mixture_specific_heat_cp_mass, molecular_weights
@@ -313,8 +314,26 @@ contains
                                 ! stagnation enthalpy here excludes magnetic energy (only used to find speed of sound)
                                 H_R = (E_R + pres_R - pres_mag%R)/rho_R
                             else
-                                E_L = gamma_L*pres_L + pi_inf_L + 5.e-1*rho_L*vel_L_rms + qv_L
-                                E_R = gamma_R*pres_R + pi_inf_R + 5.e-1*rho_R*vel_R_rms + qv_R
+                                if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
+                                    ! JWL: reconstruct total energy from p(rho,Y,alpha) via the inverse EOS.
+                                    ! alpha_rho_L/R(jwl_idx) are the JWL partial densities populated above.
+                                    block
+                                        real(wp) :: e_L, e_R, Y_jL, Y_jR, arho_jL, arho_jR
+                                        arho_jL = alpha_rho_L(max(1, jwl_idx))
+                                        arho_jR = alpha_rho_R(max(1, jwl_idx))
+                                        if (arho_jL /= arho_jL) arho_jL = alpha_L(jwl_idx)*jwl_rho0s(jwl_idx)
+                                        if (arho_jR /= arho_jR) arho_jR = alpha_R(jwl_idx)*jwl_rho0s(jwl_idx)
+                                        Y_jL = min(max(arho_jL/max(rho_L, sgm_eps), 0._wp), 1._wp)
+                                        Y_jR = min(max(arho_jR/max(rho_R, sgm_eps), 0._wp), 1._wp)
+                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jL, alpha_L(jwl_idx), jwl_idx, e_L)
+                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jR, alpha_R(jwl_idx), jwl_idx, e_R)
+                                        E_L = rho_L*e_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
+                                        E_R = rho_R*e_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
+                                    end block
+                                else
+                                    E_L = gamma_L*pres_L + pi_inf_L + 5.e-1*rho_L*vel_L_rms + qv_L
+                                    E_R = gamma_R*pres_R + pi_inf_R + 5.e-1*rho_R*vel_R_rms + qv_R
+                                end if
                                 H_L = (E_L + pres_L)/rho_L
                                 H_R = (E_R + pres_R)/rho_R
                             end if
@@ -351,10 +370,10 @@ contains
                             end if
 
                             call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, c_L, &
-                                                          & qv_L)
+                                                          & qv_L, alpha_rho_j=alpha_rho_L(max(1, jwl_idx)))
 
                             call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, c_R, &
-                                                          & qv_R)
+                                                          & qv_R, alpha_rho_j=alpha_rho_R(max(1, jwl_idx)))
 
                             if (mhd) then
                                 call s_compute_fast_magnetosonic_speed(rho_L, c_L, B%L, norm_dir, c_fast%L, H_L)

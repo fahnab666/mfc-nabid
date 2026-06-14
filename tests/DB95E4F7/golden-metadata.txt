@@ -1,46 +1,12 @@
-This file was created on 2026-06-13 15:58:28.930067.
+This file was created on 2026-06-13 20:55:30.300676.
 
 mfc.sh:
 
-    Invocation: test --no-build --generate -f DB95E4F7 -t DB95E4F7 -j 1
+    Invocation: test -j 4 --only DB95E4F7 --generate
     Lock:       mpi=Yes & gpu=No & debug=Yes & reldebug=No & gcov=No & unified=No & single=No & mixed=No & fastmath=No
-    Git:        cdb34a7d077c70f171a331b19fe79c386cbf01dc on jwl-upstream-rebase (dirty)
+    Git:        76d42d50ab6ee1ed36325a5590755b3dd84421d1 on jwl-upstream-rebase (dirty)
 
-pre_process:
-
-    CMake Configuration:
-    
-        CMake v4.3.2 on Fahads-MacBook-Pro.local
-    
-        C       : AppleClang v21.0.0.21000099 (/usr/bin/cc)
-        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
-    
-        PRE_PROCESS   : ON
-        SIMULATION    : OFF
-        POST_PROCESS  : OFF
-        SYSCHECK      : OFF
-        DOCUMENTATION : OFF
-        ALL           : OFF
-    
-        MPI     : ON
-        OpenACC : OFF
-        OpenMP  : OFF
-    
-        Fypp    : /Users/fahadnabid/Documents/default/MFC/build/venv/bin/fypp
-        Doxygen : 
-    
-        Build Type : Debug
-    
-    Configuration Environment:
-    
-        CC       : /usr/bin/cc
-        CXX      : /usr/bin/c++
-        FC       : /opt/homebrew/bin/gfortran
-        OMPI_CC  : 
-        OMPI_CXX : 
-        OMPI_FC  : 
-
-syscheck:
+post_process:
 
     CMake Configuration:
     
@@ -51,8 +17,8 @@ syscheck:
     
         PRE_PROCESS   : OFF
         SIMULATION    : OFF
-        POST_PROCESS  : OFF
-        SYSCHECK      : ON
+        POST_PROCESS  : ON
+        SYSCHECK      : OFF
         DOCUMENTATION : OFF
         ALL           : OFF
     
@@ -108,7 +74,41 @@ simulation:
         OMPI_CXX : 
         OMPI_FC  : 
 
-post_process:
+pre_process:
+
+    CMake Configuration:
+    
+        CMake v4.3.2 on Fahads-MacBook-Pro.local
+    
+        C       : AppleClang v21.0.0.21000099 (/usr/bin/cc)
+        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
+    
+        PRE_PROCESS   : ON
+        SIMULATION    : OFF
+        POST_PROCESS  : OFF
+        SYSCHECK      : OFF
+        DOCUMENTATION : OFF
+        ALL           : OFF
+    
+        MPI     : ON
+        OpenACC : OFF
+        OpenMP  : OFF
+    
+        Fypp    : /Users/fahadnabid/Documents/default/MFC/build/venv/bin/fypp
+        Doxygen : 
+    
+        Build Type : Debug
+    
+    Configuration Environment:
+    
+        CC       : /usr/bin/cc
+        CXX      : /usr/bin/c++
+        FC       : /opt/homebrew/bin/gfortran
+        OMPI_CC  : 
+        OMPI_CXX : 
+        OMPI_FC  : 
+
+syscheck:
 
     CMake Configuration:
     
@@ -119,8 +119,8 @@ post_process:
     
         PRE_PROCESS   : OFF
         SIMULATION    : OFF
-        POST_PROCESS  : ON
-        SYSCHECK      : OFF
+        POST_PROCESS  : OFF
+        SYSCHECK      : ON
         DOCUMENTATION : OFF
         ALL           : OFF
     

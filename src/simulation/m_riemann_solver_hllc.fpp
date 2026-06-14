@@ -320,15 +320,18 @@ contains
                                 @:compute_average_state()
 
                                 call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, &
-                                                              & c_L, qv_L)
+                                                              & c_L, qv_L, alpha_rho_j=qL_prim_rsx_vf(${SF('')}$, max(1, jwl_idx)))
 
                                 call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, &
-                                                              & c_R, qv_R)
+                                                              & c_R, qv_R, alpha_rho_j=qR_prim_rsx_vf(${SF(' + 1')}$, max(1, &
+                                                              & jwl_idx)))
 
                                 !> The computation of c_avg does not require all the variables, and therefore the non '_avg'
                                 ! variables are placeholders to call the subroutine.
                                 call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &
-                                                              & 0._wp, c_avg, qv_avg)
+                                                              & 0._wp, c_avg, qv_avg, &
+                                                              & alpha_rho_j=5.e-1_wp*(qL_prim_rsx_vf(${SF('')}$, max(1, &
+                                                              & jwl_idx)) + qR_prim_rsx_vf(${SF(' + 1')}$, max(1, jwl_idx))))
 
                                 if (viscous) then
                                     $:GPU_LOOP(parallelism='[seq]')
@@ -650,16 +653,17 @@ contains
                                 @:compute_average_state()
 
                                 call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, &
-                                                              & c_L, qv_L)
+                                                              & c_L, qv_L, alpha_rho_j=alpha_rho_L(max(1, jwl_idx)))
 
                                 call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, &
-                                                              & c_R, qv_R)
+                                                              & c_R, qv_R, alpha_rho_j=alpha_rho_R(max(1, jwl_idx)))
 
                                 !> The computation of c_avg does not require all the variables, and therefore the non '_avg'
                                 ! variables are placeholders to call the subroutine.
 
                                 call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &
-                                                              & 0._wp, c_avg, qv_avg)
+                                                              & 0._wp, c_avg, qv_avg, alpha_rho_j=5.e-1_wp*(alpha_rho_L(max(1, &
+                                                              & jwl_idx)) + alpha_rho_R(max(1, jwl_idx))))
 
                                 if (wave_speeds == wave_speeds_direct) then
                                     s_L = min(vel_L(dir_idx(1)) - c_L, vel_R(dir_idx(1)) - c_R)
@@ -1008,15 +1012,18 @@ contains
                                 end if
 
                                 call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, &
-                                                              & c_L, qv_L)
+                                                              & c_L, qv_L, alpha_rho_j=qL_prim_rsx_vf(${SF('')}$, max(1, jwl_idx)))
 
                                 call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, &
-                                                              & c_R, qv_R)
+                                                              & c_R, qv_R, alpha_rho_j=qR_prim_rsx_vf(${SF(' + 1')}$, max(1, &
+                                                              & jwl_idx)))
 
                                 !> The computation of c_avg does not require all the variables, and therefore the non '_avg'
                                 ! variables are placeholders to call the subroutine.
                                 call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &
-                                                              & 0._wp, c_avg, qv_avg)
+                                                              & 0._wp, c_avg, qv_avg, &
+                                                              & alpha_rho_j=5.e-1_wp*(qL_prim_rsx_vf(${SF('')}$, max(1, &
+                                                              & jwl_idx)) + qR_prim_rsx_vf(${SF(' + 1')}$, max(1, jwl_idx))))
 
                                 if (viscous) then
                                     $:GPU_LOOP(parallelism='[seq]')
@@ -1435,15 +1442,18 @@ contains
                                 @:compute_average_state()
 
                                 call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, &
-                                                              & c_L, qv_L)
+                                                              & c_L, qv_L, alpha_rho_j=qL_prim_rsx_vf(${SF('')}$, max(1, jwl_idx)))
 
                                 call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, &
-                                                              & c_R, qv_R)
+                                                              & c_R, qv_R, alpha_rho_j=qR_prim_rsx_vf(${SF(' + 1')}$, max(1, &
+                                                              & jwl_idx)))
 
                                 !> The computation of c_avg does not require all the variables, and therefore the non '_avg'
                                 !  variables are placeholders to call the subroutine.
                                 call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &
-                                                              & c_sum_Yi_Phi, c_avg, qv_avg)
+                                                              & c_sum_Yi_Phi, c_avg, qv_avg, &
+                                                              & alpha_rho_j=5.e-1_wp*(qL_prim_rsx_vf(${SF('')}$, max(1, &
+                                                              & jwl_idx)) + qR_prim_rsx_vf(${SF(' + 1')}$, max(1, jwl_idx))))
 
                                 if (viscous) then
                                     if (chemistry) then
