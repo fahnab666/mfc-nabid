@@ -58,6 +58,7 @@ contains
         real(wp) :: rho_L, rho_R
         real(wp) :: pres_L, pres_R
         real(wp) :: E_L, E_R
+        real(wp) :: e_jwl_L, e_jwl_R
         real(wp) :: H_L, H_R
         #:if not MFC_CASE_OPTIMIZATION and USING_AMD
             real(wp), dimension(10) :: Ys_L, Ys_R, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Cp_iL, Cp_iR
@@ -149,7 +150,7 @@ contains
                                         & c_L, c_R, G_L, G_R, rho_avg, H_avg, c_avg, gamma_avg, ptilde_L, ptilde_R, vel_L_rms, &
                                         & vel_R_rms, vel_avg_rms, vel_L_tmp, vel_R_tmp, Ms_L, Ms_R, pres_SL, pres_SR, &
                                         & alpha_L_sum, alpha_R_sum, rho_Star, E_Star, p_Star, p_K_Star, vel_K_star, s_L, s_R, &
-                                        & s_M, s_P, s_S, xi_M, xi_P, xi_L, xi_R, xi_L_m1, xi_R_m1, xi_MP, xi_PP]')
+                                        & s_M, s_P, s_S, xi_M, xi_P, xi_L, xi_R, xi_L_m1, xi_R_m1, xi_MP, xi_PP, e_jwl_L, e_jwl_R]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -249,17 +250,14 @@ contains
                                     ! then add kinetic energy. Keep the same bounded state for sound speeds below.
                                     Y_L = 1._wp; Y_R = 1._wp
                                     alpha_jwl_L = 1._wp; alpha_jwl_R = 1._wp
-                                    block
-                                        real(wp) :: e_jwl_L, e_jwl_R
-                                        Y_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
-                                        Y_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
-                                        alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
-                                        alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
-                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_L, alpha_jwl_L, jwl_idx, e_jwl_L)
-                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_R, alpha_jwl_R, jwl_idx, e_jwl_R)
-                                        E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
-                                        E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
-                                    end block
+                                    Y_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
+                                    Y_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
+                                    alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
+                                    alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
+                                    call s_jwl_mix_energy_pr(rho_L, pres_L, Y_L, alpha_jwl_L, jwl_idx, e_jwl_L)
+                                    call s_jwl_mix_energy_pr(rho_R, pres_R, Y_R, alpha_jwl_R, jwl_idx, e_jwl_R)
+                                    E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
+                                    E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
                                 else
                                     E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
                                     E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
@@ -582,7 +580,8 @@ contains
                                         & ptilde_R, vel_L_rms, vel_R_rms, vel_avg_rms, vel_L_tmp, vel_R_tmp, Ms_L, Ms_R, pres_SL, &
                                         & pres_SR, alpha_L_sum, alpha_R_sum, rho_Star, E_Star, p_Star, p_K_Star, vel_K_star, s_L, &
                                         & s_R, s_M, s_P, s_S, xi_M, xi_P, xi_L, xi_R, xi_L_m1, xi_R_m1, xi_MP, xi_PP, Ys_L, Ys_R, &
-                                        & Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Yi_avg, Phi_avg, h_iL, h_iR, h_avg_2]')
+                                        & Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Yi_avg, Phi_avg, h_iL, h_iR, h_avg_2, &
+                                        & e_jwl_L, e_jwl_R]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -638,17 +637,14 @@ contains
                                     ! then add kinetic energy. Keep the same bounded state for sound speeds below.
                                     Y_L = 1._wp; Y_R = 1._wp
                                     alpha_jwl_L = 1._wp; alpha_jwl_R = 1._wp
-                                    block
-                                        real(wp) :: e_jwl_L, e_jwl_R
-                                        Y_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
-                                        Y_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
-                                        alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
-                                        alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
-                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_L, alpha_jwl_L, jwl_idx, e_jwl_L)
-                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_R, alpha_jwl_R, jwl_idx, e_jwl_R)
-                                        E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
-                                        E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
-                                    end block
+                                    Y_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
+                                    Y_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
+                                    alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
+                                    alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
+                                    call s_jwl_mix_energy_pr(rho_L, pres_L, Y_L, alpha_jwl_L, jwl_idx, e_jwl_L)
+                                    call s_jwl_mix_energy_pr(rho_R, pres_R, Y_R, alpha_jwl_R, jwl_idx, e_jwl_R)
+                                    E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
+                                    E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
                                 else
                                     E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
                                     E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
@@ -822,7 +818,8 @@ contains
                                         & Y_L, Y_R, alpha_jwl_L, alpha_jwl_R, Ms_L, Ms_R, pres_SL, pres_SR, alpha_L_sum, &
                                         & alpha_R_sum, s_L, s_R, s_M, s_P, s_S, xi_M, xi_P, xi_L, xi_R, xi_L_m1, xi_R_m1, xi_MP, &
                                         & xi_PP, nbub_L, nbub_R, PbwR3Lbar, PbwR3Rbar, R3Lbar, R3Rbar, R3V2Lbar, R3V2Rbar, Ys_L, &
-                                        & Ys_R, Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Yi_avg, Phi_avg, h_iL, h_iR, h_avg_2]')
+                                        & Ys_R, Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Yi_avg, Phi_avg, h_iL, h_iR, &
+                                        & h_avg_2, e_jwl_L, e_jwl_R]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -914,17 +911,14 @@ contains
                                 if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
                                     Y_L = 1._wp; Y_R = 1._wp
                                     alpha_jwl_L = 1._wp; alpha_jwl_R = 1._wp
-                                    block
-                                        real(wp) :: e_jwl_L, e_jwl_R
-                                        Y_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
-                                        Y_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
-                                        alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
-                                        alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
-                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_L, alpha_jwl_L, jwl_idx, e_jwl_L)
-                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_R, alpha_jwl_R, jwl_idx, e_jwl_R)
-                                        E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
-                                        E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
-                                    end block
+                                    Y_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
+                                    Y_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
+                                    alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
+                                    alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
+                                    call s_jwl_mix_energy_pr(rho_L, pres_L, Y_L, alpha_jwl_L, jwl_idx, e_jwl_L)
+                                    call s_jwl_mix_energy_pr(rho_R, pres_R, Y_R, alpha_jwl_R, jwl_idx, e_jwl_R)
+                                    E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
+                                    E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
                                 else
                                     E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms
                                     E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms
@@ -1236,7 +1230,7 @@ contains
                                         & pres_SL, pres_SR, vel_L, vel_R, Re_L, Re_R, alpha_L, alpha_R, s_L, s_R, s_S, &
                                         & vel_avg_rms, pcorr, zcoef, vel_L_tmp, vel_R_tmp, Ys_L, Ys_R, Xs_L, Xs_R, Gamma_iL, &
                                         & Gamma_iR, Cp_iL, Cp_iR, tau_e_L, tau_e_R, xi_field_L, xi_field_R, Yi_avg, Phi_avg, &
-                                        & h_iL, h_iR, h_avg_2, G_L, G_R]', copyin='[is1, is2, is3]')
+                                        & h_iL, h_iR, h_avg_2, G_L, G_R, e_jwl_L, e_jwl_R]', copyin='[is1, is2, is3]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -1373,18 +1367,14 @@ contains
                                     if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
                                         Y_L = 1._wp; Y_R = 1._wp
                                         alpha_jwl_L = 1._wp; alpha_jwl_R = 1._wp
-                                        block
-                                            real(wp) :: e_jwl_L, e_jwl_R
-                                            Y_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
-                                            Y_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), &
-                                                      & 1._wp)
-                                            alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
-                                            alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
-                                            call s_jwl_mix_energy_pr(rho_L, pres_L, Y_L, alpha_jwl_L, jwl_idx, e_jwl_L)
-                                            call s_jwl_mix_energy_pr(rho_R, pres_R, Y_R, alpha_jwl_R, jwl_idx, e_jwl_R)
-                                            E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
-                                            E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
-                                        end block
+                                        Y_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
+                                        Y_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
+                                        alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
+                                        alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
+                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_L, alpha_jwl_L, jwl_idx, e_jwl_L)
+                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_R, alpha_jwl_R, jwl_idx, e_jwl_R)
+                                        E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
+                                        E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
                                     else
                                         E_L = gamma_L*pres_L + pi_inf_L + 5.e-1*rho_L*vel_L_rms + qv_L
                                         E_R = gamma_R*pres_R + pi_inf_R + 5.e-1*rho_R*vel_R_rms + qv_R

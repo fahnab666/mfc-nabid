@@ -1118,6 +1118,7 @@ contains
         real(wp), dimension(2) :: Re_K
         real(wp)               :: G_K
         real(wp)               :: T_K, mix_mol_weight, R_gas
+        real(wp)               :: e_mix_jwl, Y_j, alpha_j
         integer                :: i, j, k, l  !< Generic loop iterators
 
         is1b = is1%beg; is1e = is1%end
@@ -1130,7 +1131,7 @@ contains
         ! capillarity
 #ifdef MFC_SIMULATION
         $:GPU_PARALLEL_LOOP(collapse=3, private='[alpha_rho_K, vel_K, alpha_K, Re_K, Y_K, rho_K, vel_K_sum, pres_K, E_K, gamma_K, &
-                            & pi_inf_K, qv_K, G_K, T_K, mix_mol_weight, R_gas]')
+                            & pi_inf_K, qv_K, G_K, T_K, mix_mol_weight, R_gas, e_mix_jwl, Y_j, alpha_j]')
         do l = is3b, is3e
             do k = is2b, is2e
                 do j = is1b, is1e
@@ -1177,13 +1178,10 @@ contains
                         call get_mixture_energy_mass(T_K, Y_K, E_K)
                         E_K = rho_K*E_K + 5.e-1_wp*rho_K*vel_K_sum
                     else if (jwl_idx > 0 .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
-                        block
-                            real(wp) :: e_mix_jwl, Y_j, alpha_j
-                            alpha_j = min(max(qK_prim_vf(j, k, l, eqn_idx%adv%beg + jwl_idx - 1), 0._wp), 1._wp)
-                            Y_j = min(max(qK_prim_vf(j, k, l, jwl_idx)/max(rho_K, sgm_eps), 0._wp), 1._wp)
-                            call s_jwl_mix_energy_pr(rho_K, pres_K, Y_j, alpha_j, jwl_idx, e_mix_jwl)
-                            E_K = rho_K*e_mix_jwl + 5.e-1_wp*rho_K*vel_K_sum
-                        end block
+                        alpha_j = min(max(qK_prim_vf(j, k, l, eqn_idx%adv%beg + jwl_idx - 1), 0._wp), 1._wp)
+                        Y_j = min(max(qK_prim_vf(j, k, l, jwl_idx)/max(rho_K, sgm_eps), 0._wp), 1._wp)
+                        call s_jwl_mix_energy_pr(rho_K, pres_K, Y_j, alpha_j, jwl_idx, e_mix_jwl)
+                        E_K = rho_K*e_mix_jwl + 5.e-1_wp*rho_K*vel_K_sum
                     else
                         ! Computing the energy from the pressure
                         E_K = gamma_K*pres_K + pi_inf_K + 5.e-1_wp*rho_K*vel_K_sum + qv_K
@@ -1335,6 +1333,7 @@ contains
         real(wp), intent(in), optional :: jwl_Y        !< Bounded JWL mass fraction from the Riemann state
         real(wp), intent(in), optional :: jwl_alpha    !< Bounded JWL volume fraction from the Riemann state
         real(wp)                       :: blkmod1, blkmod2
+        real(wp)                       :: c2, Y_j, alpha_j
         integer                        :: q
 
         if (chemistry) then  ! Reacting mixture sound speed
@@ -1350,44 +1349,41 @@ contains
             ! Y_j = alpha_rho_j / rho  (correct: uses the actual phasic partial density).
             ! If alpha_rho_j is not passed (e.g. avg-state call), fall back to the rho0 proxy
             ! alpha_j*rho0/rho which is exact at initial conditions and only a wave-speed bound.
-            block
-                real(wp) :: c2, Y_j, alpha_j
-                alpha_j = min(max(adv(jwl_idx), 0._wp), 1._wp)
-                if (present(jwl_alpha)) then
-                    if (jwl_alpha == jwl_alpha) alpha_j = min(max(jwl_alpha, 0._wp), 1._wp)
-                end if
+            alpha_j = min(max(adv(jwl_idx), 0._wp), 1._wp)
+            if (present(jwl_alpha)) then
+                if (jwl_alpha == jwl_alpha) alpha_j = min(max(jwl_alpha, 0._wp), 1._wp)
+            end if
 
-                ! Compute the rho0-proxy fallback first; override with the actual
-                ! phasic partial density when it is present and not NaN. A caller
-                ! may pass the already-bounded Riemann-state mass fraction as jwl_Y.
-                ! NOTE: present() guards must be separate if-blocks because Fortran
-                ! does not short-circuit .and. when an optional argument is absent.
-                Y_j = min(max(alpha_j*jwl_rho0s(jwl_idx)/max(rho, sgm_eps), 0._wp), 1._wp)
-                if (present(alpha_rho_j)) then
-                    if (alpha_rho_j == alpha_rho_j) Y_j = min(max(alpha_rho_j/max(rho, sgm_eps), 0._wp), 1._wp)
-                end if
-                if (present(jwl_Y)) then
-                    if (jwl_Y == jwl_Y) Y_j = min(max(jwl_Y, 0._wp), 1._wp)
-                end if
-                ! Rocflu (mode 3) is a single-fluid closure: alpha_j is a blending marker, not
-                ! a two-fluid volume fraction. Using it to form phasic densities rho_k=Y*rho/alpha_j
-                ! yields unphysical values and oscillatory sound speeds. Use the Rocflu-specific
-                ! Gruneisen formula that operates on total rho and recovers e from (rho, p) directly.
-                if (jwl_mix_type == 3) then
-                    call s_jwl_rocflu_sound_speed_squared(rho, pres, Y_j, jwl_As(jwl_idx), jwl_Bs(jwl_idx), jwl_R1s(jwl_idx), &
-                                                          & jwl_R2s(jwl_idx), jwl_omegas(jwl_idx), jwl_rho0s(jwl_idx), &
-                                                          & jwl_E0s(jwl_idx), jwl_air_e0s(jwl_idx), jwl_air_rho0s(jwl_idx), &
-                                                          & jwl_air_gammas(jwl_idx), c2)
-                else
-                    call s_jwl_mixture_sound_speed_squared(rho, pres, Y_j, alpha_j, jwl_As(jwl_idx), jwl_Bs(jwl_idx), &
-                                                           & jwl_R1s(jwl_idx), jwl_R2s(jwl_idx), jwl_omegas(jwl_idx), &
-                                                           & jwl_rho0s(jwl_idx), jwl_E0s(jwl_idx), jwl_air_e0s(jwl_idx), &
-                                                           & jwl_air_rho0s(jwl_idx), jwl_air_gammas(jwl_idx), c2)
-                end if
-                if (c2 /= c2) c2 = jwl_omegas(jwl_idx)*max(pres, 1._wp)/max(rho, sgm_eps)
-                c2 = max(c2, jwl_omegas(jwl_idx)*max(pres, 1._wp)/max(rho, sgm_eps))
-                c = sqrt(max(c2, sgm_eps))
-            end block
+            ! Compute the rho0-proxy fallback first; override with the actual
+            ! phasic partial density when it is present and not NaN. A caller
+            ! may pass the already-bounded Riemann-state mass fraction as jwl_Y.
+            ! NOTE: present() guards must be separate if-blocks because Fortran
+            ! does not short-circuit .and. when an optional argument is absent.
+            Y_j = min(max(alpha_j*jwl_rho0s(jwl_idx)/max(rho, sgm_eps), 0._wp), 1._wp)
+            if (present(alpha_rho_j)) then
+                if (alpha_rho_j == alpha_rho_j) Y_j = min(max(alpha_rho_j/max(rho, sgm_eps), 0._wp), 1._wp)
+            end if
+            if (present(jwl_Y)) then
+                if (jwl_Y == jwl_Y) Y_j = min(max(jwl_Y, 0._wp), 1._wp)
+            end if
+            ! Rocflu (mode 3) is a single-fluid closure: alpha_j is a blending marker, not
+            ! a two-fluid volume fraction. Using it to form phasic densities rho_k=Y*rho/alpha_j
+            ! yields unphysical values and oscillatory sound speeds. Use the Rocflu-specific
+            ! Gruneisen formula that operates on total rho and recovers e from (rho, p) directly.
+            if (jwl_mix_type == 3) then
+                call s_jwl_rocflu_sound_speed_squared(rho, pres, Y_j, jwl_As(jwl_idx), jwl_Bs(jwl_idx), jwl_R1s(jwl_idx), &
+                                                      & jwl_R2s(jwl_idx), jwl_omegas(jwl_idx), jwl_rho0s(jwl_idx), &
+                                                      & jwl_E0s(jwl_idx), jwl_air_e0s(jwl_idx), jwl_air_rho0s(jwl_idx), &
+                                                      & jwl_air_gammas(jwl_idx), c2)
+            else
+                call s_jwl_mixture_sound_speed_squared(rho, pres, Y_j, alpha_j, jwl_As(jwl_idx), jwl_Bs(jwl_idx), &
+                                                       & jwl_R1s(jwl_idx), jwl_R2s(jwl_idx), jwl_omegas(jwl_idx), &
+                                                       & jwl_rho0s(jwl_idx), jwl_E0s(jwl_idx), jwl_air_e0s(jwl_idx), &
+                                                       & jwl_air_rho0s(jwl_idx), jwl_air_gammas(jwl_idx), c2)
+            end if
+            if (c2 /= c2) c2 = jwl_omegas(jwl_idx)*max(pres, 1._wp)/max(rho, sgm_eps)
+            c2 = max(c2, jwl_omegas(jwl_idx)*max(pres, 1._wp)/max(rho, sgm_eps))
+            c = sqrt(max(c2, sgm_eps))
         else
             if (alt_soundspeed) then  ! Wood's mixture sound speed via bulk moduli
                 blkmod1 = ((gammas(1) + 1._wp)*pres + pi_infs(1))/gammas(1)

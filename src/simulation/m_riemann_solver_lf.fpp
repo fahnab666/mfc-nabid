@@ -61,6 +61,7 @@ contains
         real(wp)                  :: rho_L, rho_R
         real(wp)                  :: pres_L, pres_R
         real(wp)                  :: E_L, E_R
+        real(wp)                  :: e_jwl_L, e_jwl_R, Y_jL, Y_jR, arho_jL, arho_jR
         real(wp)                  :: H_L, H_R
         real(wp)                  :: Cp_avg, Cv_avg, T_avg, eps, c_sum_Yi_Phi
         real(wp)                  :: T_L, T_R
@@ -120,7 +121,8 @@ contains
                                     & vel_R_tmp, Ms_L, Ms_R, pres_SL, pres_SR, alpha_L_sum, alpha_R_sum, c_avg, pres_L, pres_R, &
                                     & rho_L, rho_R, gamma_L, gamma_R, pi_inf_L, pi_inf_R, qv_L, qv_R, c_L, c_R, E_L, E_R, H_L, &
                                     & H_R, ptilde_L, ptilde_R, s_M, s_P, xi_M, xi_P, Cp_avg, Cv_avg, T_avg, eps, c_sum_Yi_Phi, &
-                                    & Cp_L, Cp_R, Cv_L, Cv_R, R_gas_L, R_gas_R, MW_L, MW_R, T_L, T_R, Y_L, Y_R]')
+                                    & Cp_L, Cp_R, Cv_L, Cv_R, R_gas_L, R_gas_R, MW_L, MW_R, T_L, T_R, Y_L, Y_R, e_jwl_L, e_jwl_R, &
+                                    & Y_jL, Y_jR, arho_jL, arho_jR]')
                 do l = ${Z_BND}$%beg, ${Z_BND}$%end
                     do k = ${Y_BND}$%beg, ${Y_BND}$%end
                         do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -317,19 +319,16 @@ contains
                                 if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
                                     ! JWL: reconstruct total energy from p(rho,Y,alpha) via the inverse EOS.
                                     ! alpha_rho_L/R(jwl_idx) are the JWL partial densities populated above.
-                                    block
-                                        real(wp) :: e_jwl_L, e_jwl_R, Y_jL, Y_jR, arho_jL, arho_jR
-                                        arho_jL = alpha_rho_L(max(1, jwl_idx))
-                                        arho_jR = alpha_rho_R(max(1, jwl_idx))
-                                        if (arho_jL /= arho_jL) arho_jL = alpha_L(jwl_idx)*jwl_rho0s(jwl_idx)
-                                        if (arho_jR /= arho_jR) arho_jR = alpha_R(jwl_idx)*jwl_rho0s(jwl_idx)
-                                        Y_jL = min(max(arho_jL/max(rho_L, sgm_eps), 0._wp), 1._wp)
-                                        Y_jR = min(max(arho_jR/max(rho_R, sgm_eps), 0._wp), 1._wp)
-                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jL, alpha_L(jwl_idx), jwl_idx, e_jwl_L)
-                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jR, alpha_R(jwl_idx), jwl_idx, e_jwl_R)
-                                        E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
-                                        E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
-                                    end block
+                                    arho_jL = alpha_rho_L(max(1, jwl_idx))
+                                    arho_jR = alpha_rho_R(max(1, jwl_idx))
+                                    if (arho_jL /= arho_jL) arho_jL = alpha_L(jwl_idx)*jwl_rho0s(jwl_idx)
+                                    if (arho_jR /= arho_jR) arho_jR = alpha_R(jwl_idx)*jwl_rho0s(jwl_idx)
+                                    Y_jL = min(max(arho_jL/max(rho_L, sgm_eps), 0._wp), 1._wp)
+                                    Y_jR = min(max(arho_jR/max(rho_R, sgm_eps), 0._wp), 1._wp)
+                                    call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jL, alpha_L(jwl_idx), jwl_idx, e_jwl_L)
+                                    call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jR, alpha_R(jwl_idx), jwl_idx, e_jwl_R)
+                                    E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
+                                    E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
                                 else
                                     E_L = gamma_L*pres_L + pi_inf_L + 5.e-1*rho_L*vel_L_rms + qv_L
                                     E_R = gamma_R*pres_R + pi_inf_R + 5.e-1*rho_R*vel_R_rms + qv_R
