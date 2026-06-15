@@ -1,15 +1,16 @@
 """
-JWL EOS inverse-consistency tests.
+JWL EOS reference oracle.
 
-Tests all four JWL/ideal-gas mixture closures (jwl_mix_type = 0, 1, 2, 3) by:
-  1. Starting from a sampled (rho, p, Y_jwl, alpha_jwl) state.
-  2. Computing e = energy_pr(rho, p, Y, alpha) [inversion: pressure → energy].
-  3. Computing p_back = pressure_er(rho, e, Y, alpha) [forward: energy → pressure].
-  4. Checking relative round-trip error |p_back - p| / p.
-  5. Checking p > 0, c² > 0, no NaN, no Inf at each step.
+This is an independent Python reimplementation of the JWL/ideal-gas mixture
+closures in src/common/m_jwl.fpp. It does NOT exercise the compiled Fortran; it
+checks that the closure algebra itself is self-consistent (a pressure->energy->
+pressure round-trip recovers the input) and well-posed (p > 0, c2 > 0, finite).
+Use it as a cross-check when changing the EOS math; the golden-file cases remain
+the authority on the actual solver.
 
-The Python implementations below are direct translations of the Fortran routines in
-src/common/m_jwl.fpp, using the same branching and flooring logic.
+Covers all four closures (jwl_mix_type = 0, 1, 2, 3): for each sampled
+(rho, p, Y_jwl, alpha_jwl) state it computes e = energy_pr, then p_back =
+pressure_er, and verifies the relative round-trip error and well-posedness.
 
 Run with:
     python3 -m pytest toolchain/mfc/test/test_jwl_inverse.py -v
@@ -361,7 +362,7 @@ _SOUND_SPEED_SQ = {0: _c2_mixture, 1: _c2_kuhl, 2: _c2_mixture, 3: _c2_mixture}
 
 # Round-trip tolerance per closure type.
 # Types 0 & 1 are algebraically exact inverses (analytical expressions).
-# Type 2 uses 60-iteration bisection (converges to ~2^-60 of bracket).
+# Type 2 root-finds the p-T equilibrium; the oracle uses bisection to a tight bracket.
 # Type 3 has a blending g_e clamp that can make the inversion branch-switch
 # for some states; we only require no NaN/Inf and p>0 there.
 _RTOL = {0: 1.0e-10, 1: 1.0e-10, 2: 1.0e-6, 3: None}
@@ -566,7 +567,7 @@ class TestJwlInverseConsistency(unittest.TestCase):
         self._assert_no_failures(1)
 
     def test_type2_ptequil(self):
-        """Type 2 p-T-equilibrium closure: 60-step bisection, converges to ~1e-18."""
+        """Type 2 p-T-equilibrium closure: root-find recovers a tight round-trip."""
         self._assert_no_failures(2)
 
     def test_type3_rocflu(self):
