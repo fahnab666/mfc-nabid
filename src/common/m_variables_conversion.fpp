@@ -33,16 +33,6 @@ module m_variables_conversion
               s_convert_primitive_to_conservative_variables, &
               s_convert_primitive_to_flux_variables, &
               s_compute_pressure, &
-              s_jwl_pcold, &
-              s_jwl_sound_speed_squared, &
-              s_jwl_mixture_sound_speed_squared, &
-              s_jwl_energy_pr, &
-              s_jwl_mix_pressure_er, &
-              s_jwl_mix_energy_pr, &
-              s_jwl_kuhl_pressure_er, &
-              s_jwl_kuhl_energy_pr, &
-              s_jwl_kuhl_sound_speed_squared, &
-              jwl_idx, &
               s_compute_species_fraction, &
 #ifndef MFC_PRE_PROCESS
     s_compute_speed_of_sound, &

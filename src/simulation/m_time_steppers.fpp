@@ -10,6 +10,7 @@ module m_time_steppers
 
     use m_derived_types
     use m_global_parameters
+    use m_jwl, only: jwl_idx
     use m_rhs
     use m_pressure_relaxation
     use m_data_output

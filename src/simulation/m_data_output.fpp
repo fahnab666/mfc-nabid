@@ -12,6 +12,7 @@ module m_data_output
     use m_global_parameters
     use m_mpi_proxy
     use m_variables_conversion
+    use m_jwl, only: jwl_idx
     use m_compile_specific
     use m_helper
     use m_helper_basic

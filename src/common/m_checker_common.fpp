@@ -28,28 +28,8 @@ contains
         #:if USING_AMD
             call s_check_amd
         #:endif
-        call s_check_jwl
 
     end subroutine s_check_inputs_common
-
-    !> Require every JWL fluid (eos == 2) to set its parameters explicitly; they default to dflt_real, so an unset value is a
-    !! missing input rather than a silent magic number.
-    impure subroutine s_check_jwl
-
-        integer :: i
-
-        do i = 1, num_fluids
-            if (fluid_pp(i)%eos /= 2) cycle
-            @:PROHIBIT(f_is_default(fluid_pp(i)%jwl_A) .or. f_is_default(fluid_pp(i)%jwl_B) .or. f_is_default(fluid_pp(i)%jwl_R1) &
-                       & .or. f_is_default(fluid_pp(i)%jwl_R2) .or. f_is_default(fluid_pp(i)%jwl_omega) &
-                       & .or. f_is_default(fluid_pp(i)%jwl_rho0) .or. f_is_default(fluid_pp(i)%jwl_E0), &
-                       & "A JWL fluid (eos = 2) requires jwl_A, jwl_B, jwl_R1, jwl_R2, jwl_omega, jwl_rho0 and jwl_E0")
-            @:PROHIBIT(f_is_default(fluid_pp(i)%jwl_air_e0) .or. f_is_default(fluid_pp(i)%jwl_air_rho0) &
-                       & .or. f_is_default(fluid_pp(i)%jwl_air_gamma), &
-                       & "A JWL fluid (eos = 2) requires jwl_air_e0, jwl_air_rho0 and jwl_air_gamma")
-        end do
-
-    end subroutine s_check_jwl
 
 #ifndef MFC_SIMULATION
     !> Verify that the total number of grid cells meets the minimum required by the number of dimensions and MPI ranks.
