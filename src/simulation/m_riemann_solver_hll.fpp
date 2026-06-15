@@ -317,13 +317,15 @@ contains
                                 H_L = (E_L + pres_L - pres_mag%L)/rho_L
                                 ! stagnation enthalpy here excludes magnetic energy (only used to find speed of sound)
                                 H_R = (E_R + pres_R - pres_mag%R)/rho_R
-                            else
-                                if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
-                                    Y_jwl_L = min(max(alpha_rho_L(jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
-                                    Y_jwl_R = min(max(alpha_rho_R(jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
-                                end if
+                            else if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
+                                Y_jwl_L = min(max(alpha_rho_L(jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
+                                Y_jwl_R = min(max(alpha_rho_R(jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
                                 @:JWL_RECONSTRUCT_ENERGY()
-
+                                H_L = (E_L + pres_L)/rho_L
+                                H_R = (E_R + pres_R)/rho_R
+                            else
+                                E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
+                                E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
                                 H_L = (E_L + pres_L)/rho_L
                                 H_R = (E_R + pres_R)/rho_R
                             end if

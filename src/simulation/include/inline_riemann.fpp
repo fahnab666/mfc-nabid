@@ -69,22 +69,15 @@
 #:enddef compute_average_state
 
 #:def JWL_RECONSTRUCT_ENERGY()
-    ! Reconstruct total energy E from the Riemann face state. For a JWL fluid in the
-    ! five-equation model, energy comes from the inverse mixture EOS e(rho, p, Y, alpha);
-    ! otherwise it is the standard stiffened-gas form. Callers set the bounded mass
-    ! fractions Y_jwl_L/Y_jwl_R beforehand (the partial-density buffer differs per solver);
-    ! the bounded (Y, alpha) are reused for the JWL sound-speed estimate below.
-    if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
-        alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
-        alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
-        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jwl_L, alpha_jwl_L, jwl_idx, e_jwl_L)
-        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jwl_R, alpha_jwl_R, jwl_idx, e_jwl_R)
-        E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
-        E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
-    else
-        E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
-        E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
-    end if
+    ! JWL five-equation face energy from the inverse mixture EOS e(rho, p, Y, alpha).
+    ! The caller sets the bounded Y_jwl_L/Y_jwl_R first (the partial-density buffer
+    ! differs per solver); the bounded (Y, alpha) also feed the JWL sound-speed estimate.
+    alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
+    alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
+    call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jwl_L, alpha_jwl_L, jwl_idx, e_jwl_L)
+    call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jwl_R, alpha_jwl_R, jwl_idx, e_jwl_R)
+    E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
+    E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
 #:enddef JWL_RECONSTRUCT_ENERGY
 
 #:def compute_low_Mach_correction()
