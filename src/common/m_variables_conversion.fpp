@@ -1374,8 +1374,9 @@ contains
                                                        & jwl_rho0s(jwl_idx), jwl_E0s(jwl_idx), jwl_air_e0s(jwl_idx), &
                                                        & jwl_air_rho0s(jwl_idx), jwl_air_gammas(jwl_idx), c2)
             end if
-            if (c2 /= c2) c2 = jwl_omegas(jwl_idx)*max(pres, 1._wp)/max(rho, sgm_eps)
-            c2 = max(c2, jwl_omegas(jwl_idx)*max(pres, 1._wp)/max(rho, sgm_eps))
+            ! Guard only the sqrt argument against numerical noise (c2 <= 0). No proxy bias is
+            ! applied: a genuinely bad c2 (e.g. NaN) propagates so the failure surfaces rather
+            ! than being silently masked into a plausible-but-wrong sound speed.
             c = sqrt(max(c2, sgm_eps))
         else
             if (alt_soundspeed) then  ! Wood's mixture sound speed via bulk moduli

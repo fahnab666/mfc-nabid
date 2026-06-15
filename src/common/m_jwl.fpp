@@ -290,7 +290,7 @@ contains
 
         real(wp), intent(in)  :: rho, e, Y, A, B, R1, R2, omega0, rho0, air_gamma, cv_j, cv_a
         real(wp), intent(out) :: pres
-        real(wp)              :: rho_s, Y_s, cv_mix, a_lo, a_hi, a_m, rj, ra, V, ecold, T, pj, pa, f_lo, f_m, pcg
+        real(wp)              :: rho_s, Y_s, cv_mix, a_lo, a_hi, a_m, rj, ra, V, ecold, T, pj, pa, f_lo, f_hi, f_m, pcg
         integer               :: it
 
         rho_s = max(rho, sgm_eps)
@@ -306,7 +306,10 @@ contains
 
         cv_mix = max(Y_s*cv_j + (1._wp - Y_s)*cv_a, sgm_eps)
 
-        ! Bracket alpha_j in (0,1); residual p_j - p_a is monotone-decreasing, so bisect it to zero.
+        ! Bracket alpha_j in (0,1); the residual p_j - p_a is monotone in alpha_j. Drive it to
+        ! zero with the Illinois (modified false-position) method: derivative-free, superlinear,
+        ! and the opposite-sign bracket is preserved every step, so it converges to the same root
+        ! as bisection in far fewer iterations (the GPU win). Early-exit on a relative tolerance.
         a_lo = sgm_eps; a_hi = 1._wp - sgm_eps
         rj = max(Y_s*rho_s/a_lo, sgm_eps); ra = max((1._wp - Y_s)*rho_s/(1._wp - a_lo), sgm_eps); V = rho0/rj
         ecold = A/(R1*rho0)*exp(-R1*V) + B/(R2*rho0)*exp(-R2*V)
@@ -314,19 +317,26 @@ contains
         pj = A*exp(-R1*V) + B*exp(-R2*V) + omega0*rj*cv_j*T; pa = air_gamma*ra*cv_a*T
         f_lo = pj - pa; pres = 0.5_wp*(pj + pa)
 
-        do it = 1, 60
-            a_m = 0.5_wp*(a_lo + a_hi)
+        rj = max(Y_s*rho_s/a_hi, sgm_eps); ra = max((1._wp - Y_s)*rho_s/(1._wp - a_hi), sgm_eps); V = rho0/rj
+        ecold = A/(R1*rho0)*exp(-R1*V) + B/(R2*rho0)*exp(-R2*V)
+        T = max((e - Y_s*ecold)/cv_mix, sgm_eps)
+        pj = A*exp(-R1*V) + B*exp(-R2*V) + omega0*rj*cv_j*T; pa = air_gamma*ra*cv_a*T
+        f_hi = pj - pa; pres = 0.5_wp*(pj + pa)
+
+        do it = 1, 30
+            a_m = a_hi - f_hi*(a_hi - a_lo)/sign(max(abs(f_hi - f_lo), sgm_eps), f_hi - f_lo)
             rj = max(Y_s*rho_s/a_m, sgm_eps); ra = max((1._wp - Y_s)*rho_s/(1._wp - a_m), sgm_eps); V = rho0/rj
             ecold = A/(R1*rho0)*exp(-R1*V) + B/(R2*rho0)*exp(-R2*V)
             T = max((e - Y_s*ecold)/cv_mix, sgm_eps)
             pj = A*exp(-R1*V) + B*exp(-R2*V) + omega0*rj*cv_j*T; pa = air_gamma*ra*cv_a*T
             f_m = pj - pa; pres = 0.5_wp*(pj + pa)
             if (abs(f_m) <= 1.e-12_wp*max(abs(pres), sgm_eps)) exit
-            if (f_lo*f_m > 0._wp) then
-                a_lo = a_m; f_lo = f_m
+            if (f_m*f_hi < 0._wp) then
+                a_lo = a_hi; f_lo = f_hi
             else
-                a_hi = a_m
+                f_lo = 0.5_wp*f_lo
             end if
+            a_hi = a_m; f_hi = f_m
         end do
         pres = max(pres, sgm_eps)
 
@@ -341,7 +351,7 @@ contains
 
         real(wp), intent(in)  :: rho, pres, Y, A, B, R1, R2, omega0, rho0, air_gamma, cv_j, cv_a
         real(wp), intent(out) :: e
-        real(wp)              :: rho_s, Y_s, p_s, a_lo, a_hi, a_m, rj, ra, V, ecold, T, pj, pcg, g_lo, g_m
+        real(wp)              :: rho_s, Y_s, p_s, a_lo, a_hi, a_m, rj, ra, V, ecold, T, pj, pcg, g_lo, g_hi, g_m
         integer               :: it
 
         rho_s = max(rho, sgm_eps)
@@ -361,26 +371,31 @@ contains
         pj = A*exp(-R1*V) + B*exp(-R2*V) + omega0*rj*cv_j*T
         g_lo = pj - p_s
 
-        ! Check bracket at a_hi: if sign matches a_lo, no root exists in (0,1); fall back to pure-JWL energy.
-        rj = max(Y_s*rho_s/a_hi, sgm_eps); V = rho0/rj
-        pj = A*exp(-R1*V) + B*exp(-R2*V)
-        if (g_lo*(pj - p_s) >= 0._wp) then
+        rj = max(Y_s*rho_s/a_hi, sgm_eps); ra = max((1._wp - Y_s)*rho_s/(1._wp - a_hi), sgm_eps); V = rho0/rj
+        T = p_s/max(air_gamma*ra*cv_a, sgm_eps)
+        pj = A*exp(-R1*V) + B*exp(-R2*V) + omega0*rj*cv_j*T
+        g_hi = pj - p_s
+
+        ! If the residual does not change sign across (0,1), no root exists; fall back to pure-JWL energy.
+        if (g_lo*g_hi >= 0._wp) then
             call s_jwl_pcold(rho_s, A, B, R1, R2, omega0, rho0, pcg)
             e = max((p_s - pcg)/max(omega0*rho_s, sgm_eps), 0._wp); return
         end if
 
-        do it = 1, 60
-            a_m = 0.5_wp*(a_lo + a_hi)
+        ! Illinois (modified false-position): derivative-free, superlinear, bracket-preserving.
+        do it = 1, 30
+            a_m = a_hi - g_hi*(a_hi - a_lo)/sign(max(abs(g_hi - g_lo), sgm_eps), g_hi - g_lo)
             rj = max(Y_s*rho_s/a_m, sgm_eps); ra = max((1._wp - Y_s)*rho_s/(1._wp - a_m), sgm_eps); V = rho0/rj
             T = p_s/max(air_gamma*ra*cv_a, sgm_eps)
             pj = A*exp(-R1*V) + B*exp(-R2*V) + omega0*rj*cv_j*T
             g_m = pj - p_s
             if (abs(g_m) <= 1.e-12_wp*p_s) exit
-            if (g_lo*g_m > 0._wp) then
-                a_lo = a_m; g_lo = g_m
+            if (g_m*g_hi < 0._wp) then
+                a_lo = a_hi; g_lo = g_hi
             else
-                a_hi = a_m
+                g_lo = 0.5_wp*g_lo
             end if
+            a_hi = a_m; g_hi = g_m
         end do
 
         ecold = A/(R1*rho0)*exp(-R1*V) + B/(R2*rho0)*exp(-R2*V)
@@ -569,8 +584,8 @@ contains
                                    & jwl_air_gammas(jidx), pres)
         end select
 
-        if (pres /= pres) pres = sgm_eps
-        if (pres < sgm_eps) pres = sgm_eps
+        ! Each closure already floors its own output (pres >= sgm_eps), so no post-call mask is
+        ! applied here: a NaN from a misbehaving closure propagates instead of being hidden.
 
     end subroutine s_jwl_mix_pressure_er
 
@@ -612,8 +627,8 @@ contains
                                  & jwl_air_gammas(jidx), e)
         end select
 
-        if (e /= e) e = 0._wp
-        if (e < 0._wp) e = 0._wp
+        ! Each closure already floors its own output (e >= 0), so no post-call mask is applied
+        ! here: a NaN from a misbehaving closure propagates instead of being hidden.
 
     end subroutine s_jwl_mix_energy_pr
 
