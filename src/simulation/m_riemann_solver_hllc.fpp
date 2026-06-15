@@ -75,6 +75,7 @@ contains
         real(wp)               :: Cv_L, Cv_R
         real(wp)               :: Gamm_L, Gamm_R
         real(wp)               :: Y_L, Y_R
+        real(wp)               :: Y_jwl_L, Y_jwl_R
         real(wp)               :: alpha_jwl_L, alpha_jwl_R
         real(wp)               :: gamma_L, gamma_R
         real(wp)               :: pi_inf_L, pi_inf_R
@@ -150,7 +151,7 @@ contains
                                         & c_L, c_R, G_L, G_R, rho_avg, H_avg, c_avg, gamma_avg, ptilde_L, ptilde_R, vel_L_rms, &
                                         & vel_R_rms, vel_avg_rms, vel_L_tmp, vel_R_tmp, Ms_L, Ms_R, pres_SL, pres_SR, &
                                         & alpha_L_sum, alpha_R_sum, rho_Star, E_Star, p_Star, p_K_Star, vel_K_star, s_L, s_R, &
-                                        & s_M, s_P, s_S, xi_M, xi_P, xi_L, xi_R, xi_L_m1, xi_R_m1, xi_MP, xi_PP, e_jwl_L, e_jwl_R]')
+                                        & s_M, s_P, s_S, xi_M, xi_P, xi_L, xi_R, xi_L_m1, xi_R_m1, xi_MP, xi_PP]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -245,23 +246,9 @@ contains
                                     end do
                                 end if
 
-                                if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
-                                    ! JWL: reconstruct total energy from p(rho,Y,alpha) via the inverse EOS,
-                                    ! then add kinetic energy. Keep the same bounded state for sound speeds below.
-                                    Y_L = 1._wp; Y_R = 1._wp
-                                    alpha_jwl_L = 1._wp; alpha_jwl_R = 1._wp
-                                    Y_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
-                                    Y_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
-                                    alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
-                                    alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
-                                    call s_jwl_mix_energy_pr(rho_L, pres_L, Y_L, alpha_jwl_L, jwl_idx, e_jwl_L)
-                                    call s_jwl_mix_energy_pr(rho_R, pres_R, Y_R, alpha_jwl_R, jwl_idx, e_jwl_R)
-                                    E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
-                                    E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
-                                else
-                                    E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
-                                    E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
-                                end if
+                                ! Six-equation model: JWL (five-equation only) never reaches this loop.
+                                E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
+                                E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
 
                                 ! ENERGY ADJUSTMENTS FOR HYPOELASTIC ENERGY
                                 if (hypoelasticity) then
@@ -323,16 +310,15 @@ contains
                                 @:compute_average_state()
 
                                 call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, &
-                                                              & c_L, qv_L, jwl_Y=Y_L, jwl_alpha=alpha_jwl_L)
+                                                              & c_L, qv_L)
 
                                 call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, &
-                                                              & c_R, qv_R, jwl_Y=Y_R, jwl_alpha=alpha_jwl_R)
+                                                              & c_R, qv_R)
 
                                 !> The computation of c_avg does not require all the variables, and therefore the non '_avg'
                                 ! variables are placeholders to call the subroutine.
                                 call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &
-                                                              & 0._wp, c_avg, qv_avg, jwl_Y=5.e-1_wp*(Y_L + Y_R), &
-                                                              & jwl_alpha=5.e-1_wp*(alpha_jwl_L + alpha_jwl_R))
+                                                              & 0._wp, c_avg, qv_avg)
 
                                 if (viscous) then
                                     $:GPU_LOOP(parallelism='[seq]')
@@ -580,8 +566,7 @@ contains
                                         & ptilde_R, vel_L_rms, vel_R_rms, vel_avg_rms, vel_L_tmp, vel_R_tmp, Ms_L, Ms_R, pres_SL, &
                                         & pres_SR, alpha_L_sum, alpha_R_sum, rho_Star, E_Star, p_Star, p_K_Star, vel_K_star, s_L, &
                                         & s_R, s_M, s_P, s_S, xi_M, xi_P, xi_L, xi_R, xi_L_m1, xi_R_m1, xi_MP, xi_PP, Ys_L, Ys_R, &
-                                        & Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Yi_avg, Phi_avg, h_iL, h_iR, h_avg_2, &
-                                        & e_jwl_L, e_jwl_R]')
+                                        & Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Yi_avg, Phi_avg, h_iL, h_iR, h_avg_2]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -632,23 +617,9 @@ contains
                                 pres_L = qL_prim_rsx_vf(${SF('')}$, eqn_idx%E)
                                 pres_R = qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%E)
 
-                                if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
-                                    ! JWL: reconstruct total energy from p(rho,Y,alpha) via the inverse EOS,
-                                    ! then add kinetic energy. Keep the same bounded state for sound speeds below.
-                                    Y_L = 1._wp; Y_R = 1._wp
-                                    alpha_jwl_L = 1._wp; alpha_jwl_R = 1._wp
-                                    Y_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
-                                    Y_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
-                                    alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
-                                    alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
-                                    call s_jwl_mix_energy_pr(rho_L, pres_L, Y_L, alpha_jwl_L, jwl_idx, e_jwl_L)
-                                    call s_jwl_mix_energy_pr(rho_R, pres_R, Y_R, alpha_jwl_R, jwl_idx, e_jwl_R)
-                                    E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
-                                    E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
-                                else
-                                    E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
-                                    E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
-                                end if
+                                ! Four-equation model: JWL (five-equation only) never reaches this loop.
+                                E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
+                                E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
 
                                 H_L = (E_L + pres_L)/rho_L
                                 H_R = (E_R + pres_R)/rho_R
@@ -656,17 +627,16 @@ contains
                                 @:compute_average_state()
 
                                 call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, &
-                                                              & c_L, qv_L, jwl_Y=Y_L, jwl_alpha=alpha_jwl_L)
+                                                              & c_L, qv_L)
 
                                 call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, &
-                                                              & c_R, qv_R, jwl_Y=Y_R, jwl_alpha=alpha_jwl_R)
+                                                              & c_R, qv_R)
 
                                 !> The computation of c_avg does not require all the variables, and therefore the non '_avg'
                                 ! variables are placeholders to call the subroutine.
 
                                 call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &
-                                                              & 0._wp, c_avg, qv_avg, jwl_Y=5.e-1_wp*(Y_L + Y_R), &
-                                                              & jwl_alpha=5.e-1_wp*(alpha_jwl_L + alpha_jwl_R))
+                                                              & 0._wp, c_avg, qv_avg)
 
                                 if (wave_speeds == wave_speeds_direct) then
                                     s_L = min(vel_L(dir_idx(1)) - c_L, vel_R(dir_idx(1)) - c_R)
@@ -818,8 +788,7 @@ contains
                                         & Y_L, Y_R, alpha_jwl_L, alpha_jwl_R, Ms_L, Ms_R, pres_SL, pres_SR, alpha_L_sum, &
                                         & alpha_R_sum, s_L, s_R, s_M, s_P, s_S, xi_M, xi_P, xi_L, xi_R, xi_L_m1, xi_R_m1, xi_MP, &
                                         & xi_PP, nbub_L, nbub_R, PbwR3Lbar, PbwR3Rbar, R3Lbar, R3Rbar, R3V2Lbar, R3V2Rbar, Ys_L, &
-                                        & Ys_R, Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Yi_avg, Phi_avg, h_iL, h_iR, &
-                                        & h_avg_2, e_jwl_L, e_jwl_R]')
+                                        & Ys_R, Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Yi_avg, Phi_avg, h_iL, h_iR, h_avg_2]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -908,21 +877,9 @@ contains
                                 pres_L = qL_prim_rsx_vf(${SF('')}$, eqn_idx%E)
                                 pres_R = qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%E)
 
-                                if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
-                                    Y_L = 1._wp; Y_R = 1._wp
-                                    alpha_jwl_L = 1._wp; alpha_jwl_R = 1._wp
-                                    Y_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
-                                    Y_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
-                                    alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
-                                    alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
-                                    call s_jwl_mix_energy_pr(rho_L, pres_L, Y_L, alpha_jwl_L, jwl_idx, e_jwl_L)
-                                    call s_jwl_mix_energy_pr(rho_R, pres_R, Y_R, alpha_jwl_R, jwl_idx, e_jwl_R)
-                                    E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
-                                    E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
-                                else
-                                    E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms
-                                    E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms
-                                end if
+                                ! Bubbles (five-equation): JWL is excluded from bubbles_euler, so this loop never sees it.
+                                E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms
+                                E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms
 
                                 H_L = (E_L + pres_L)/rho_L
                                 H_R = (E_R + pres_R)/rho_R
@@ -1017,16 +974,15 @@ contains
                                 end if
 
                                 call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, &
-                                                              & c_L, qv_L, jwl_Y=Y_L, jwl_alpha=alpha_jwl_L)
+                                                              & c_L, qv_L)
 
                                 call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, &
-                                                              & c_R, qv_R, jwl_Y=Y_R, jwl_alpha=alpha_jwl_R)
+                                                              & c_R, qv_R)
 
                                 !> The computation of c_avg does not require all the variables, and therefore the non '_avg'
                                 ! variables are placeholders to call the subroutine.
                                 call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &
-                                                              & 0._wp, c_avg, qv_avg, jwl_Y=5.e-1_wp*(Y_L + Y_R), &
-                                                              & jwl_alpha=5.e-1_wp*(alpha_jwl_L + alpha_jwl_R))
+                                                              & 0._wp, c_avg, qv_avg)
 
                                 if (viscous) then
                                     $:GPU_LOOP(parallelism='[seq]')
@@ -1230,7 +1186,7 @@ contains
                                         & pres_SL, pres_SR, vel_L, vel_R, Re_L, Re_R, alpha_L, alpha_R, s_L, s_R, s_S, &
                                         & vel_avg_rms, pcorr, zcoef, vel_L_tmp, vel_R_tmp, Ys_L, Ys_R, Xs_L, Xs_R, Gamma_iL, &
                                         & Gamma_iR, Cp_iL, Cp_iR, tau_e_L, tau_e_R, xi_field_L, xi_field_R, Yi_avg, Phi_avg, &
-                                        & h_iL, h_iR, h_avg_2, G_L, G_R, e_jwl_L, e_jwl_R]', copyin='[is1, is2, is3]')
+                                        & h_iL, h_iR, h_avg_2, G_L, G_R, e_jwl_L, e_jwl_R, Y_jwl_L, Y_jwl_R]', copyin='[is1, is2, is3]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -1365,20 +1321,11 @@ contains
                                     H_R = (E_R + pres_R)/rho_R
                                 else
                                     if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
-                                        Y_L = 1._wp; Y_R = 1._wp
-                                        alpha_jwl_L = 1._wp; alpha_jwl_R = 1._wp
-                                        Y_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
-                                        Y_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
-                                        alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
-                                        alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
-                                        call s_jwl_mix_energy_pr(rho_L, pres_L, Y_L, alpha_jwl_L, jwl_idx, e_jwl_L)
-                                        call s_jwl_mix_energy_pr(rho_R, pres_R, Y_R, alpha_jwl_R, jwl_idx, e_jwl_R)
-                                        E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
-                                        E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
-                                    else
-                                        E_L = gamma_L*pres_L + pi_inf_L + 5.e-1*rho_L*vel_L_rms + qv_L
-                                        E_R = gamma_R*pres_R + pi_inf_R + 5.e-1*rho_R*vel_R_rms + qv_R
+                                        Y_jwl_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
+                                        Y_jwl_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), &
+                                                      & 1._wp)
                                     end if
+                                    @:JWL_RECONSTRUCT_ENERGY()
 
                                     H_L = (E_L + pres_L)/rho_L
                                     H_R = (E_R + pres_R)/rho_R
@@ -1446,15 +1393,15 @@ contains
                                 @:compute_average_state()
 
                                 call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, &
-                                                              & c_L, qv_L, jwl_Y=Y_L, jwl_alpha=alpha_jwl_L)
+                                                              & c_L, qv_L, jwl_Y=Y_jwl_L, jwl_alpha=alpha_jwl_L)
 
                                 call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, &
-                                                              & c_R, qv_R, jwl_Y=Y_R, jwl_alpha=alpha_jwl_R)
+                                                              & c_R, qv_R, jwl_Y=Y_jwl_R, jwl_alpha=alpha_jwl_R)
 
                                 !> The computation of c_avg does not require all the variables, and therefore the non '_avg'
                                 !  variables are placeholders to call the subroutine.
                                 call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &
-                                                              & c_sum_Yi_Phi, c_avg, qv_avg, jwl_Y=5.e-1_wp*(Y_L + Y_R), &
+                                                              & c_sum_Yi_Phi, c_avg, qv_avg, jwl_Y=5.e-1_wp*(Y_jwl_L + Y_jwl_R), &
                                                               & jwl_alpha=5.e-1_wp*(alpha_jwl_L + alpha_jwl_R))
 
                                 if (viscous) then

@@ -1314,7 +1314,7 @@ contains
 
 #ifndef MFC_PRE_PROCESS
     !> Compute the speed of sound from thermodynamic state variables, supporting multiple equation-of-state models.
-    subroutine s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, adv, vel_sum, c_c, c, qv, alpha_rho_j, jwl_Y, jwl_alpha)
+    subroutine s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, adv, vel_sum, c_c, c, qv, jwl_Y, jwl_alpha)
 
         $:GPU_ROUTINE(parallelism='[seq]')
 
@@ -1329,9 +1329,8 @@ contains
         real(wp), intent(in)           :: vel_sum
         real(wp), intent(in)           :: c_c
         real(wp), intent(out)          :: c
-        real(wp), intent(in), optional :: alpha_rho_j  !< JWL partial density alpha_j*rho_j for correct Y_j
-        real(wp), intent(in), optional :: jwl_Y        !< Bounded JWL mass fraction from the Riemann state
-        real(wp), intent(in), optional :: jwl_alpha    !< Bounded JWL volume fraction from the Riemann state
+        real(wp), intent(in), optional :: jwl_Y      !< Bounded JWL mass fraction from the Riemann state
+        real(wp), intent(in), optional :: jwl_alpha  !< Bounded JWL volume fraction from the Riemann state
         real(wp)                       :: blkmod1, blkmod2
         real(wp)                       :: c2, Y_j, alpha_j
         integer                        :: q
@@ -1346,23 +1345,17 @@ contains
             c = sqrt((1._wp + 1._wp/gamma)*pres/rho/H)
         else if (jwl_idx > 0) then
             ! JWL mixture sound speed: frozen (mass-weighted) rule.
-            ! Y_j = alpha_rho_j / rho  (correct: uses the actual phasic partial density).
-            ! If alpha_rho_j is not passed (e.g. avg-state call), fall back to the rho0 proxy
-            ! alpha_j*rho0/rho which is exact at initial conditions and only a wave-speed bound.
+            ! The caller supplies the bounded JWL volume fraction (jwl_alpha) and mass
+            ! fraction (jwl_Y) from the local state; absent either one, fall back to the
+            ! rho0 proxy alpha_j*rho0/rho, exact at initial conditions and a wave-speed bound.
+            ! NOTE: present() guards must be separate if-blocks because Fortran
+            ! does not short-circuit .and. when an optional argument is absent.
             alpha_j = min(max(adv(jwl_idx), 0._wp), 1._wp)
             if (present(jwl_alpha)) then
                 if (jwl_alpha == jwl_alpha) alpha_j = min(max(jwl_alpha, 0._wp), 1._wp)
             end if
 
-            ! Compute the rho0-proxy fallback first; override with the actual
-            ! phasic partial density when it is present and not NaN. A caller
-            ! may pass the already-bounded Riemann-state mass fraction as jwl_Y.
-            ! NOTE: present() guards must be separate if-blocks because Fortran
-            ! does not short-circuit .and. when an optional argument is absent.
             Y_j = min(max(alpha_j*jwl_rho0s(jwl_idx)/max(rho, sgm_eps), 0._wp), 1._wp)
-            if (present(alpha_rho_j)) then
-                if (alpha_rho_j == alpha_rho_j) Y_j = min(max(alpha_rho_j/max(rho, sgm_eps), 0._wp), 1._wp)
-            end if
             if (present(jwl_Y)) then
                 if (jwl_Y == jwl_Y) Y_j = min(max(jwl_Y, 0._wp), 1._wp)
             end if

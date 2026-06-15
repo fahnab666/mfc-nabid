@@ -635,6 +635,7 @@ contains
         real(wp)               :: qv       !< Cell-avg. fluid reference energy
         real(wp)               :: c        !< Cell-avg. sound speed
         real(wp)               :: H        !< Cell-avg. enthalpy
+        real(wp)               :: Y_jwl    !< Cell-avg. JWL mass fraction
         real(wp), dimension(2) :: Re       !< Cell-avg. Reynolds numbers
         real(wp)               :: dt_local
         integer                :: j, k, l  !< Generic loop iterators
@@ -644,7 +645,7 @@ contains
             call s_convert_conservative_to_primitive_variables(q_cons_ts(1)%vf, q_T_sf, q_prim_vf, idwint)
         end if
 
-        $:GPU_PARALLEL_LOOP(collapse=3, private='[vel, alpha, Re, rho, vel_sum, pres, gamma, pi_inf, c, H, qv, fl]')
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[vel, alpha, Re, rho, vel_sum, pres, gamma, pi_inf, c, H, qv, Y_jwl, fl]')
         do l = 0, p
             do k = 0, n
                 do j = 0, m
@@ -655,8 +656,10 @@ contains
                     end if
 
                     ! Compute mixture sound speed
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv, &
-                                                  & alpha_rho_j=q_prim_vf(max(1, jwl_idx))%sf(j, k, l))
+                    if (jwl_idx > 0) then
+                        Y_jwl = min(max(q_prim_vf(jwl_idx)%sf(j, k, l)/max(rho, sgm_eps), 0._wp), 1._wp)
+                    end if
+                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv, jwl_Y=Y_jwl)
 
                     if (any_non_newtonian) then
                         Re(1) = 0._wp
