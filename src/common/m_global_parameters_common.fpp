@@ -457,4 +457,23 @@ contains
 
     end subroutine s_assign_common_defaults
 
+    !> Assign default (unset) values to a fluid's JWL parameters. Shared by all three targets so the JWL block stays identical; air
+    !! parameters default to dflt_real and are validated in m_checker_common when a JWL fluid is present.
+    impure subroutine s_assign_jwl_fluid_defaults(fluid)
+
+        type(physical_parameters), intent(inout) :: fluid
+
+        fluid%jwl_A = dflt_real
+        fluid%jwl_B = dflt_real
+        fluid%jwl_R1 = dflt_real
+        fluid%jwl_R2 = dflt_real
+        fluid%jwl_omega = dflt_real
+        fluid%jwl_rho0 = dflt_real
+        fluid%jwl_E0 = dflt_real
+        fluid%jwl_air_e0 = dflt_real
+        fluid%jwl_air_rho0 = dflt_real
+        fluid%jwl_air_gamma = dflt_real
+
+    end subroutine s_assign_jwl_fluid_defaults
+
 end module m_global_parameters_common
