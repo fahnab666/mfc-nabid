@@ -127,3 +127,32 @@ A healthy run should show:
 - no negative pressure, NaNs, or immediate IBM instability.
 
 This is a strong regression test for “does the coupled JWL + moving IBM path work?” It is still not a full validation-quality blast-particle calculation.
+
+## Verification
+
+The blast in this case is not a clean convergence problem, so the underlying JWL/air
+mixture and 2D spatial paths are verified separately against exact references.
+
+**Five-equation JWL-air two-material grid convergence** (relative L1 error vs an exact
+two-material Riemann solution, all four mixture closures):
+
+| Closure    | Nx=200  | Nx=400  | Nx=800  | Nx=1600 | Rate  |
+|------------|---------|---------|---------|---------|-------|
+| isobaric   | 1.1404% | 0.5797% | 0.2914% | 0.1457% | 0.990 |
+| Kuhl       | 1.1107% | 0.5618% | 0.2828% | 0.1425% | 0.988 |
+| p-T equilib. | 1.1113% | 0.5623% | 0.2831% | 0.1428% | 0.987 |
+| Rocflu     | 1.1267% | 0.5684% | 0.2860% | 0.1444% | 0.988 |
+
+All closures converge at rate ~0.99 (shock-limited) and reach < 0.2% error at Nx=1600.
+Kuhl and p-T equilibrium agree to < 0.01% at every level, consistent with their
+algebraic equivalence at equal densities.
+
+**2D quasi-1D y-invariance** (a 1D JWL shock run on a 2D grid, Nx=400 × Ny=25, p_JWL=24
+GPa): the solution stays y-invariant to floating-point round-off, confirming no 2D
+spatial-term bug.
+
+| Variable | rel y-span | rel L2 vs 1D |
+|----------|------------|--------------|
+| p        | 2.32e-09   | 2.06e-10     |
+| u        | 5.77e-10   | 5.88e-11     |
+| ρ        | 1.17e-09   | 9.92e-11     |
