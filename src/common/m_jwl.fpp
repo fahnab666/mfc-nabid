@@ -27,8 +27,10 @@ module m_jwl
     $:GPU_DECLARE(create='[jwl_air_e0s, jwl_air_rho0s, jwl_air_gammas]')
 #endif
 
-    !> Mass-fraction cutoff below/above which the Rocflu blend uses the pure air/products EOS.
-    real(wp), parameter :: rocflu_pure_cutoff = 1.e-4_wp
+    !> Mass-fraction cutoff below/above which a cell is treated as pure air/products: the Rocflu blend switches to the
+    !! single-material EOS, and the p-T-equilibrium solve (whose root sits a distance ~(1-Y) from the alpha bracket end and is
+    !! ill-conditioned as Y -> 0 or 1) is skipped.
+    real(wp), parameter :: jwl_pure_cutoff = 1.e-4_wp
     integer             :: jwl_idx  !< Index of the JWL fluid (0 if none)
     real(wp)            :: jwl_cv_prod, jwl_cv_air  !< Products/air specific heats for the p-T-equilibrium closure (jwl_mix_type = 2)
     $:GPU_DECLARE(create='[jwl_idx]')
@@ -281,17 +283,18 @@ contains
 
         real(wp), intent(in)  :: rho, e, Y, A, B, R1, R2, omega0, rho0, air_gamma, cv_j, cv_a
         real(wp), intent(out) :: pres
-        real(wp)              :: rho_s, Y_s, cv_mix, a_lo, a_hi, a_m, rj, ra, V, ecold, T, pj, pa, f_lo, f_hi, f_m, pcg
+        real(wp)              :: rho_s, Y_s, cv_mix, a_lo, a_hi, a_m, rj, ra, V, ecold, T, pj, pa, f_lo, f_m, pcg
         integer               :: it
 
         rho_s = max(rho, sgm_eps)
         Y_s = min(max(Y, 0._wp), 1._wp)
 
-        ! Pure cells: no equilibrium to solve, evaluate the single-phase EOS directly.
-        if (Y_s <= sgm_eps) then
+        ! Near-pure cells: the equilibrium root sits within ~(1-Y) of the alpha bracket end, where the
+        ! solve is ill-conditioned, so below the cutoff evaluate the single-phase EOS directly.
+        if (Y_s <= jwl_pure_cutoff) then
             pres = max(air_gamma*rho_s*e, sgm_eps)
             return
-        else if (1._wp - Y_s <= sgm_eps) then
+        else if (1._wp - Y_s <= jwl_pure_cutoff) then
             call s_jwl_pcold(rho_s, A, B, R1, R2, omega0, rho0, pcg)
             pres = max(pcg + omega0*rho_s*e, sgm_eps)
             return
@@ -309,19 +312,12 @@ contains
         pj = A*exp(-R1*V) + B*exp(-R2*V) + omega0*rj*cv_j*T
         pa = air_gamma*ra*cv_a*T
         f_lo = pj - pa
-
-        rj = max(Y_s*rho_s/a_hi, sgm_eps)
-        ra = max((1._wp - Y_s)*rho_s/(1._wp - a_hi), sgm_eps)
-        V = rho0/rj
-        ecold = A/(R1*rho0)*exp(-R1*V) + B/(R2*rho0)*exp(-R2*V)
-        T = max((e - Y_s*ecold)/cv_mix, sgm_eps)
-        pj = A*exp(-R1*V) + B*exp(-R2*V) + omega0*rj*cv_j*T
-        pa = air_gamma*ra*cv_a*T
-        f_hi = pj - pa
         pres = 0.5_wp*(pj + pa)
 
-        do it = 1, 30
-            a_m = a_hi - f_hi*(a_hi - a_lo)/sign(max(abs(f_hi - f_lo), sgm_eps), f_hi - f_lo)
+        ! Bisection: a_m stays strictly inside the bracket every step, so the 1/a_m, 1/(1-a_m)
+        ! phasic densities never hit their endpoint singularities.
+        do it = 1, 60
+            a_m = 0.5_wp*(a_lo + a_hi)
             rj = max(Y_s*rho_s/a_m, sgm_eps)
             ra = max((1._wp - Y_s)*rho_s/(1._wp - a_m), sgm_eps)
             V = rho0/rj
@@ -332,14 +328,12 @@ contains
             f_m = pj - pa
             pres = 0.5_wp*(pj + pa)
             if (abs(f_m) <= 1.e-12_wp*max(abs(pres), sgm_eps)) exit
-            if (f_m*f_hi < 0._wp) then
-                a_lo = a_hi
-                f_lo = f_hi
+            if (f_lo*f_m > 0._wp) then
+                a_lo = a_m
+                f_lo = f_m
             else
-                f_lo = 0.5_wp*f_lo
+                a_hi = a_m
             end if
-            a_hi = a_m
-            f_hi = f_m
         end do
         pres = max(pres, sgm_eps)
 
@@ -360,10 +354,10 @@ contains
         Y_s = min(max(Y, 0._wp), 1._wp)
         p_s = max(pres, sgm_eps)
 
-        if (Y_s <= sgm_eps) then
+        if (Y_s <= jwl_pure_cutoff) then
             e = max(p_s/max(air_gamma*rho_s, sgm_eps), 0._wp)
             return
-        else if (1._wp - Y_s <= sgm_eps) then
+        else if (1._wp - Y_s <= jwl_pure_cutoff) then
             call s_jwl_pcold(rho_s, A, B, R1, R2, omega0, rho0, pcg)
             e = max((p_s - pcg)/max(omega0*rho_s, sgm_eps), 0._wp)
             return
@@ -392,8 +386,10 @@ contains
             return
         end if
 
-        do it = 1, 30
-            a_m = a_hi - g_hi*(a_hi - a_lo)/sign(max(abs(g_hi - g_lo), sgm_eps), g_hi - g_lo)
+        ! Bisection: a_m stays strictly inside the bracket every step, so the 1/a_m, 1/(1-a_m)
+        ! phasic densities never hit their endpoint singularities.
+        do it = 1, 60
+            a_m = 0.5_wp*(a_lo + a_hi)
             rj = max(Y_s*rho_s/a_m, sgm_eps)
             ra = max((1._wp - Y_s)*rho_s/(1._wp - a_m), sgm_eps)
             V = rho0/rj
@@ -401,14 +397,12 @@ contains
             pj = A*exp(-R1*V) + B*exp(-R2*V) + omega0*rj*cv_j*T
             g_m = pj - p_s
             if (abs(g_m) <= 1.e-12_wp*p_s) exit
-            if (g_m*g_hi < 0._wp) then
-                a_lo = a_hi
-                g_lo = g_hi
+            if (g_lo*g_m > 0._wp) then
+                a_lo = a_m
+                g_lo = g_m
             else
-                g_lo = 0.5_wp*g_lo
+                a_hi = a_m
             end if
-            a_hi = a_m
-            g_hi = g_m
         end do
 
         ecold = A/(R1*rho0)*exp(-R1*V) + B/(R2*rho0)*exp(-R2*V)
@@ -430,10 +424,10 @@ contains
         rho_s = max(rho, sgm_eps)
         Y_s = min(max(Y, 0._wp), 1._wp)
 
-        if (Y_s <= rocflu_pure_cutoff) then
+        if (Y_s <= jwl_pure_cutoff) then
             pres = max(air_gamma*rho_s*e, sgm_eps)
             return
-        else if (Y_s >= 1._wp - rocflu_pure_cutoff) then
+        else if (Y_s >= 1._wp - jwl_pure_cutoff) then
             call s_jwl_pcold(rho_s, A, B, R1, R2, omega0, rho0, cab)
             pres = max(cab + omega0*rho_s*e, sgm_eps)
             return
@@ -463,10 +457,10 @@ contains
         rho_s = max(rho, sgm_eps)
         Y_s = min(max(Y, 0._wp), 1._wp)
 
-        if (Y_s <= rocflu_pure_cutoff) then
+        if (Y_s <= jwl_pure_cutoff) then
             e = max(pres/max(air_gamma*rho_s, sgm_eps), 0._wp)
             return
-        else if (Y_s >= 1._wp - rocflu_pure_cutoff) then
+        else if (Y_s >= 1._wp - jwl_pure_cutoff) then
             call s_jwl_pcold(rho_s, A, B, R1, R2, omega0, rho0, cab)
             e = max((pres - cab)/max(omega0*rho_s, sgm_eps), 0._wp)
             return
@@ -504,10 +498,10 @@ contains
         Y_s = min(max(Y, 0._wp), 1._wp)
 
         ! Endpoint guards: pure air or pure products bypass the blend entirely.
-        if (Y_s <= rocflu_pure_cutoff) then
+        if (Y_s <= jwl_pure_cutoff) then
             c2 = max((air_gamma + 1._wp)*pres/rho_s, sgm_eps)
             return
-        else if (Y_s >= 1._wp - rocflu_pure_cutoff) then
+        else if (Y_s >= 1._wp - jwl_pure_cutoff) then
             call s_jwl_sound_speed_squared(rho_s, pres, A, B, R1, R2, omega0, rho0, c2)
             return
         end if
