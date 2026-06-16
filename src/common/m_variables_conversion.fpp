@@ -42,9 +42,8 @@ module m_variables_conversion
 
     ! In simulation, gammas, pi_infs, and qvs are already declared in m_global_variables
 #ifndef MFC_SIMULATION
-    integer, allocatable, public, dimension(:)  :: eos_idxs
     real(wp), allocatable, public, dimension(:) :: gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps
-    $:GPU_DECLARE(create='[eos_idxs, gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps]')
+    $:GPU_DECLARE(create='[gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps]')
 #endif
 
     real(wp), allocatable, dimension(:)   :: Gs_vc
@@ -350,7 +349,6 @@ contains
 
         $:GPU_ENTER_DATA(copyin='[is1b, is1e, is2b, is2e, is3b, is3e]')
 
-        @:ALLOCATE(eos_idxs(1:num_fluids))
         @:ALLOCATE(gammas (1:num_fluids))
         @:ALLOCATE(gs_min (1:num_fluids))
         @:ALLOCATE(pi_infs(1:num_fluids))
@@ -363,7 +361,6 @@ contains
         call s_initialize_jwl_module
 
         do i = 1, num_fluids
-            eos_idxs(i) = fluid_pp(i)%eos
             gammas(i) = fluid_pp(i)%gamma
             gs_min(i) = 1.0_wp/gammas(i) + 1.0_wp
             pi_infs(i) = fluid_pp(i)%pi_inf
@@ -372,11 +369,11 @@ contains
             cvs(i) = fluid_pp(i)%cv
             qvs(i) = fluid_pp(i)%qv
             qvps(i) = fluid_pp(i)%qvp
-            if (eos_idxs(i) /= 1 .and. eos_idxs(i) /= 2) then
+            if (fluid_pp(i)%eos /= 1 .and. fluid_pp(i)%eos /= 2) then
                 call s_mpi_abort('Unsupported fluid_pp%eos selector. Use 1 for stiffened gas or 2 for JWL.')
             end if
         end do
-        $:GPU_UPDATE(device='[eos_idxs, gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc]')
+        $:GPU_UPDATE(device='[gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc]')
 
 #ifdef MFC_SIMULATION
         if (viscous) then
@@ -1285,13 +1282,13 @@ contains
 #endif
 
 #ifdef MFC_SIMULATION
-        @:DEALLOCATE(eos_idxs, gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc)
+        @:DEALLOCATE(gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc)
         call s_finalize_jwl_module
         if (bubbles_euler) then
             @:DEALLOCATE(bubrs_vc)
         end if
 #else
-        @:DEALLOCATE(eos_idxs, gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc)
+        @:DEALLOCATE(gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc)
         call s_finalize_jwl_module
         if (bubbles_euler) then
             @:DEALLOCATE(bubrs_vc)
