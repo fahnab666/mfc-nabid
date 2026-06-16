@@ -121,8 +121,9 @@ contains
         real(wp) :: rho_Star, E_Star, p_Star, p_K_Star, vel_K_star
         real(wp) :: pres_SL, pres_SR, Ms_L, Ms_R
         real(wp) :: flux_ene_e
-        real(wp) :: zcoef, pcorr           !< low Mach number correction
-        integer  :: Re_max, i, j, k, l, q  !< Generic loop iterators
+        real(wp) :: zcoef, pcorr                !< low Mach number correction
+        integer  :: Re_max, i, j, k, l, q       !< Generic loop iterators
+        integer  :: Re_size_loc1, Re_size_loc2  !< host copy of Re_size; amdflang reads the declare-target original stale cross-TU
         ! Populating the buffers of the left and right Riemann problem states variables, based on the choice of boundary conditions
 
         call s_populate_riemann_states_variables_buffers(qL_prim_rsx_vf, dqL_prim_dx_vf, dqL_prim_dy_vf, dqL_prim_dz_vf, &
@@ -131,6 +132,7 @@ contains
         ! Reshaping inputted data based on dimensional splitting direction
 
         call s_initialize_riemann_solver(flux_src_vf, norm_dir)
+        Re_size_loc1 = Re_size(1); Re_size_loc2 = Re_size(2)
 
         #:for NORM_DIR, XYZ, STENCIL_VAR, COORDS, X_BND, Y_BND, Z_BND in &
                     [(1, 'x', 'j', '{STENCIL_IDX}, k, l', 'is1', 'is2', 'is3'), &
@@ -151,7 +153,8 @@ contains
                                         & c_L, c_R, G_L, G_R, rho_avg, H_avg, c_avg, gamma_avg, ptilde_L, ptilde_R, vel_L_rms, &
                                         & vel_R_rms, vel_avg_rms, vel_L_tmp, vel_R_tmp, Ms_L, Ms_R, pres_SL, pres_SR, &
                                         & alpha_L_sum, alpha_R_sum, rho_Star, E_Star, p_Star, p_K_Star, vel_K_star, s_L, s_R, &
-                                        & s_M, s_P, s_S, xi_M, xi_P, xi_L, xi_R, xi_L_m1, xi_R_m1, xi_MP, xi_PP]')
+                                        & s_M, s_P, s_S, xi_M, xi_P, xi_L, xi_R, xi_L_m1, xi_R_m1, xi_MP, xi_PP]', &
+                                        & firstprivate='[Re_size_loc1, Re_size_loc2]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -233,10 +236,10 @@ contains
                                     do i = 1, 2
                                         Re_L(i) = dflt_real
                                         Re_R(i) = dflt_real
-                                        if (Re_size(i) > 0) Re_L(i) = 0._wp
-                                        if (Re_size(i) > 0) Re_R(i) = 0._wp
+                                        if (merge(Re_size_loc1, Re_size_loc2, i == 1) > 0) Re_L(i) = 0._wp
+                                        if (merge(Re_size_loc1, Re_size_loc2, i == 1) > 0) Re_R(i) = 0._wp
                                         $:GPU_LOOP(parallelism='[seq]')
-                                        do q = 1, Re_size(i)
+                                        do q = 1, merge(Re_size_loc1, Re_size_loc2, i == 1)
                                             Re_L(i) = qL_prim_rsx_vf(${SF('')}$, eqn_idx%E + Re_idx(i, q))/Res_gs(i, q) + Re_L(i)
                                             Re_R(i) = qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%E + Re_idx(i, q))/Res_gs(i, &
                                                  & q) + Re_R(i)
@@ -788,7 +791,8 @@ contains
                                         & Y_L, Y_R, alpha_jwl_L, alpha_jwl_R, Ms_L, Ms_R, pres_SL, pres_SR, alpha_L_sum, &
                                         & alpha_R_sum, s_L, s_R, s_M, s_P, s_S, xi_M, xi_P, xi_L, xi_R, xi_L_m1, xi_R_m1, xi_MP, &
                                         & xi_PP, nbub_L, nbub_R, PbwR3Lbar, PbwR3Rbar, R3Lbar, R3Rbar, R3V2Lbar, R3V2Rbar, Ys_L, &
-                                        & Ys_R, Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Yi_avg, Phi_avg, h_iL, h_iR, h_avg_2]')
+                                        & Ys_R, Cp_iL, Cp_iR, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Yi_avg, Phi_avg, h_iL, h_iR, h_avg_2]', &
+                                        & firstprivate='[Re_size_loc1, Re_size_loc2]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -857,11 +861,11 @@ contains
                                             Re_L(i) = dflt_real
                                             Re_R(i) = dflt_real
 
-                                            if (Re_size(i) > 0) Re_L(i) = 0._wp
-                                            if (Re_size(i) > 0) Re_R(i) = 0._wp
+                                            if (merge(Re_size_loc1, Re_size_loc2, i == 1) > 0) Re_L(i) = 0._wp
+                                            if (merge(Re_size_loc1, Re_size_loc2, i == 1) > 0) Re_R(i) = 0._wp
 
                                             $:GPU_LOOP(parallelism='[seq]')
-                                            do q = 1, Re_size(i)
+                                            do q = 1, merge(Re_size_loc1, Re_size_loc2, i == 1)
                                                 Re_L(i) = (1._wp - qL_prim_rsx_vf(${SF('')}$, eqn_idx%E + Re_idx(i, &
                                                      & q)))/Res_gs(i, q) + Re_L(i)
                                                 Re_R(i) = (1._wp - qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%E + Re_idx(i, &
@@ -1186,7 +1190,8 @@ contains
                                         & pres_SL, pres_SR, vel_L, vel_R, Re_L, Re_R, alpha_L, alpha_R, s_L, s_R, s_S, &
                                         & vel_avg_rms, pcorr, zcoef, vel_L_tmp, vel_R_tmp, Ys_L, Ys_R, Xs_L, Xs_R, Gamma_iL, &
                                         & Gamma_iR, Cp_iL, Cp_iR, tau_e_L, tau_e_R, xi_field_L, xi_field_R, Yi_avg, Phi_avg, &
-                                        & h_iL, h_iR, h_avg_2, G_L, G_R, e_jwl_L, e_jwl_R, Y_jwl_L, Y_jwl_R]', copyin='[is1, is2, is3]')
+                                        & h_iL, h_iR, h_avg_2, G_L, G_R, c_sum_Yi_Phi, flux_ene_e, e_jwl_L, e_jwl_R, Y_jwl_L, &
+                                        & Y_jwl_R]', copyin='[is1, is2, is3]', firstprivate='[Re_size_loc1, Re_size_loc2]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -1251,8 +1256,8 @@ contains
                                 end do
 
                                 Re_max = 0
-                                if (Re_size(1) > 0) Re_max = 1
-                                if (Re_size(2) > 0) Re_max = 2
+                                if (Re_size_loc1 > 0) Re_max = 1
+                                if (Re_size_loc2 > 0) Re_max = 2
 
                                 if (viscous) then
                                     $:GPU_LOOP(parallelism='[seq]')
@@ -1261,7 +1266,7 @@ contains
                                         Re_R(i) = 0._wp
 
                                         $:GPU_LOOP(parallelism='[seq]')
-                                        do q = 1, Re_size(i)
+                                        do q = 1, merge(Re_size_loc1, Re_size_loc2, i == 1)
                                             Re_L(i) = alpha_L(Re_idx(i, q))/Res_gs(i, q) + Re_L(i)
                                             Re_R(i) = alpha_R(Re_idx(i, q))/Res_gs(i, q) + Re_R(i)
                                         end do
