@@ -422,6 +422,8 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 
 - `fluid_pp(i)%%G` is required for `hypoelasticity`.
 
+- `fluid_pp(i)%%eos` selects the equation of state for the $i$-th fluid: [1] stiffened gas (default); [2] Jones-Wilkins-Lee (JWL) for detonation products, supported with `model_eqns = 2` and at most one JWL fluid. A JWL fluid requires `jwl_A`, `jwl_B`, `jwl_R1`, `jwl_R2`, `jwl_omega`, `jwl_rho0`, and `jwl_E0` (the standard JWL coefficients), and `jwl_air_e0`, `jwl_air_rho0`, `jwl_air_gamma` describing the co-existing ideal gas; `jwl_air_gamma` is the stored form \f$\gamma_{\mathrm{air}}-1\f$. The closure used to mix products with the surrounding gas is set globally by `jwl_mix_type`; modes 1 (Kuhl) and 2 (p-T equilibrium) additionally require a positive `cv` on both fluids.
+
 > **Stored-form parameters:** The values `gamma`, `pi_inf`, and `Re(1)`/`Re(2)` are **not** the raw physical quantities. MFC expects transformed stored forms:
 > - `gamma` = \f$1/(\gamma-1)\f$, not \f$\gamma\f$ itself
 > - `pi_inf` = \f$\gamma\,\pi_\infty / (\gamma - 1)\f$, not \f$\pi_\infty\f$ itself

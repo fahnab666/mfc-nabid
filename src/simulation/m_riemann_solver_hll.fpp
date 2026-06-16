@@ -374,9 +374,8 @@ contains
                             ! variables are placeholders to call the subroutine.
 
                             call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &
-                                                          & c_sum_Yi_Phi, c_avg, qv_avg, &
-                                                          & jwl_Y=5.e-1_wp*(Y_jwl_L*rho_L + Y_jwl_R*rho_R)/max(rho_avg, sgm_eps), &
-                                                          & jwl_alpha=alpha_jwl_R)
+                                                          & c_sum_Yi_Phi, c_avg, qv_avg, jwl_Y=5.e-1_wp*(Y_jwl_L + Y_jwl_R), &
+                                                          & jwl_alpha=5.e-1_wp*(alpha_jwl_L + alpha_jwl_R))
 
                             if (mhd) then
                                 call s_compute_fast_magnetosonic_speed(rho_L, c_L, B%L, norm_dir, c_fast%L, H_L)

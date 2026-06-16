@@ -115,7 +115,6 @@ contains
                 eint = energy - dyn_p
                 e_sp = eint/max(rho, sgm_eps)
                 call s_jwl_mix_pressure_er(rho, e_sp, Y_jwl, alpha_jwl, jwl_idx, pres)
-                if ((pres /= pres) .or. pres < 1._wp) pres = 1._wp
             else if (mhd) then
                 ! MHD pressure: subtract magnetic pressure from total energy
                 pres = (energy - dyn_p - pi_inf - qv - pres_mag)/gamma
@@ -150,7 +149,6 @@ contains
                     if (present(jwl_alpha)) alpha_jwl = jwl_alpha
                     e_sp = (energy - 0.5_wp*(mom**2._wp)/rho - E_e)/max(rho, sgm_eps)
                     call s_jwl_mix_pressure_er(rho, e_sp, Y_jwl, alpha_jwl, jwl_idx, pres)
-                    if ((pres /= pres) .or. pres < 1._wp) pres = 1._wp
                 else
                     pres = (energy - 0.5_wp*(mom**2._wp)/rho - pi_inf - qv - E_e)/gamma
                 end if
