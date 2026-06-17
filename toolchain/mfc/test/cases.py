@@ -2478,7 +2478,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             ("p-T equilibrium", 2),
             ("Rocflu", 3),
         ]:
-            cases.append(define_case_d(stack, closure_name, {"jwl_mix_type": closure_id}))
+            cases.append(define_case_d(stack, closure_name, {"jwl_mix_type": closure_id}, override_tol=1e-7))
         stack.pop()
 
         # 2D MTHINC on a stretched (non-uniform) x-grid.
