@@ -2400,6 +2400,87 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         cases.append(define_case_d(stack, "", {}))
         stack.pop()
 
+        # JWL mixture closure dispatch and primitive/conservative consistency.
+        # Modes: 0=isobaric, 1=Kuhl, 2=p-T equilibrium, 3=Rocflu.
+        eps_jwl = 1e-8
+        rho_jwl = 1630.0
+        rho_air = 1.225
+        stack.push(
+            "Kernel -> JWL -> Closure",
+            {
+                "m": 79,
+                "n": 0,
+                "p": 0,
+                "x_domain%beg": 0.0,
+                "x_domain%end": 1.0,
+                "dt": 5.0e-8,
+                "t_step_stop": 10,
+                "t_step_save": 10,
+                "num_patches": 2,
+                "model_eqns": 2,
+                "num_fluids": 2,
+                "mpp_lim": "T",
+                "mixture_err": "T",
+                "recon_type": 1,
+                "weno_order": 3,
+                "mapped_weno": "T",
+                "riemann_solver": 2,
+                "wave_speeds": 1,
+                "avg_state": 2,
+                "bc_x%beg": -3,
+                "bc_x%end": -3,
+                "prim_vars_wrt": "T",
+                "rho_wrt": "T",
+                "pres_wrt": "T",
+                "c_wrt": "T",
+                "patch_icpp(1)%geometry": 1,
+                "patch_icpp(1)%x_centroid": 0.5,
+                "patch_icpp(1)%length_x": 1.0,
+                "patch_icpp(1)%vel(1)": 0.0,
+                "patch_icpp(1)%pres": 101325.0,
+                "patch_icpp(1)%alpha_rho(1)": eps_jwl * rho_jwl,
+                "patch_icpp(1)%alpha_rho(2)": (1.0 - eps_jwl) * rho_air,
+                "patch_icpp(1)%alpha(1)": eps_jwl,
+                "patch_icpp(1)%alpha(2)": 1.0 - eps_jwl,
+                "patch_icpp(2)%geometry": 1,
+                "patch_icpp(2)%alter_patch(1)": "T",
+                "patch_icpp(2)%x_centroid": 0.15,
+                "patch_icpp(2)%length_x": 0.3,
+                "patch_icpp(2)%vel(1)": 0.0,
+                "patch_icpp(2)%pres": 1.2e10,
+                "patch_icpp(2)%alpha_rho(1)": (1.0 - eps_jwl) * rho_jwl,
+                "patch_icpp(2)%alpha_rho(2)": eps_jwl * rho_air,
+                "patch_icpp(2)%alpha(1)": 1.0 - eps_jwl,
+                "patch_icpp(2)%alpha(2)": eps_jwl,
+                "fluid_pp(1)%eos": 2,
+                "fluid_pp(1)%gamma": 2.5,
+                "fluid_pp(1)%pi_inf": 0.0,
+                "fluid_pp(1)%cv": 613.5,
+                "fluid_pp(1)%jwl_A": 3.712e11,
+                "fluid_pp(1)%jwl_B": 3.231e9,
+                "fluid_pp(1)%jwl_R1": 4.15,
+                "fluid_pp(1)%jwl_R2": 0.95,
+                "fluid_pp(1)%jwl_omega": 0.30,
+                "fluid_pp(1)%jwl_rho0": rho_jwl,
+                "fluid_pp(1)%jwl_E0": 1.0089e10,
+                "fluid_pp(1)%jwl_air_e0": 2.5575e5,
+                "fluid_pp(1)%jwl_air_rho0": rho_air,
+                "fluid_pp(1)%jwl_air_gamma": 0.4,
+                "fluid_pp(2)%eos": 1,
+                "fluid_pp(2)%gamma": 2.5,
+                "fluid_pp(2)%pi_inf": 0.0,
+                "fluid_pp(2)%cv": 717.5,
+            },
+        )
+        for closure_name, closure_id in [
+            ("isobaric", 0),
+            ("Kuhl", 1),
+            ("p-T equilibrium", 2),
+            ("Rocflu", 3),
+        ]:
+            cases.append(define_case_d(stack, closure_name, {"jwl_mix_type": closure_id}))
+        stack.pop()
+
         # 2D MTHINC on a stretched (non-uniform) x-grid.
         # A circular bubble creates diagonal interface normals (components in both
         # x and y), so the reference-space weighting Δx_j/(x_cc(j+1)-x_cc(j-1))

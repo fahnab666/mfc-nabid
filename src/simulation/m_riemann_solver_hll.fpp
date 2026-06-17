@@ -320,12 +320,14 @@ contains
                                 H_L = (E_L + pres_L - pres_mag%L)/rho_L
                                 ! stagnation enthalpy here excludes magnetic energy (only used to find speed of sound)
                                 H_R = (E_R + pres_R - pres_mag%R)/rho_R
-                            else if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
-                                Y_jwl_L = min(max(alpha_rho_L(jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
-                                Y_jwl_R = min(max(alpha_rho_R(jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
-                                @:JWL_RECONSTRUCT_ENERGY()
-                                H_L = (E_L + pres_L)/rho_L
-                                H_R = (E_R + pres_R)/rho_R
+                                #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                                else if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
+                                    Y_jwl_L = min(max(alpha_rho_L(jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
+                                    Y_jwl_R = min(max(alpha_rho_R(jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
+                                    @:JWL_RECONSTRUCT_ENERGY()
+                                    H_L = (E_L + pres_L)/rho_L
+                                    H_R = (E_R + pres_R)/rho_R
+                                #:endif
                             else
                                 E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
                                 E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
@@ -367,18 +369,35 @@ contains
 
                             @:compute_average_state()
 
-                            call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, c_L, &
-                                                          & qv_L, jwl_Y=Y_jwl_L, jwl_alpha=alpha_jwl_L)
+                            #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                                if (jwl_idx > 0) then
+                                    call s_compute_jwl_speed_of_sound(pres_L, rho_L, Y_jwl_L, alpha_jwl_L, c_L)
+                                    call s_compute_jwl_speed_of_sound(pres_R, rho_R, Y_jwl_R, alpha_jwl_R, c_R)
+                                else
+                                #:endif
+                                call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, &
+                                                              & c_L, qv_L)
 
-                            call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, c_R, &
-                                                          & qv_R, jwl_Y=Y_jwl_R, jwl_alpha=alpha_jwl_R)
+                                call s_compute_speed_of_sound(pres_R, rho_R, gamma_R, pi_inf_R, H_R, alpha_R, vel_R_rms, 0._wp, &
+                                                              & c_R, qv_R)
+                                #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                                end if
+                            #:endif
 
                             !> The computation of c_avg does not require all the variables, and therefore the non '_avg'
                             ! variables are placeholders to call the subroutine.
 
-                            call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &
-                                                          & c_sum_Yi_Phi, c_avg, qv_avg, jwl_Y=5.e-1_wp*(Y_jwl_L + Y_jwl_R), &
-                                                          & jwl_alpha=5.e-1_wp*(alpha_jwl_L + alpha_jwl_R))
+                            #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                                if (jwl_idx > 0) then
+                                    call s_compute_jwl_speed_of_sound(pres_R, rho_avg, 5.e-1_wp*(Y_jwl_L + Y_jwl_R), &
+                                                                      & 5.e-1_wp*(alpha_jwl_L + alpha_jwl_R), c_avg)
+                                else
+                                #:endif
+                                call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &
+                                                              & c_sum_Yi_Phi, c_avg, qv_avg)
+                                #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                                end if
+                            #:endif
 
                             if (mhd) then
                                 call s_compute_fast_magnetosonic_speed(rho_L, c_L, B%L, norm_dir, c_fast%L, H_L)

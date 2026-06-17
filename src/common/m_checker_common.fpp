@@ -12,6 +12,7 @@ module m_checker_common
     use m_mpi_proxy
     use m_helper_basic
     use m_helper
+    use m_constants, only: eos_stiffened_gas, eos_jwl, model_eqns_5eq, jwl_mix_type_kuhl, jwl_mix_type_ptequil
 
     implicit none
 
@@ -25,11 +26,65 @@ contains
 #ifndef MFC_SIMULATION
         call s_check_total_cells
 #endif
+        call s_check_jwl_inputs
         #:if USING_AMD
             call s_check_amd
         #:endif
 
     end subroutine s_check_inputs_common
+
+    !> Validate JWL EOS selector combinations and required material parameters.
+    impure subroutine s_check_jwl_inputs
+
+        integer           :: i, n_jwl, jwl_fluid, air_fluid
+        character(len=10) :: iStr
+
+        n_jwl = 0
+        jwl_fluid = 0
+        air_fluid = 0
+
+        do i = 1, num_fluids
+            call s_int_to_str(i, iStr)
+
+            @:PROHIBIT(fluid_pp(i)%eos /= eos_stiffened_gas .and. fluid_pp(i)%eos /= eos_jwl, &
+                       & "fluid_pp(" // trim(iStr) // ")%eos must be eos_stiffened_gas (1) or eos_jwl (2)")
+
+            if (fluid_pp(i)%eos == eos_jwl) then
+                n_jwl = n_jwl + 1
+                jwl_fluid = i
+
+                @:PROHIBIT(f_is_default(fluid_pp(i)%jwl_A) .or. f_is_default(fluid_pp(i)%jwl_B) &
+                           & .or. f_is_default(fluid_pp(i)%jwl_R1) .or. f_is_default(fluid_pp(i)%jwl_R2) &
+                           & .or. f_is_default(fluid_pp(i)%jwl_omega) .or. f_is_default(fluid_pp(i)%jwl_rho0) &
+                           & .or. f_is_default(fluid_pp(i)%jwl_E0), &
+                           & "fluid_pp(" // trim(iStr) // ")%eos = eos_jwl requires jwl_A, jwl_B, jwl_R1, " &
+                           & // "jwl_R2, jwl_omega, jwl_rho0, and jwl_E0")
+                @:PROHIBIT(f_is_default(fluid_pp(i)%jwl_air_e0) .or. f_is_default(fluid_pp(i)%jwl_air_rho0) &
+                           & .or. f_is_default(fluid_pp(i)%jwl_air_gamma), &
+                           & "fluid_pp(" // trim(iStr) // ")%eos = eos_jwl requires jwl_air_e0, " &
+                           & // "jwl_air_rho0, and jwl_air_gamma")
+                @:PROHIBIT(fluid_pp(i)%jwl_R1 <= 0._wp .or. fluid_pp(i)%jwl_R2 <= 0._wp .or. fluid_pp(i)%jwl_omega <= 0._wp &
+                           & .or. fluid_pp(i)%jwl_rho0 <= 0._wp .or. fluid_pp(i)%jwl_air_rho0 <= 0._wp &
+                           & .or. fluid_pp(i)%jwl_air_gamma <= 0._wp, &
+                           & "JWL parameters jwl_R1, jwl_R2, jwl_omega, jwl_rho0, " &
+                           & // "jwl_air_rho0, and jwl_air_gamma must be positive")
+            else if (air_fluid == 0) then
+                air_fluid = i
+            end if
+        end do
+
+        @:PROHIBIT(n_jwl > 1, "At most one fluid may use eos_jwl")
+        @:PROHIBIT(jwl_fluid > 0 .and. model_eqns /= model_eqns_5eq, "JWL EOS is only supported with model_eqns_5eq")
+
+        if (jwl_fluid > 0 .and. (jwl_mix_type == jwl_mix_type_kuhl .or. jwl_mix_type == jwl_mix_type_ptequil)) then
+            @:PROHIBIT(air_fluid == 0, "jwl_mix_type Kuhl/p-T equilibrium requires one non-JWL ideal-gas fluid")
+            @:PROHIBIT(f_is_default(fluid_pp(jwl_fluid)%cv) .or. fluid_pp(jwl_fluid)%cv <= 0._wp &
+                       & .or. f_is_default(fluid_pp(air_fluid)%cv) .or. fluid_pp(air_fluid)%cv <= 0._wp, &
+                       & "jwl_mix_type Kuhl/p-T equilibrium requires positive fluid_pp%cv for both the JWL " &
+                       & // "fluid and the ideal-gas fluid")
+        end if
+
+    end subroutine s_check_jwl_inputs
 
 #ifndef MFC_SIMULATION
     !> Verify that the total number of grid cells meets the minimum required by the number of dimensions and MPI ranks.

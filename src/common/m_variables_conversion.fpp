@@ -15,7 +15,7 @@ module m_variables_conversion
     use m_helper_basic
     use m_helper
     use m_constants, only: riemann_solver_hll, riemann_solver_hlld, model_eqns_gamma_law, model_eqns_5eq, model_eqns_6eq, &
-        & model_eqns_4eq, avg_state_roe
+        & model_eqns_4eq, avg_state_roe, eos_stiffened_gas, eos_jwl, jwl_mix_type_rocflu
     use m_thermochem, only: num_species, get_temperature, get_pressure, gas_constant, get_mixture_molecular_weight, &
         & get_mixture_energy_mass
 
@@ -36,6 +36,7 @@ module m_variables_conversion
               s_compute_species_fraction, &
 #ifndef MFC_PRE_PROCESS
     s_compute_speed_of_sound, &
+              s_compute_jwl_speed_of_sound, &
               s_compute_fast_magnetosonic_speed, &
 #endif
     s_finalize_variables_conversion_module
@@ -92,7 +93,9 @@ contains
         real(wp), intent(out)           :: pres
         real(wp), intent(inout)         :: T
         real(stp), intent(in), optional :: stress, mom
-        real(wp), intent(in), optional  :: G, pres_mag, jwl_Y, jwl_alpha
+        real(wp), intent(in), optional  :: G, pres_mag
+        real(wp), intent(in), optional  :: jwl_Y      !< JWL products mass fraction; bounded inside this routine.
+        real(wp), intent(in), optional  :: jwl_alpha  !< JWL products volume fraction; bounded inside this routine.
 
         ! Chemistry
         real(wp), dimension(1:num_species), intent(in) :: rhoYks
@@ -106,27 +109,33 @@ contains
             ! Depending on model_eqns and bubbles_euler, the appropriate procedure for computing pressure is targeted by the
             ! procedure pointer
 
-            if ((jwl_idx > 0) .and. (.not. mhd) .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
-                Y_jwl = 1._wp
-                if (present(jwl_Y)) Y_jwl = jwl_Y
-                alpha_jwl = 1._wp
-                if (present(jwl_alpha)) alpha_jwl = jwl_alpha
-                eint = energy - dyn_p
-                e_sp = eint/max(rho, sgm_eps)
-                call s_jwl_mix_pressure_er(rho, e_sp, Y_jwl, alpha_jwl, jwl_idx, pres)
-            else if (mhd) then
-                ! MHD pressure: subtract magnetic pressure from total energy
-                pres = (energy - dyn_p - pi_inf - qv - pres_mag)/gamma
-            else if ((model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
-                ! Gamma/pi_inf model or five-equation model (Allaire et al. JCP 2002): p from mixture EOS
-                pres = (energy - dyn_p - pi_inf - qv)/gamma
-            else if ((model_eqns /= model_eqns_4eq) .and. bubbles_euler) then
-                ! Bubble-augmented pressure with void fraction correction
-                pres = ((energy - dyn_p)/(1._wp - alf) - pi_inf - qv)/gamma
-            else
-                ! Four-equation model (Kapila et al. PoF 2001): Tait EOS inversion
-                pres = (pref + pi_inf)*(energy/(rhoref*(1 - alf)))**(1/gamma + 1) - pi_inf
-            end if
+            #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                if ((jwl_idx > 0) .and. (.not. mhd) .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
+                    Y_jwl = 1._wp
+                    if (present(jwl_Y)) Y_jwl = jwl_Y
+                    alpha_jwl = 1._wp
+                    if (present(jwl_alpha)) alpha_jwl = jwl_alpha
+                    eint = energy - dyn_p
+                    e_sp = eint/max(rho, sgm_eps)
+                    call s_jwl_mix_pressure_er(rho, e_sp, Y_jwl, alpha_jwl, jwl_idx, pres)
+                else
+                #:endif
+                if (mhd) then
+                    ! MHD pressure: subtract magnetic pressure from total energy
+                    pres = (energy - dyn_p - pi_inf - qv - pres_mag)/gamma
+                else if ((model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
+                    ! Gamma/pi_inf model or five-equation model (Allaire et al. JCP 2002): p from mixture EOS
+                    pres = (energy - dyn_p - pi_inf - qv)/gamma
+                else if ((model_eqns /= model_eqns_4eq) .and. bubbles_euler) then
+                    ! Bubble-augmented pressure with void fraction correction
+                    pres = ((energy - dyn_p)/(1._wp - alf) - pi_inf - qv)/gamma
+                else
+                    ! Four-equation model (Kapila et al. PoF 2001): Tait EOS inversion
+                    pres = (pref + pi_inf)*(energy/(rhoref*(1 - alf)))**(1/gamma + 1) - pi_inf
+                end if
+                #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                end if
+            #:endif
 
             if (hypoelasticity .and. present(G)) then
                 ! Subtract elastic strain energy before computing pressure (hypoelastic model)
@@ -141,16 +150,21 @@ contains
                     end if
                 end do
 
-                if ((jwl_idx > 0) .and. (.not. mhd) .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
-                    Y_jwl = 1._wp
-                    if (present(jwl_Y)) Y_jwl = jwl_Y
-                    alpha_jwl = 1._wp
-                    if (present(jwl_alpha)) alpha_jwl = jwl_alpha
-                    e_sp = (energy - 0.5_wp*(mom**2._wp)/rho - E_e)/max(rho, sgm_eps)
-                    call s_jwl_mix_pressure_er(rho, e_sp, Y_jwl, alpha_jwl, jwl_idx, pres)
-                else
+                #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                    if ((jwl_idx > 0) .and. (.not. mhd) .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) &
+                        & then
+                        Y_jwl = 1._wp
+                        if (present(jwl_Y)) Y_jwl = jwl_Y
+                        alpha_jwl = 1._wp
+                        if (present(jwl_alpha)) alpha_jwl = jwl_alpha
+                        e_sp = (energy - 0.5_wp*(mom**2._wp)/rho - E_e)/max(rho, sgm_eps)
+                        call s_jwl_mix_pressure_er(rho, e_sp, Y_jwl, alpha_jwl, jwl_idx, pres)
+                    else
+                    #:endif
                     pres = (energy - 0.5_wp*(mom**2._wp)/rho - pi_inf - qv - E_e)/gamma
-                end if
+                    #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                    end if
+                #:endif
             end if
         #:else
             ! Reacting mixture pressure from temperature and species
@@ -369,8 +383,8 @@ contains
             cvs(i) = fluid_pp(i)%cv
             qvs(i) = fluid_pp(i)%qv
             qvps(i) = fluid_pp(i)%qvp
-            if (fluid_pp(i)%eos /= 1 .and. fluid_pp(i)%eos /= 2) then
-                call s_mpi_abort('Unsupported fluid_pp%eos selector. Use 1 for stiffened gas or 2 for JWL.')
+            if (fluid_pp(i)%eos /= eos_stiffened_gas .and. fluid_pp(i)%eos /= eos_jwl) then
+                call s_mpi_abort('Unsupported fluid_pp%eos selector. Use eos_stiffened_gas or eos_jwl.')
             end if
         end do
         $:GPU_UPDATE(device='[gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc]')
@@ -697,16 +711,20 @@ contains
                         pres_mag = 0._wp
                     end if
 
-                    Y_jwl = 1._wp
-                    alpha_jwl = 1._wp
-                    if (jwl_idx > 0 .and. jwl_idx <= eqn_idx%cont%end) then
-                        Y_jwl = alpha_rho_K(jwl_idx)/max(rho_K, sgm_eps)
-                        alpha_jwl = alpha_K(jwl_idx)
-                    end if
-
-                    call s_compute_pressure(qK_cons_vf(eqn_idx%E)%sf(j, k, l), qK_cons_vf(eqn_idx%alf)%sf(j, k, l), dyn_pres_K, &
-                                            & pi_inf_K, gamma_K, rho_K, qv_K, rhoYks, pres, T, pres_mag=pres_mag, jwl_Y=Y_jwl, &
-                                            & jwl_alpha=alpha_jwl)
+                    #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                        if (jwl_idx > 0 .and. jwl_idx <= eqn_idx%cont%end) then
+                            Y_jwl = alpha_rho_K(jwl_idx)/max(rho_K, sgm_eps)
+                            alpha_jwl = alpha_K(jwl_idx)
+                            call s_compute_pressure(qK_cons_vf(eqn_idx%E)%sf(j, k, l), qK_cons_vf(eqn_idx%alf)%sf(j, k, l), &
+                                                    & dyn_pres_K, pi_inf_K, gamma_K, rho_K, qv_K, rhoYks, pres, T, &
+                                                    & pres_mag=pres_mag, jwl_Y=Y_jwl, jwl_alpha=alpha_jwl)
+                        else
+                        #:endif
+                        call s_compute_pressure(qK_cons_vf(eqn_idx%E)%sf(j, k, l), qK_cons_vf(eqn_idx%alf)%sf(j, k, l), &
+                                                & dyn_pres_K, pi_inf_K, gamma_K, rho_K, qv_K, rhoYks, pres, T, pres_mag=pres_mag)
+                        #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                        end if
+                    #:endif
 
                     qK_prim_vf(eqn_idx%E)%sf(j, k, l) = pres
 
@@ -954,16 +972,19 @@ contains
                             ! MHD energy includes magnetic pressure contribution
                             q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*q_prim_vf(eqn_idx%E)%sf(j, k, &
                                       & l) + dyn_pres + pres_mag + pi_inf + qv
-                        else if (jwl_idx > 0 .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
-                            ! JWL five-equation model: E = rho*e_mix(rho,p,Y,alpha) + 0.5*rho*|u|^2.
-                            ! Y = alpha_rho_j/rho, alpha_j from the primitive adv slot.
-                            block
-                                real(wp) :: e_mix_jwl, Y_j, alpha_j
-                                alpha_j = q_prim_vf(eqn_idx%adv%beg + jwl_idx - 1)%sf(j, k, l)
-                                Y_j = q_prim_vf(jwl_idx)%sf(j, k, l)/max(rho, sgm_eps)
-                                call s_jwl_mix_energy_pr(rho, q_prim_vf(eqn_idx%E)%sf(j, k, l), Y_j, alpha_j, jwl_idx, e_mix_jwl)
-                                q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_mix_jwl + dyn_pres
-                            end block
+                            #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                            else if (jwl_idx > 0 .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
+                                ! JWL five-equation model: E = rho*e_mix(rho,p,Y,alpha) + 0.5*rho*|u|^2.
+                                ! Y = alpha_rho_j/rho, alpha_j from the primitive adv slot.
+                                block
+                                    real(wp) :: e_mix_jwl, Y_j, alpha_j
+                                    alpha_j = q_prim_vf(eqn_idx%adv%beg + jwl_idx - 1)%sf(j, k, l)
+                                    Y_j = q_prim_vf(jwl_idx)%sf(j, k, l)/max(rho, sgm_eps)
+                                    call s_jwl_mix_energy_pr(rho, q_prim_vf(eqn_idx%E)%sf(j, k, l), Y_j, alpha_j, jwl_idx, &
+                                                             & e_mix_jwl)
+                                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_mix_jwl + dyn_pres
+                                end block
+                            #:endif
                         else if ((model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
                             ! Five-equation model (Allaire et al. JCP 2002): E = Gamma*p + 0.5*rho*|u|^2 + pi_inf + qv
                             q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*q_prim_vf(eqn_idx%E)%sf(j, k, l) + dyn_pres + pi_inf + qv
@@ -1162,11 +1183,13 @@ contains
                         T_K = pres_K/rho_K/R_gas
                         call get_mixture_energy_mass(T_K, Y_K, E_K)
                         E_K = rho_K*E_K + 5.e-1_wp*rho_K*vel_K_sum
-                    else if (jwl_idx > 0 .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
-                        alpha_j = min(max(qK_prim_vf(j, k, l, eqn_idx%adv%beg + jwl_idx - 1), 0._wp), 1._wp)
-                        Y_j = min(max(qK_prim_vf(j, k, l, jwl_idx)/max(rho_K, sgm_eps), 0._wp), 1._wp)
-                        call s_jwl_mix_energy_pr(rho_K, pres_K, Y_j, alpha_j, jwl_idx, e_mix_jwl)
-                        E_K = rho_K*e_mix_jwl + 5.e-1_wp*rho_K*vel_K_sum
+                        #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                        else if (jwl_idx > 0 .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
+                            alpha_j = min(max(qK_prim_vf(j, k, l, eqn_idx%adv%beg + jwl_idx - 1), 0._wp), 1._wp)
+                            Y_j = min(max(qK_prim_vf(j, k, l, jwl_idx)/max(rho_K, sgm_eps), 0._wp), 1._wp)
+                            call s_jwl_mix_energy_pr(rho_K, pres_K, Y_j, alpha_j, jwl_idx, e_mix_jwl)
+                            E_K = rho_K*e_mix_jwl + 5.e-1_wp*rho_K*vel_K_sum
+                        #:endif
                     else
                         ! Computing the energy from the pressure
                         E_K = gamma_K*pres_K + pi_inf_K + 5.e-1_wp*rho_K*vel_K_sum + qv_K
@@ -1298,8 +1321,44 @@ contains
     end subroutine s_finalize_variables_conversion_module
 
 #ifndef MFC_PRE_PROCESS
-    !> Compute the speed of sound from thermodynamic state variables, supporting multiple equation-of-state models.
-    subroutine s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, adv, vel_sum, c_c, c, qv, jwl_Y, jwl_alpha)
+    !> Compute the JWL mixture speed of sound from explicit JWL fractions.
+    !! @param[in] pres Mixture pressure.
+    !! @param[in] rho Mixture density.
+    !! @param[in] Y_jwl JWL products mass fraction; bounded inside this routine.
+    !! @param[in] alpha_jwl JWL products volume fraction; bounded inside this routine.
+    !! @param[out] c JWL mixture speed of sound; finite negative c2 values are floored, NaN c2 propagates.
+    subroutine s_compute_jwl_speed_of_sound(pres, rho, Y_jwl, alpha_jwl, c)
+
+        $:GPU_ROUTINE(function_name='s_compute_jwl_speed_of_sound',parallelism='[seq]', cray_noinline=True)
+
+        real(wp), intent(in)  :: pres, rho, Y_jwl, alpha_jwl
+        real(wp), intent(out) :: c
+        real(wp)              :: c2, Y_j, alpha_j
+
+        Y_j = min(max(Y_jwl, 0._wp), 1._wp)
+        alpha_j = min(max(alpha_jwl, 0._wp), 1._wp)
+
+        ! Rocflu is a single-fluid closure: alpha_j is a blending marker, not a phasic volume fraction.
+        if (jwl_mix_type == jwl_mix_type_rocflu) then
+            call s_jwl_rocflu_sound_speed_squared(rho, pres, Y_j, jwl_As(jwl_idx), jwl_Bs(jwl_idx), jwl_R1s(jwl_idx), &
+                                                  & jwl_R2s(jwl_idx), jwl_omegas(jwl_idx), jwl_rho0s(jwl_idx), jwl_E0s(jwl_idx), &
+                                                  & jwl_air_e0s(jwl_idx), jwl_air_rho0s(jwl_idx), jwl_air_gammas(jwl_idx), c2)
+        else
+            call s_jwl_mixture_sound_speed_squared(rho, pres, Y_j, alpha_j, jwl_As(jwl_idx), jwl_Bs(jwl_idx), jwl_R1s(jwl_idx), &
+                                                   & jwl_R2s(jwl_idx), jwl_omegas(jwl_idx), jwl_rho0s(jwl_idx), jwl_E0s(jwl_idx), &
+                                                   & jwl_air_e0s(jwl_idx), jwl_air_rho0s(jwl_idx), jwl_air_gammas(jwl_idx), c2)
+        end if
+
+        if (c2 == c2) then
+            c = sqrt(max(c2, sgm_eps))
+        else
+            c = c2
+        end if
+
+    end subroutine s_compute_jwl_speed_of_sound
+
+    !> Compute the speed of sound from thermodynamic state variables for non-JWL equation-of-state models.
+    subroutine s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, adv, vel_sum, c_c, c, qv)
 
         $:GPU_ROUTINE(parallelism='[seq]')
 
@@ -1311,14 +1370,11 @@ contains
         #:else
             real(wp), dimension(num_fluids), intent(in) :: adv
         #:endif
-        real(wp), intent(in)           :: vel_sum
-        real(wp), intent(in)           :: c_c
-        real(wp), intent(out)          :: c
-        real(wp), intent(in), optional :: jwl_Y      !< Bounded JWL mass fraction from the Riemann state
-        real(wp), intent(in), optional :: jwl_alpha  !< Bounded JWL volume fraction from the Riemann state
-        real(wp)                       :: blkmod1, blkmod2
-        real(wp)                       :: c2, Y_j, alpha_j
-        integer                        :: q
+        real(wp), intent(in)  :: vel_sum
+        real(wp), intent(in)  :: c_c
+        real(wp), intent(out) :: c
+        real(wp)              :: blkmod1, blkmod2
+        integer               :: q
 
         if (chemistry) then  ! Reacting mixture sound speed
             if (avg_state == avg_state_roe .and. abs(c_c) > verysmall) then
@@ -1328,41 +1384,6 @@ contains
             end if
         else if (relativity) then  ! Relativistic sound speed
             c = sqrt((1._wp + 1._wp/gamma)*pres/rho/H)
-        else if (jwl_idx > 0) then
-            ! JWL mixture sound speed: frozen (mass-weighted) rule.
-            ! The caller supplies the bounded JWL volume fraction (jwl_alpha) and mass
-            ! fraction (jwl_Y) from the local state; absent either one, fall back to the
-            ! rho0 proxy alpha_j*rho0/rho, exact at initial conditions and a wave-speed bound.
-            ! NOTE: present() guards must be separate if-blocks because Fortran
-            ! does not short-circuit .and. when an optional argument is absent.
-            alpha_j = min(max(adv(jwl_idx), 0._wp), 1._wp)
-            if (present(jwl_alpha)) then
-                if (jwl_alpha == jwl_alpha) alpha_j = min(max(jwl_alpha, 0._wp), 1._wp)
-            end if
-
-            Y_j = min(max(alpha_j*jwl_rho0s(jwl_idx)/max(rho, sgm_eps), 0._wp), 1._wp)
-            if (present(jwl_Y)) then
-                if (jwl_Y == jwl_Y) Y_j = min(max(jwl_Y, 0._wp), 1._wp)
-            end if
-            ! Rocflu (mode 3) is a single-fluid closure: alpha_j is a blending marker, not
-            ! a two-fluid volume fraction. Using it to form phasic densities rho_k=Y*rho/alpha_j
-            ! yields unphysical values and oscillatory sound speeds. Use the Rocflu-specific
-            ! Gruneisen formula that operates on total rho and recovers e from (rho, p) directly.
-            if (jwl_mix_type == 3) then
-                call s_jwl_rocflu_sound_speed_squared(rho, pres, Y_j, jwl_As(jwl_idx), jwl_Bs(jwl_idx), jwl_R1s(jwl_idx), &
-                                                      & jwl_R2s(jwl_idx), jwl_omegas(jwl_idx), jwl_rho0s(jwl_idx), &
-                                                      & jwl_E0s(jwl_idx), jwl_air_e0s(jwl_idx), jwl_air_rho0s(jwl_idx), &
-                                                      & jwl_air_gammas(jwl_idx), c2)
-            else
-                call s_jwl_mixture_sound_speed_squared(rho, pres, Y_j, alpha_j, jwl_As(jwl_idx), jwl_Bs(jwl_idx), &
-                                                       & jwl_R1s(jwl_idx), jwl_R2s(jwl_idx), jwl_omegas(jwl_idx), &
-                                                       & jwl_rho0s(jwl_idx), jwl_E0s(jwl_idx), jwl_air_e0s(jwl_idx), &
-                                                       & jwl_air_rho0s(jwl_idx), jwl_air_gammas(jwl_idx), c2)
-            end if
-            ! Guard only the sqrt argument against numerical noise (c2 <= 0). No proxy bias is
-            ! applied: a genuinely bad c2 (e.g. NaN) propagates so the failure surfaces rather
-            ! than being silently masked into a plausible-but-wrong sound speed.
-            c = sqrt(max(c2, sgm_eps))
         else
             if (alt_soundspeed) then  ! Wood's mixture sound speed via bulk moduli
                 blkmod1 = ((gammas(1) + 1._wp)*pres + pi_infs(1))/gammas(1)

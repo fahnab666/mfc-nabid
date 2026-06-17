@@ -657,10 +657,16 @@ contains
                     end if
 
                     ! Compute mixture sound speed
-                    if (jwl_idx > 0) then
-                        Y_jwl = min(max(q_prim_vf(jwl_idx)%sf(j, k, l)/max(rho, sgm_eps), 0._wp), 1._wp)
-                    end if
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv, jwl_Y=Y_jwl)
+                    #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                        if (jwl_idx > 0) then
+                            Y_jwl = min(max(q_prim_vf(jwl_idx)%sf(j, k, l)/max(rho, sgm_eps), 0._wp), 1._wp)
+                            call s_compute_jwl_speed_of_sound(pres, rho, Y_jwl, alpha(jwl_idx), c)
+                        else
+                        #:endif
+                        call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv)
+                        #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                        end if
+                    #:endif
 
                     if (any_non_newtonian) then
                         Re(1) = 0._wp
