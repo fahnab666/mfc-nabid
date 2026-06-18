@@ -338,7 +338,7 @@ CONSTRAINTS = {
     # JWL mixture closure
     "jwl_mix_type": {
         "choices": [0, 1, 2, 3],
-        "value_labels": {0: "Isobaric", 1: "Kuhl", 2: "p-T equilibrium", 3: "Rocflu blend"},
+        "value_labels": {0: "Isobaric", 1: "Kuhl (2007)", 2: "p-T equilibrium", 3: "Rocflu blend"},
         "names": {"isobaric": 0, "kuhl": 1, "ptequil": 2, "rocflu": 3},
     },
     # Model equations

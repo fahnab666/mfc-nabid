@@ -12,7 +12,7 @@ module m_checker_common
     use m_mpi_proxy
     use m_helper_basic
     use m_helper
-    use m_constants, only: eos_stiffened_gas, eos_jwl, model_eqns_5eq, jwl_mix_type_kuhl, jwl_mix_type_ptequil
+    use m_constants, only: eos_stiffened_gas, eos_jwl, model_eqns_5eq, jwl_mix_type_ptequil
 
     implicit none
 
@@ -76,11 +76,11 @@ contains
         @:PROHIBIT(n_jwl > 1, "At most one fluid may use eos_jwl")
         @:PROHIBIT(jwl_fluid > 0 .and. model_eqns /= model_eqns_5eq, "JWL EOS is only supported with model_eqns_5eq")
 
-        if (jwl_fluid > 0 .and. (jwl_mix_type == jwl_mix_type_kuhl .or. jwl_mix_type == jwl_mix_type_ptequil)) then
-            @:PROHIBIT(air_fluid == 0, "jwl_mix_type Kuhl/p-T equilibrium requires one non-JWL ideal-gas fluid")
+        if (jwl_fluid > 0 .and. jwl_mix_type == jwl_mix_type_ptequil) then
+            @:PROHIBIT(air_fluid == 0, "jwl_mix_type p-T equilibrium requires one non-JWL ideal-gas fluid")
             @:PROHIBIT(f_is_default(fluid_pp(jwl_fluid)%cv) .or. fluid_pp(jwl_fluid)%cv <= 0._wp &
                        & .or. f_is_default(fluid_pp(air_fluid)%cv) .or. fluid_pp(air_fluid)%cv <= 0._wp, &
-                       & "jwl_mix_type Kuhl/p-T equilibrium requires positive fluid_pp%cv for both the JWL " &
+                       & "jwl_mix_type p-T equilibrium requires positive fluid_pp%cv for both the JWL " &
                        & // "fluid and the ideal-gas fluid")
         end if
 
