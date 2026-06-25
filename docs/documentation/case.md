@@ -443,7 +443,7 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 
 - `fluid_pp(i)%%G` is required for `hypoelasticity`.
 
-- `fluid_pp(i)%%eos` selects the equation of state for the $i$-th fluid: [1] stiffened gas (default); [2] Jones-Wilkins-Lee (JWL) for detonation products, supported with `model_eqns = 2` and at most one JWL fluid. A JWL fluid requires `jwl_A`, `jwl_B`, `jwl_R1`, `jwl_R2`, `jwl_omega`, `jwl_rho0`, and `jwl_E0` (the standard JWL coefficients), and `jwl_air_e0`, `jwl_air_rho0`, `jwl_air_gamma` describing the co-existing ideal gas; `jwl_air_gamma` is the stored form \f$\gamma_{\mathrm{air}}-1\f$. The closure used to mix products with the surrounding gas is set globally by `jwl_mix_type`; modes 1 (Kuhl) and 2 (p-T equilibrium) additionally require a positive `cv` on both fluids.
+- `fluid_pp(i)%%eos` selects the equation of state for the $i$-th fluid: [1] stiffened gas (default); [2] Jones-Wilkins-Lee (JWL) for detonation products, supported with `model_eqns = 2` and at most one JWL fluid. A JWL fluid requires `jwl_A`, `jwl_B`, `jwl_R1`, `jwl_R2`, `jwl_omega`, `jwl_rho0`, and `jwl_E0` (the standard JWL coefficients), and `jwl_air_e0`, `jwl_air_rho0`, `jwl_air_gamma` describing the co-existing ideal gas; `jwl_air_gamma` is the stored form \f$\gamma_{\mathrm{air}}-1\f$. The closure used to mix products with the surrounding gas is set globally by `jwl_mix_type`; mode 2 requires positive products `cv`, while mode 3 requires positive products and air `cv`.
 
 > **Stored-form parameters:** The values `gamma`, `pi_inf`, and `Re(1)`/`Re(2)` are **not** the raw physical quantities. MFC expects transformed stored forms:
 > - `gamma` = \f$1/(\gamma-1)\f$, not \f$\gamma\f$ itself
@@ -463,7 +463,7 @@ See @ref equations "Equations" for the mathematical models these parameters cont
 | `bc_[x,y,z]%%vb[1,2,3]`‡   | Real    | Velocity in the (x,1), (y, 2), (z,3) direction applied to `bc_[x,y,z]%%beg` |
 | `bc_[x,y,z]%%ve[1,2,3]`‡   | Real    | Velocity in the (x,1), (y, 2), (z,3) direction applied to `bc_[x,y,z]%%end` |
 | `model_eqns`               | Integer | Multicomponent model: [1] \f$\Gamma/\Pi_\infty\f$; [2] 5-equation; [3] 6-equation; [4] 4-equation |
-| `jwl_mix_type`             | Integer | JWL mixture closure for the 5-equation model: [0] isobaric (default, verified against an exact Riemann reference); [1] Kuhl, [2] p-T equilibrium, [3] Rocflu blend (experimental) |
+| `jwl_mix_type`             | Integer | JWL mixture closure for the 5-equation model: [0] isobaric (default); [1] supplied Kuhl/Khasainov; [2] supplied exact p-T equilibrium; [3] Rocflu state-interpolated single-fluid closure |
 | `alt_soundspeed` *         | Logical | Alternate sound speed and \f$K \nabla \cdot u\f$ for 5-equation model |
 | `adv_n`   	               | Logical | Solving directly for the number density (in the method of classes) and compute void fraction from the number density |
 | `mpp_lim`	                 | Logical | Mixture physical parameters limits |

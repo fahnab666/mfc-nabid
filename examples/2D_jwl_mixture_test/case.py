@@ -131,7 +131,9 @@ params = {
     "fluid_pp(2)%eos": 1,
     "fluid_pp(2)%gamma": 1.0 / 0.4,
     "fluid_pp(2)%pi_inf": 0.0,
+    "fluid_pp(2)%cv": 717.5,
     "fluid_pp(2)%Re(1)": 2.5e6,
+    "jwl_mix_type": 3,
 }
 
 particle_radius = 0.01

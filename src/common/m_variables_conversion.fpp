@@ -15,7 +15,7 @@ module m_variables_conversion
     use m_helper_basic
     use m_helper
     use m_constants, only: riemann_solver_hll, riemann_solver_hlld, model_eqns_gamma_law, model_eqns_5eq, model_eqns_6eq, &
-        & model_eqns_4eq, avg_state_roe, eos_stiffened_gas, eos_jwl, jwl_mix_type_rocflu
+        & model_eqns_4eq, avg_state_roe, eos_stiffened_gas, eos_jwl
     use m_thermochem, only: num_species, get_temperature, get_pressure, gas_constant, get_mixture_molecular_weight, &
         & get_mixture_energy_mass
 
@@ -1338,22 +1338,7 @@ contains
         Y_j = min(max(Y_jwl, 0._wp), 1._wp)
         alpha_j = min(max(alpha_jwl, 0._wp), 1._wp)
 
-        ! Rocflu is a single-fluid closure: alpha_j is a blending marker, not a phasic volume fraction.
-        if (jwl_mix_type == jwl_mix_type_rocflu) then
-            call s_jwl_rocflu_sound_speed_squared(rho, pres, Y_j, jwl_As(jwl_idx), jwl_Bs(jwl_idx), jwl_R1s(jwl_idx), &
-                                                  & jwl_R2s(jwl_idx), jwl_omegas(jwl_idx), jwl_rho0s(jwl_idx), jwl_E0s(jwl_idx), &
-                                                  & jwl_air_e0s(jwl_idx), jwl_air_rho0s(jwl_idx), jwl_air_gammas(jwl_idx), c2)
-        else
-            call s_jwl_mixture_sound_speed_squared(rho, pres, Y_j, alpha_j, jwl_As(jwl_idx), jwl_Bs(jwl_idx), jwl_R1s(jwl_idx), &
-                                                   & jwl_R2s(jwl_idx), jwl_omegas(jwl_idx), jwl_rho0s(jwl_idx), jwl_E0s(jwl_idx), &
-                                                   & jwl_air_e0s(jwl_idx), jwl_air_rho0s(jwl_idx), jwl_air_gammas(jwl_idx), c2)
-        end if
-
-        if (c2 == c2) then
-            c = sqrt(max(c2, sgm_eps))
-        else
-            c = c2
-        end if
+        call s_jwl_mix_sound_speed(rho, pres, Y_j, alpha_j, jwl_idx, c)
 
     end subroutine s_compute_jwl_speed_of_sound
 

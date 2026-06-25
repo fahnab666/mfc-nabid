@@ -12,7 +12,7 @@ module m_checker_common
     use m_mpi_proxy
     use m_helper_basic
     use m_helper
-    use m_constants, only: eos_stiffened_gas, eos_jwl, model_eqns_5eq, jwl_mix_type_ptequil
+    use m_constants, only: eos_stiffened_gas, eos_jwl, model_eqns_5eq, jwl_mix_type_rocflu
 
     implicit none
 
@@ -76,12 +76,18 @@ contains
         @:PROHIBIT(n_jwl > 1, "At most one fluid may use eos_jwl")
         @:PROHIBIT(jwl_fluid > 0 .and. model_eqns /= model_eqns_5eq, "JWL EOS is only supported with model_eqns_5eq")
 
-        if (jwl_fluid > 0 .and. jwl_mix_type == jwl_mix_type_ptequil) then
-            @:PROHIBIT(air_fluid == 0, "jwl_mix_type p-T equilibrium requires one non-JWL ideal-gas fluid")
-            @:PROHIBIT(f_is_default(fluid_pp(jwl_fluid)%cv) .or. fluid_pp(jwl_fluid)%cv <= 0._wp &
-                       & .or. f_is_default(fluid_pp(air_fluid)%cv) .or. fluid_pp(air_fluid)%cv <= 0._wp, &
-                       & "jwl_mix_type p-T equilibrium requires positive fluid_pp%cv for both the JWL " &
-                       & // "fluid and the ideal-gas fluid")
+        @:PROHIBIT(jwl_fluid > 0 .and. jwl_mix_type /= jwl_mix_type_rocflu, &
+                   & "Only jwl_mix_type = 3 (Rocflu) is supported; modes 0, 1, and 2 have been removed")
+
+        if (jwl_fluid > 0 .and. jwl_mix_type == jwl_mix_type_rocflu) then
+            @:PROHIBIT(num_fluids > 1 .and. air_fluid == 0, "Rocflu closure requires one non-JWL ideal-gas fluid")
+            @:PROHIBIT(f_is_default(fluid_pp(jwl_fluid)%cv) .or. fluid_pp(jwl_fluid)%cv <= 0._wp, &
+                       & "Rocflu closure requires positive fluid_pp%cv for the JWL fluid")
+            @:PROHIBIT(air_fluid > 0 .and. (f_is_default(fluid_pp(air_fluid)%cv) .or. fluid_pp(air_fluid)%cv <= 0._wp), &
+                       & "Rocflu closure requires positive fluid_pp%cv for the non-JWL air fluid")
+            @:PROHIBIT(fluid_pp(jwl_fluid)%jwl_rho0 <= fluid_pp(jwl_fluid)%jwl_air_rho0 &
+                       & .or. fluid_pp(jwl_fluid)%jwl_E0/fluid_pp(jwl_fluid)%jwl_rho0 <= fluid_pp(jwl_fluid)%jwl_air_e0, &
+                       & "Rocflu closure requires increasing air-to-products reference density and energy")
         end if
 
     end subroutine s_check_jwl_inputs

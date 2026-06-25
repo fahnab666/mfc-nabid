@@ -62,6 +62,7 @@ print(
             "fluid_pp(1)%jwl_air_e0": 2.5575e5,
             "fluid_pp(1)%jwl_air_rho0": 1.225,
             "fluid_pp(1)%jwl_air_gamma": 0.4,
+            "jwl_mix_type": 3,
         }
     )
 )

@@ -2472,13 +2472,25 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                 "fluid_pp(2)%cv": 717.5,
             },
         )
-        for closure_name, closure_id in [
-            ("isobaric", 0),
-            ("Kuhl", 1),
-            ("p-T equilibrium", 2),
-            ("Rocflu", 3),
-        ]:
-            cases.append(define_case_d(stack, closure_name, {"jwl_mix_type": closure_id}, override_tol=1e-7))
+        # Only the Rocflu closure (jwl_mix_type = 3) is compiled; modes 0, 1, 2 were removed.
+        # A homogeneous mixed slab exercises Rocflu's density/energy coefficient ramps;
+        # the two endpoint patches alone mostly select its ideal-air and pure-JWL branches.
+        overrides = {
+            "jwl_mix_type": 3,
+            "num_patches": 3,
+            "patch_icpp(3)%geometry": 1,
+            "patch_icpp(3)%alter_patch(1)": "T",
+            "patch_icpp(3)%alter_patch(2)": "T",
+            "patch_icpp(3)%x_centroid": 0.5,
+            "patch_icpp(3)%length_x": 0.2,
+            "patch_icpp(3)%vel(1)": 0.0,
+            "patch_icpp(3)%pres": 5.0e8,
+            "patch_icpp(3)%alpha_rho(1)": 250.0,
+            "patch_icpp(3)%alpha_rho(2)": 250.0,
+            "patch_icpp(3)%alpha(1)": 0.5,
+            "patch_icpp(3)%alpha(2)": 0.5,
+        }
+        cases.append(define_case_d(stack, "Rocflu", overrides, override_tol=1e-7))
         stack.pop()
 
         # 2D MTHINC on a stretched (non-uniform) x-grid.
