@@ -872,7 +872,8 @@ def _load():
         _r(f"{px}jwl_E0", REAL, math=r"\f$E_{0,k}\f$")
         _r(f"{px}jwl_air_e0", REAL, math=r"\f$e_{\mathrm{air},k}\f$")
         _r(f"{px}jwl_air_rho0", REAL, math=r"\f$\rho_{\mathrm{air},k}\f$")
-        _r(f"{px}jwl_air_gamma", REAL, math=r"\f$(\gamma_{\mathrm{air}}-1)_k\f$")
+        _r(f"{px}jwl_air_p0", REAL, math=r"\f$p_{\mathrm{air},k}\f$")
+        _r(f"{px}jwl_ej_rho_ref", REAL, math=r"\f$\rho_{e_j,k}\f$")
 
     # bub_pp (bubble properties)
     for a, sym in [

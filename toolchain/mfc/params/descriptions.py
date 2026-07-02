@@ -340,6 +340,10 @@ PATTERNS = [
     (r"fluid_pp\((\d+)\)%jwl_rho0", "JWL reference density for fluid {0}"),
     (r"fluid_pp\((\d+)\)%jwl_Q", "JWL specific detonation energy for fluid {0}"),
     (r"fluid_pp\((\d+)\)%jwl_E0", "JWL volumetric detonation energy for fluid {0}"),
+    (r"fluid_pp\((\d+)\)%jwl_air_e0", "JWL closure ambient-gas specific internal energy for fluid {0}"),
+    (r"fluid_pp\((\d+)\)%jwl_air_rho0", "JWL closure ambient-gas reference density for fluid {0}"),
+    (r"fluid_pp\((\d+)\)%jwl_air_p0", "JWL closure ambient-gas pressure, alternative to jwl_air_e0, for fluid {0}"),
+    (r"fluid_pp\((\d+)\)%jwl_ej_rho_ref", "JWL closure products-energy reference density for fluid {0}; default jwl_rho0, Garno/RocSDT value for benchmark reproduction"),
     # patch_ib patterns
     (r"patch_ib\((\d+)\)%geometry", "Geometry type for immersed boundary {0}"),
     (r"patch_ib\((\d+)\)%x_centroid", "X-coordinate of centroid for IB patch {0}"),

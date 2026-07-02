@@ -387,7 +387,8 @@ contains
 
                             #:if not MFC_CASE_OPTIMIZATION or jwl_active
                                 if (jwl_idx > 0) then
-                                    call s_compute_jwl_speed_of_sound(pres_R, rho_avg, 5.e-1_wp*(Y_jwl_L + Y_jwl_R), c_avg)
+                                    call s_compute_jwl_speed_of_sound(5.e-1_wp*(pres_L + pres_R), rho_avg, &
+                                                                      & 5.e-1_wp*(Y_jwl_L + Y_jwl_R), c_avg)
                                 else
                                 #:endif
                                 call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &

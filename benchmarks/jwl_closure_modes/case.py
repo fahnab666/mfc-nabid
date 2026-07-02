@@ -75,7 +75,6 @@ params = {
     "fluid_pp(1)%jwl_E0": 1.0089e10,
     "fluid_pp(1)%jwl_air_e0": 2.5575e5,
     "fluid_pp(1)%jwl_air_rho0": rho_air,
-    "fluid_pp(1)%jwl_air_gamma": 0.4,
     "fluid_pp(2)%eos": 1,
     "fluid_pp(2)%gamma": 2.5,
     "fluid_pp(2)%pi_inf": 0.0,

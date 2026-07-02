@@ -2471,7 +2471,6 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                 "fluid_pp(1)%jwl_Q": jwl_Q,
                 "fluid_pp(1)%jwl_air_e0": 2.5575e5,
                 "fluid_pp(1)%jwl_air_rho0": rho_air,
-                "fluid_pp(1)%jwl_air_gamma": 0.4,
                 "fluid_pp(2)%eos": 1,
                 "fluid_pp(2)%gamma": 2.5,
                 "fluid_pp(2)%pi_inf": 0.0,

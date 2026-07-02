@@ -256,9 +256,9 @@ module m_global_parameters
     $:GPU_DECLARE(create='[gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps]')
 
     real(wp), allocatable, dimension(:) :: jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, jwl_E0s
-    real(wp), allocatable, dimension(:) :: jwl_air_e0s, jwl_air_rho0s, jwl_air_gammas
+    real(wp), allocatable, dimension(:) :: jwl_air_e0s, jwl_air_rho0s, jwl_air_gammas, jwl_ej_rho_refs
     $:GPU_DECLARE(create='[jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, jwl_E0s]')
-    $:GPU_DECLARE(create='[jwl_air_e0s, jwl_air_rho0s, jwl_air_gammas]')
+    $:GPU_DECLARE(create='[jwl_air_e0s, jwl_air_rho0s, jwl_air_gammas, jwl_ej_rho_refs]')
 
     real(wp)                                    :: mytime     !< Current simulation time
     real(wp)                                    :: finaltime  !< Final simulation time

@@ -744,6 +744,15 @@ class CaseValidator:
                     mismatch = abs(jwl_E0 - expected_E0) > 1.0e-8 * max(abs(jwl_E0), abs(expected_E0), 1.0)
                     self.prohibit(mismatch, f"fluid_pp({i})%jwl_E0 must equal fluid_pp({i})%jwl_rho0 * fluid_pp({i})%jwl_Q when both are set")
 
+                jwl_air_e0 = self.get(f"fluid_pp({i})%jwl_air_e0")
+                jwl_air_p0 = self.get(f"fluid_pp({i})%jwl_air_p0")
+                self.prohibit(self.get(f"fluid_pp({i})%jwl_air_rho0") is None, f"fluid_pp({i})%eos = eos_jwl requires fluid_pp({i})%jwl_air_rho0")
+                self.prohibit(jwl_air_e0 is None and jwl_air_p0 is None, f"fluid_pp({i})%eos = eos_jwl requires either fluid_pp({i})%jwl_air_e0 or fluid_pp({i})%jwl_air_p0")
+
+                for name in ["jwl_air_rho0", "jwl_air_e0", "jwl_air_p0", "jwl_ej_rho_ref"]:
+                    value = self.get(f"fluid_pp({i})%{name}")
+                    self.prohibit(value is not None and value <= 0, f"fluid_pp({i})%{name} must be positive")
+
     def check_surface_tension(self):
         """Checks constraints on surface tension"""
         surface_tension = self.get("surface_tension", "F") == "T"

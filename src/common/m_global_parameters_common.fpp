@@ -470,7 +470,8 @@ contains
         fluid%jwl_E0 = dflt_real
         fluid%jwl_air_e0 = dflt_real
         fluid%jwl_air_rho0 = dflt_real
-        fluid%jwl_air_gamma = dflt_real
+        fluid%jwl_air_p0 = dflt_real
+        fluid%jwl_ej_rho_ref = dflt_real
 
     end subroutine s_assign_jwl_fluid_defaults
 
