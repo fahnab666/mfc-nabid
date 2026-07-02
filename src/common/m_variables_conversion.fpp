@@ -82,8 +82,7 @@ contains
     end subroutine s_convert_to_mixture_variables
 
     !> Compute the pressure from the appropriate equation of state
-    subroutine s_compute_pressure(energy, alf, dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T, stress, mom, G, pres_mag, jwl_Y, &
-                                  & jwl_alpha)
+    subroutine s_compute_pressure(energy, alf, dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T, stress, mom, G, pres_mag, jwl_Y)
 
         $:GPU_ROUTINE(function_name='s_compute_pressure',parallelism='[seq]', cray_noinline=True)
 
@@ -94,8 +93,7 @@ contains
         real(wp), intent(inout)         :: T
         real(stp), intent(in), optional :: stress, mom
         real(wp), intent(in), optional  :: G, pres_mag
-        real(wp), intent(in), optional  :: jwl_Y      !< JWL products mass fraction; bounded inside this routine.
-        real(wp), intent(in), optional  :: jwl_alpha  !< JWL products volume fraction; bounded inside this routine.
+        real(wp), intent(in), optional  :: jwl_Y  !< JWL products mass fraction; bounded inside this routine.
 
         ! Chemistry
         real(wp), dimension(1:num_species), intent(in) :: rhoYks
@@ -103,7 +101,7 @@ contains
         real(wp)                                       :: E_e
         real(wp)                                       :: e_Per_Kg, Pdyn_Per_Kg
         real(wp)                                       :: T_guess
-        real(wp)                                       :: eint, e_sp, Y_jwl, alpha_jwl
+        real(wp)                                       :: eint, e_sp, Y_jwl, c_jwl
         integer                                        :: s  !< Generic loop iterator
         #:if not chemistry
             ! Depending on model_eqns and bubbles_euler, the appropriate procedure for computing pressure is targeted by the
@@ -113,11 +111,9 @@ contains
                 if ((jwl_idx > 0) .and. (.not. mhd) .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
                     Y_jwl = 1._wp
                     if (present(jwl_Y)) Y_jwl = jwl_Y
-                    alpha_jwl = 1._wp
-                    if (present(jwl_alpha)) alpha_jwl = jwl_alpha
                     eint = energy - dyn_p
                     e_sp = eint/max(rho, sgm_eps)
-                    call s_jwl_mix_pressure_er(rho, e_sp, Y_jwl, alpha_jwl, jwl_idx, pres)
+                    call s_jwl_mix_state_er(rho, e_sp, Y_jwl, jwl_idx, pres, T, c_jwl)
                 else
                 #:endif
                 if (mhd) then
@@ -155,10 +151,8 @@ contains
                         & then
                         Y_jwl = 1._wp
                         if (present(jwl_Y)) Y_jwl = jwl_Y
-                        alpha_jwl = 1._wp
-                        if (present(jwl_alpha)) alpha_jwl = jwl_alpha
                         e_sp = (energy - 0.5_wp*(mom**2._wp)/rho - E_e)/max(rho, sgm_eps)
-                        call s_jwl_mix_pressure_er(rho, e_sp, Y_jwl, alpha_jwl, jwl_idx, pres)
+                        call s_jwl_mix_state_er(rho, e_sp, Y_jwl, jwl_idx, pres, T, c_jwl)
                     else
                     #:endif
                     pres = (energy - 0.5_wp*(mom**2._wp)/rho - pi_inf - qv - E_e)/gamma
@@ -527,7 +521,7 @@ contains
         real(wp)               :: rho_K, gamma_K, pi_inf_K, qv_K, dyn_pres_K
         real(wp)               :: vftmp, nbub_sc
         real(wp)               :: G_K
-        real(wp)               :: pres, Y_jwl, alpha_jwl
+        real(wp)               :: pres, Y_jwl
         integer                :: i, j, k, l               !< Generic loop iterators
         real(wp)               :: T
         real(wp)               :: pres_mag
@@ -542,8 +536,8 @@ contains
         integer                :: iter                     !< Newton-Raphson iteration counter
 
         $:GPU_PARALLEL_LOOP(collapse=3, private='[alpha_K, alpha_rho_K, Re_K, nRtmp, rho_K, gamma_K, pi_inf_K, qv_K, dyn_pres_K, &
-                            & rhoYks, B, pres, Y_jwl, alpha_jwl, vftmp, nbub_sc, G_K, T, pres_mag, Ga, B2, m2, S, W, dW, E, D, f, &
-                            & dGa_dW, dp_dW, df_dW, iter]')
+                            & rhoYks, B, pres, Y_jwl, vftmp, nbub_sc, G_K, T, pres_mag, Ga, B2, m2, S, W, dW, E, D, f, dGa_dW, &
+                            & dp_dW, df_dW, iter]')
         do l = ibounds(3)%beg, ibounds(3)%end
             do k = ibounds(2)%beg, ibounds(2)%end
                 do j = ibounds(1)%beg, ibounds(1)%end
@@ -714,10 +708,9 @@ contains
                     #:if not MFC_CASE_OPTIMIZATION or jwl_active
                         if (jwl_idx > 0 .and. jwl_idx <= eqn_idx%cont%end) then
                             Y_jwl = alpha_rho_K(jwl_idx)/max(rho_K, sgm_eps)
-                            alpha_jwl = alpha_K(jwl_idx)
                             call s_compute_pressure(qK_cons_vf(eqn_idx%E)%sf(j, k, l), qK_cons_vf(eqn_idx%alf)%sf(j, k, l), &
                                                     & dyn_pres_K, pi_inf_K, gamma_K, rho_K, qv_K, rhoYks, pres, T, &
-                                                    & pres_mag=pres_mag, jwl_Y=Y_jwl, jwl_alpha=alpha_jwl)
+                                                    & pres_mag=pres_mag, jwl_Y=Y_jwl)
                         else
                         #:endif
                         call s_compute_pressure(qK_cons_vf(eqn_idx%E)%sf(j, k, l), qK_cons_vf(eqn_idx%alf)%sf(j, k, l), &
@@ -974,14 +967,12 @@ contains
                                       & l) + dyn_pres + pres_mag + pi_inf + qv
                             #:if not MFC_CASE_OPTIMIZATION or jwl_active
                             else if (jwl_idx > 0 .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
-                                ! JWL five-equation model: E = rho*e_mix(rho,p,Y,alpha) + 0.5*rho*|u|^2.
-                                ! Y = alpha_rho_j/rho, alpha_j from the primitive adv slot.
+                                ! JWL five-equation model: E = rho*e_mix(rho,p,Y) + 0.5*rho*|u|^2.
+                                ! Y = alpha_rho_j/rho from the primitive slot.
                                 block
-                                    real(wp) :: e_mix_jwl, Y_j, alpha_j
-                                    alpha_j = q_prim_vf(eqn_idx%adv%beg + jwl_idx - 1)%sf(j, k, l)
+                                    real(wp) :: e_mix_jwl, Y_j
                                     Y_j = q_prim_vf(jwl_idx)%sf(j, k, l)/max(rho, sgm_eps)
-                                    call s_jwl_mix_energy_pr(rho, q_prim_vf(eqn_idx%E)%sf(j, k, l), Y_j, alpha_j, jwl_idx, &
-                                                             & e_mix_jwl)
+                                    call s_jwl_mix_energy_pr(rho, q_prim_vf(eqn_idx%E)%sf(j, k, l), Y_j, jwl_idx, e_mix_jwl)
                                     q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_mix_jwl + dyn_pres
                                 end block
                             #:endif
@@ -1124,7 +1115,7 @@ contains
         real(wp), dimension(2) :: Re_K
         real(wp)               :: G_K
         real(wp)               :: T_K, mix_mol_weight, R_gas
-        real(wp)               :: e_mix_jwl, Y_j, alpha_j
+        real(wp)               :: e_mix_jwl, Y_j
         integer                :: i, j, k, l  !< Generic loop iterators
 
         is1b = is1%beg; is1e = is1%end
@@ -1137,7 +1128,7 @@ contains
         ! capillarity
 #ifdef MFC_SIMULATION
         $:GPU_PARALLEL_LOOP(collapse=3, private='[alpha_rho_K, vel_K, alpha_K, Re_K, Y_K, rho_K, vel_K_sum, pres_K, E_K, gamma_K, &
-                            & pi_inf_K, qv_K, G_K, T_K, mix_mol_weight, R_gas, e_mix_jwl, Y_j, alpha_j]')
+                            & pi_inf_K, qv_K, G_K, T_K, mix_mol_weight, R_gas, e_mix_jwl, Y_j]')
         do l = is3b, is3e
             do k = is2b, is2e
                 do j = is1b, is1e
@@ -1185,9 +1176,8 @@ contains
                         E_K = rho_K*E_K + 5.e-1_wp*rho_K*vel_K_sum
                         #:if not MFC_CASE_OPTIMIZATION or jwl_active
                         else if (jwl_idx > 0 .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
-                            alpha_j = min(max(qK_prim_vf(j, k, l, eqn_idx%adv%beg + jwl_idx - 1), 0._wp), 1._wp)
                             Y_j = min(max(qK_prim_vf(j, k, l, jwl_idx)/max(rho_K, sgm_eps), 0._wp), 1._wp)
-                            call s_jwl_mix_energy_pr(rho_K, pres_K, Y_j, alpha_j, jwl_idx, e_mix_jwl)
+                            call s_jwl_mix_energy_pr(rho_K, pres_K, Y_j, jwl_idx, e_mix_jwl)
                             E_K = rho_K*e_mix_jwl + 5.e-1_wp*rho_K*vel_K_sum
                         #:endif
                     else
@@ -1325,20 +1315,18 @@ contains
     !! @param[in] pres Mixture pressure.
     !! @param[in] rho Mixture density.
     !! @param[in] Y_jwl JWL products mass fraction; bounded inside this routine.
-    !! @param[in] alpha_jwl JWL products volume fraction; bounded inside this routine.
     !! @param[out] c JWL mixture speed of sound; finite negative c2 values are floored, NaN c2 propagates.
-    subroutine s_compute_jwl_speed_of_sound(pres, rho, Y_jwl, alpha_jwl, c)
+    subroutine s_compute_jwl_speed_of_sound(pres, rho, Y_jwl, c)
 
         $:GPU_ROUTINE(function_name='s_compute_jwl_speed_of_sound',parallelism='[seq]', cray_noinline=True)
 
-        real(wp), intent(in)  :: pres, rho, Y_jwl, alpha_jwl
+        real(wp), intent(in)  :: pres, rho, Y_jwl
         real(wp), intent(out) :: c
-        real(wp)              :: c2, Y_j, alpha_j
+        real(wp)              :: Y_j
 
         Y_j = min(max(Y_jwl, 0._wp), 1._wp)
-        alpha_j = min(max(alpha_jwl, 0._wp), 1._wp)
 
-        call s_jwl_mix_sound_speed(rho, pres, Y_j, alpha_j, jwl_idx, c)
+        call s_jwl_mix_sound_speed(rho, pres, Y_j, jwl_idx, c)
 
     end subroutine s_compute_jwl_speed_of_sound
 

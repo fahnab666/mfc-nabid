@@ -76,7 +76,6 @@ module m_global_parameters_common
     $:GPU_DECLARE(create='[int_comp, ic_eps, ic_beta]')
     $:GPU_DECLARE(create='[muscl_eps]')
     $:GPU_DECLARE(create='[mpp_lim, model_eqns, mixture_err, alt_soundspeed]')
-    $:GPU_DECLARE(create='[jwl_mix_type]')
     $:GPU_DECLARE(create='[avg_state, mp_weno, weno_eps, teno_CT, hypoelasticity]')
     $:GPU_DECLARE(create='[hyperelasticity, elasticity, low_Mach]')
     $:GPU_DECLARE(create='[cont_damage, hyper_cleaning]')
@@ -400,9 +399,6 @@ contains
         n_start = dflt_int
         t_step_start = dflt_int
 
-        ! JWL mixture closure
-        jwl_mix_type = 0
-
         ! Simulation algorithm
         model_eqns = dflt_int
         relax = .false.
@@ -470,6 +466,7 @@ contains
         fluid%jwl_R2 = dflt_real
         fluid%jwl_omega = dflt_real
         fluid%jwl_rho0 = dflt_real
+        fluid%jwl_Q = dflt_real
         fluid%jwl_E0 = dflt_real
         fluid%jwl_air_e0 = dflt_real
         fluid%jwl_air_rho0 = dflt_real

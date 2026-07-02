@@ -2400,11 +2400,12 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         cases.append(define_case_d(stack, "", {}))
         stack.pop()
 
-        # JWL mixture closure dispatch and primitive/conservative consistency.
-        # Modes: 0=isobaric, 1=Kuhl, 2=p-T equilibrium, 3=Rocflu.
+        # JWL mixture closure and primitive/conservative consistency.
+        # The Rocflu state-interpolated closure is applied unconditionally for JWL fluids.
         eps_jwl = 1e-8
         rho_jwl = 1630.0
         rho_air = 1.225
+        jwl_Q = 1.0089e10 / rho_jwl
         stack.push(
             "Kernel -> JWL -> Closure",
             {
@@ -2462,7 +2463,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                 "fluid_pp(1)%jwl_R2": 0.95,
                 "fluid_pp(1)%jwl_omega": 0.30,
                 "fluid_pp(1)%jwl_rho0": rho_jwl,
-                "fluid_pp(1)%jwl_E0": 1.0089e10,
+                "fluid_pp(1)%jwl_Q": jwl_Q,
                 "fluid_pp(1)%jwl_air_e0": 2.5575e5,
                 "fluid_pp(1)%jwl_air_rho0": rho_air,
                 "fluid_pp(1)%jwl_air_gamma": 0.4,
@@ -2472,11 +2473,9 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                 "fluid_pp(2)%cv": 717.5,
             },
         )
-        # Only the Rocflu closure (jwl_mix_type = 3) is compiled; modes 0, 1, 2 were removed.
         # A homogeneous mixed slab exercises Rocflu's density/energy coefficient ramps;
         # the two endpoint patches alone mostly select its ideal-air and pure-JWL branches.
         overrides = {
-            "jwl_mix_type": 3,
             "num_patches": 3,
             "patch_icpp(3)%geometry": 1,
             "patch_icpp(3)%alter_patch(1)": "T",

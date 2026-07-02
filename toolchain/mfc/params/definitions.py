@@ -335,12 +335,6 @@ CONSTRAINTS = {
         "value_labels": {1: "Roe", 2: "arithmetic"},
         "names": {"roe": 1, "arithmetic": 2},
     },
-    # JWL mixture closure
-    "jwl_mix_type": {
-        "choices": [3],
-        "value_labels": {3: "Rocflu closure"},
-        "names": {"rocflu": 3},
-    },
     # Model equations
     "model_eqns": {
         "choices": [1, 2, 3, 4],
@@ -714,9 +708,6 @@ def _load():
     # Relativity
     _r("relativity", LOG, {"relativity"})
 
-    # JWL
-    _r("jwl_mix_type", INT)
-
     # Other (no specific feature tag)
     for n in [
         "model_eqns",
@@ -877,6 +868,7 @@ def _load():
         _r(f"{px}jwl_R2", REAL, math=r"\f$R_{2,k}\f$")
         _r(f"{px}jwl_omega", REAL, math=r"\f$\omega_k\f$")
         _r(f"{px}jwl_rho0", REAL, math=r"\f$\rho_{0,k}\f$")
+        _r(f"{px}jwl_Q", REAL, math=r"\f$Q_k\f$")
         _r(f"{px}jwl_E0", REAL, math=r"\f$E_{0,k}\f$")
         _r(f"{px}jwl_air_e0", REAL, math=r"\f$e_{\mathrm{air},k}\f$")
         _r(f"{px}jwl_air_rho0", REAL, math=r"\f$\rho_{\mathrm{air},k}\f$")
@@ -1205,7 +1197,6 @@ _nv(
     "cfl_const_dt",
     "n_start",
     "model_eqns",
-    "jwl_mix_type",
     "mpp_lim",
     "relax",
     "relax_model",

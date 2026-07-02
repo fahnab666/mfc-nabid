@@ -400,6 +400,7 @@ module m_derived_types
         real(wp)               :: jwl_R2         !< JWL low-pressure decay rate R2
         real(wp)               :: jwl_omega      !< JWL Grüneisen coefficient omega
         real(wp)               :: jwl_rho0       !< JWL reference (crystal) density (kg/m³)
+        real(wp)               :: jwl_Q          !< JWL reference detonation energy per unit mass (J/kg)
         real(wp)               :: jwl_E0         !< JWL reference detonation energy (J/m³)
         real(wp)               :: jwl_air_e0     !< Ambient gas specific internal energy for mixture blend
         real(wp)               :: jwl_air_rho0   !< Ambient gas density for mixture blend (kg/m³)

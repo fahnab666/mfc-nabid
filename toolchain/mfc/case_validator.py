@@ -705,6 +705,7 @@ class CaseValidator:
         bub_fac = 1 if (bubbles_euler) else 0
 
         for i in range(1, num_fluids + 1 + bub_fac):
+            eos = self.get(f"fluid_pp({i})%eos")
             gamma = self.get(f"fluid_pp({i})%gamma")
             pi_inf = self.get(f"fluid_pp({i})%pi_inf")
             cv = self.get(f"fluid_pp({i})%cv")
@@ -721,6 +722,25 @@ class CaseValidator:
             if model_eqns == 1:
                 self.prohibit(gamma is not None, f"model_eqns = 1 does not support fluid_pp({i})%gamma")
                 self.prohibit(pi_inf is not None, f"model_eqns = 1 does not support fluid_pp({i})%pi_inf")
+
+            if eos == 2:
+                jwl_required = ["jwl_A", "jwl_B", "jwl_R1", "jwl_R2", "jwl_omega", "jwl_rho0"]
+                for name in jwl_required:
+                    self.prohibit(self.get(f"fluid_pp({i})%{name}") is None, f"fluid_pp({i})%eos = eos_jwl requires fluid_pp({i})%{name}")
+
+                jwl_E0 = self.get(f"fluid_pp({i})%jwl_E0")
+                jwl_Q = self.get(f"fluid_pp({i})%jwl_Q")
+                jwl_rho0 = self.get(f"fluid_pp({i})%jwl_rho0")
+                self.prohibit(jwl_E0 is None and jwl_Q is None, f"fluid_pp({i})%eos = eos_jwl requires either fluid_pp({i})%jwl_Q or fluid_pp({i})%jwl_E0")
+
+                for name in ["jwl_R1", "jwl_R2", "jwl_omega", "jwl_rho0", "jwl_E0", "jwl_Q"]:
+                    value = self.get(f"fluid_pp({i})%{name}")
+                    self.prohibit(value is not None and value <= 0, f"fluid_pp({i})%{name} must be positive")
+
+                if jwl_E0 is not None and jwl_Q is not None and jwl_rho0 is not None:
+                    expected_E0 = jwl_rho0 * jwl_Q
+                    mismatch = abs(jwl_E0 - expected_E0) > 1.0e-8 * max(abs(jwl_E0), abs(expected_E0), 1.0)
+                    self.prohibit(mismatch, f"fluid_pp({i})%jwl_E0 must equal fluid_pp({i})%jwl_rho0 * fluid_pp({i})%jwl_Q when both are set")
 
     def check_surface_tension(self):
         """Checks constraints on surface tension"""

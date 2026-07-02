@@ -50,8 +50,6 @@ DESCRIPTIONS = {
     "adap_dt": "Enable adaptive time stepping",
     "adap_dt_tol": "Tolerance for adaptive time stepping",
     "adap_dt_max_iters": "Maximum iterations for adaptive time stepping",
-    # JWL EOS
-    "jwl_mix_type": "JWL mixture rule: 3=Rocflu state-interpolated closure (Garno/Stanley formulation, RFLU_ModJWL)",
     # Model equations
     "model_eqns": "Model equations",
     "num_fluids": "Number of fluid components",
@@ -334,6 +332,14 @@ PATTERNS = [
     (r"fluid_pp\((\d+)\)%mu_min", "Lower viscosity clamp for fluid {0}"),
     (r"fluid_pp\((\d+)\)%mu_max", "Upper viscosity clamp for fluid {0}"),
     (r"fluid_pp\((\d+)\)%mu_bulk", "Bulk viscosity (non-Newtonian) for fluid {0}"),
+    (r"fluid_pp\((\d+)\)%jwl_A", "JWL A coefficient for fluid {0}"),
+    (r"fluid_pp\((\d+)\)%jwl_B", "JWL B coefficient for fluid {0}"),
+    (r"fluid_pp\((\d+)\)%jwl_R1", "JWL R1 exponent for fluid {0}"),
+    (r"fluid_pp\((\d+)\)%jwl_R2", "JWL R2 exponent for fluid {0}"),
+    (r"fluid_pp\((\d+)\)%jwl_omega", "JWL omega coefficient for fluid {0}"),
+    (r"fluid_pp\((\d+)\)%jwl_rho0", "JWL reference density for fluid {0}"),
+    (r"fluid_pp\((\d+)\)%jwl_Q", "JWL specific detonation energy for fluid {0}"),
+    (r"fluid_pp\((\d+)\)%jwl_E0", "JWL volumetric detonation energy for fluid {0}"),
     # patch_ib patterns
     (r"patch_ib\((\d+)\)%geometry", "Geometry type for immersed boundary {0}"),
     (r"patch_ib\((\d+)\)%x_centroid", "X-coordinate of centroid for IB patch {0}"),

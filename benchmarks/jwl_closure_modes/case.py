@@ -4,7 +4,6 @@ import json
 
 parser = argparse.ArgumentParser(description="Compact JWL closure-cost benchmark")
 parser.add_argument("--mfc", type=json.loads, default="{}", metavar="DICT", help="MFC's toolchain's internal state.")
-parser.add_argument("--mix-type", type=int, choices=(0, 1, 2, 3), default=0)
 args = parser.parse_args()
 
 eps = 1.0e-8
@@ -25,7 +24,6 @@ params = {
     "num_patches": 2,
     "model_eqns": 2,
     "num_fluids": 2,
-    "jwl_mix_type": args.mix_type,
     "mpp_lim": "T",
     "mixture_err": "T",
     "time_stepper": 3,

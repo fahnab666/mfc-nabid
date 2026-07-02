@@ -61,7 +61,7 @@ contains
         real(wp) :: rho_L, rho_R
         real(wp) :: pres_L, pres_R
         real(wp) :: E_L, E_R
-        real(wp) :: e_jwl_L, e_jwl_R, Y_jwl_L, Y_jwl_R, alpha_jwl_L, alpha_jwl_R
+        real(wp) :: e_jwl_L, e_jwl_R, Y_jwl_L, Y_jwl_R
         real(wp) :: H_L, H_R
         real(wp) :: Cp_avg, Cv_avg, T_avg, eps, c_sum_Yi_Phi
         real(wp) :: T_L, T_R
@@ -124,8 +124,7 @@ contains
                                     & rho_L, rho_R, gamma_L, gamma_R, pi_inf_L, pi_inf_R, qv_L, qv_R, c_L, c_R, E_L, E_R, H_L, &
                                     & H_R, ptilde_L, ptilde_R, s_M, s_P, xi_M, xi_P, Cp_avg, Cv_avg, T_avg, eps, c_sum_Yi_Phi, &
                                     & Cp_L, Cp_R, Cv_L, Cv_R, R_gas_L, R_gas_R, MW_L, MW_R, T_L, T_R, Y_L, Y_R, Gamm_L, Gamm_R, &
-                                    & flux_tau_L, flux_tau_R, e_jwl_L, e_jwl_R, Y_jwl_L, Y_jwl_R, alpha_jwl_L, alpha_jwl_R]', &
-                                    & firstprivate='[Re_size_loc1, Re_size_loc2]')
+                                    & flux_tau_L, flux_tau_R, e_jwl_L, e_jwl_R, Y_jwl_L, Y_jwl_R]', firstprivate='[Re_size_loc1, Re_size_loc2]')
                 do l = ${Z_BND}$%beg, ${Z_BND}$%end
                     do k = ${Y_BND}$%beg, ${Y_BND}$%end
                         do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -366,8 +365,8 @@ contains
 
                             #:if not MFC_CASE_OPTIMIZATION or jwl_active
                                 if (jwl_idx > 0) then
-                                    call s_compute_jwl_speed_of_sound(pres_L, rho_L, Y_jwl_L, alpha_jwl_L, c_L)
-                                    call s_compute_jwl_speed_of_sound(pres_R, rho_R, Y_jwl_R, alpha_jwl_R, c_R)
+                                    call s_compute_jwl_speed_of_sound(pres_L, rho_L, Y_jwl_L, c_L)
+                                    call s_compute_jwl_speed_of_sound(pres_R, rho_R, Y_jwl_R, c_R)
                                 else
                                 #:endif
                                 call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, &

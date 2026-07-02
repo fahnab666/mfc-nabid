@@ -61,7 +61,7 @@ contains
         real(wp) :: rho_L, rho_R
         real(wp) :: pres_L, pres_R
         real(wp) :: E_L, E_R
-        real(wp) :: e_jwl_L, e_jwl_R, Y_jwl_L, Y_jwl_R, alpha_jwl_L, alpha_jwl_R
+        real(wp) :: e_jwl_L, e_jwl_R, Y_jwl_L, Y_jwl_R
         real(wp) :: H_L, H_R
         real(wp) :: Cp_avg, Cv_avg, T_avg, eps, c_sum_Yi_Phi
         real(wp) :: T_L, T_R
@@ -124,8 +124,7 @@ contains
                                     & gamma_R, pi_inf_L, pi_inf_R, qv_L, qv_R, qv_avg, c_L, c_R, G_L, G_R, rho_avg, H_avg, c_avg, &
                                     & gamma_avg, ptilde_L, ptilde_R, vel_L_rms, vel_R_rms, vel_avg_rms, Ms_L, Ms_R, pres_SL, &
                                     & pres_SR, alpha_L_sum, alpha_R_sum, flux_tau_L, flux_tau_R, s_M, s_P, xi_M, xi_P, e_jwl_L, &
-                                    & e_jwl_R, Y_jwl_L, Y_jwl_R, alpha_jwl_L, alpha_jwl_R]', copyin='[norm_dir]', &
-                                    & firstprivate='[Re_size_loc1, Re_size_loc2]')
+                                    & e_jwl_R, Y_jwl_L, Y_jwl_R]', copyin='[norm_dir]', firstprivate='[Re_size_loc1, Re_size_loc2]')
                 do l = ${Z_BND}$%beg, ${Z_BND}$%end
                     do k = ${Y_BND}$%beg, ${Y_BND}$%end
                         do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -371,8 +370,8 @@ contains
 
                             #:if not MFC_CASE_OPTIMIZATION or jwl_active
                                 if (jwl_idx > 0) then
-                                    call s_compute_jwl_speed_of_sound(pres_L, rho_L, Y_jwl_L, alpha_jwl_L, c_L)
-                                    call s_compute_jwl_speed_of_sound(pres_R, rho_R, Y_jwl_R, alpha_jwl_R, c_R)
+                                    call s_compute_jwl_speed_of_sound(pres_L, rho_L, Y_jwl_L, c_L)
+                                    call s_compute_jwl_speed_of_sound(pres_R, rho_R, Y_jwl_R, c_R)
                                 else
                                 #:endif
                                 call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, 0._wp, &
@@ -389,8 +388,7 @@ contains
 
                             #:if not MFC_CASE_OPTIMIZATION or jwl_active
                                 if (jwl_idx > 0) then
-                                    call s_compute_jwl_speed_of_sound(pres_R, rho_avg, 5.e-1_wp*(Y_jwl_L + Y_jwl_R), &
-                                                                      & 5.e-1_wp*(alpha_jwl_L + alpha_jwl_R), c_avg)
+                                    call s_compute_jwl_speed_of_sound(pres_R, rho_avg, 5.e-1_wp*(Y_jwl_L + Y_jwl_R), c_avg)
                                 else
                                 #:endif
                                 call s_compute_speed_of_sound(pres_R, rho_avg, gamma_avg, pi_inf_R, H_avg, alpha_R, vel_avg_rms, &

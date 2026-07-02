@@ -69,13 +69,11 @@
 #:enddef compute_average_state
 
 #:def JWL_RECONSTRUCT_ENERGY()
-    ! JWL five-equation face energy from the inverse mixture EOS e(rho, p, Y, alpha).
+    ! JWL five-equation face energy from the inverse mixture EOS e(rho, p, Y).
     ! The caller sets the bounded Y_jwl_L/Y_jwl_R first (the partial-density buffer
-    ! differs per solver); the bounded (Y, alpha) also feed the JWL sound-speed estimate.
-    alpha_jwl_L = min(max(alpha_L(jwl_idx), 0._wp), 1._wp)
-    alpha_jwl_R = min(max(alpha_R(jwl_idx), 0._wp), 1._wp)
-    call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jwl_L, alpha_jwl_L, jwl_idx, e_jwl_L)
-    call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jwl_R, alpha_jwl_R, jwl_idx, e_jwl_R)
+    ! differs per solver); the bounded Y also feeds the JWL sound-speed estimate.
+    call s_jwl_mix_energy_pr(rho_L, pres_L, Y_jwl_L, jwl_idx, e_jwl_L)
+    call s_jwl_mix_energy_pr(rho_R, pres_R, Y_jwl_R, jwl_idx, e_jwl_R)
     E_L = rho_L*e_jwl_L + 5.e-1_wp*rho_L*vel_L_rms
     E_R = rho_R*e_jwl_R + 5.e-1_wp*rho_R*vel_R_rms
 #:enddef JWL_RECONSTRUCT_ENERGY

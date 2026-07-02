@@ -7,22 +7,21 @@
 
 !> @brief JWL equation of state and Rocflu state-interpolated mixture closure.
 !!
-!! Closure path: (rho_m, e_m, Y(:), component_ids(:)) -> (p_m, T_m, c_m).
-!! Mixture rule: Rocflu state-interpolated closure (Garno/Stanley, after RFLU_ModJWL.F90).
-!! The blended An/Bn/omega coefficients ramp linearly from ambient-air values at e = air_e0
-!! to full JWL values at e = e_j = E0/rho0, with a C1-smooth cubic Hermite transition in
-!! mass fraction Y over [0.95, 1.0] replacing the original hard cut at Y = 0.99.
+!! Closure path: (rho, e, Y) -> (p, T, c), with Y the JWL products mass fraction.
+!! Mixture rule after Garno et al., Phys. Rev. Fluids 5, 123201 (2020) and the Rocflu
+!! implementation in modflu/RFLU_ModJWL.F90: the JWL A and B coefficients ramp linearly
+!! from zero at e = air_e0 to full strength at e = e_j = E0/rho0, while omega and cv ramp
+!! linearly with mixture density between air and products. The blended coefficients are
+!! used up to 99% products mass fraction; above that the pure-products JWL law is used.
 module m_jwl
 
-    use, intrinsic :: ieee_arithmetic, only: ieee_quiet_nan, ieee_value
     use m_global_parameters
-    use m_constants, only: jwl_mix_type_rocflu
 
     implicit none
 
     private
-    public :: s_initialize_jwl_module, s_finalize_jwl_module, s_jwl_mix_pressure_er, s_jwl_mix_energy_pr, s_jwl_mix_sound_speed, &
-        & jwl_idx, s_jwl_mixture_closure
+    public :: s_initialize_jwl_module, s_finalize_jwl_module, s_jwl_mix_state_er, s_jwl_mix_energy_pr, s_jwl_mix_sound_speed, &
+        & jwl_idx
 
     ! Simulation builds use m_global_parameters tables.
 #ifndef MFC_SIMULATION
@@ -37,19 +36,12 @@ module m_jwl
     $:GPU_DECLARE(create='[jwl_idx]')
     $:GPU_DECLARE(create='[jwl_cv_prod, jwl_cv_air]')
 
-    !> Component IDs used to identify explosive products in the multi-fluid Y array. These integer tags match the species-table
-    !! convention from the upstream case setup.
-    integer, parameter :: kpw_products_id = 2
-    integer, parameter :: kpw_products_alt_id = 4
-
 contains
 
-    ! Shared utilities
+    !> Floor x to `floor`; NaNs pass through unchanged.
+    subroutine s_jwl_floor(x, floor)
 
-    !> Floor x to a positive value; NaNs pass through unchanged.
-    subroutine s_jwl_floor_positive(x, floor)
-
-        $:GPU_ROUTINE(function_name='s_jwl_floor_positive',parallelism='[seq]', cray_noinline=True)
+        $:GPU_ROUTINE(function_name='s_jwl_floor',parallelism='[seq]', cray_noinline=True)
 
         real(wp), intent(inout) :: x
         real(wp), intent(in)    :: floor
@@ -58,46 +50,7 @@ contains
             if (x < floor) x = floor
         end if
 
-    end subroutine s_jwl_floor_positive
-
-    !> Floor x to zero; NaNs pass through unchanged.
-    subroutine s_jwl_floor_nonnegative(x)
-
-        $:GPU_ROUTINE(function_name='s_jwl_floor_nonnegative',parallelism='[seq]', cray_noinline=True)
-
-        real(wp), intent(inout) :: x
-
-        if (x == x) then
-            if (x < 0._wp) x = 0._wp
-        end if
-
-    end subroutine s_jwl_floor_nonnegative
-
-    !> Total clamped mass fraction of the explosive products components.
-    subroutine s_jwl_products_mass_fraction(Y, component_ids, ncomp, Y_exp)
-
-        $:GPU_ROUTINE(function_name='s_jwl_products_mass_fraction',parallelism='[seq]', cray_noinline=True)
-
-        real(wp), intent(in)  :: Y(ncomp)
-        integer, intent(in)   :: component_ids(ncomp), ncomp
-        real(wp), intent(out) :: Y_exp
-        real(wp)              :: Y_k, Y_sum
-        integer               :: k
-
-        Y_sum = 0._wp
-        Y_exp = 0._wp
-        do k = 1, ncomp
-            Y_k = min(max(Y(k), 0._wp), 1._wp)
-            Y_sum = Y_sum + Y_k
-            if (component_ids(k) == kpw_products_id .or. component_ids(k) == kpw_products_alt_id) Y_exp = Y_exp + Y_k
-        end do
-        if (Y_sum > sgm_eps) then
-            Y_exp = min(max(Y_exp/Y_sum, 0._wp), 1._wp)
-        else
-            Y_exp = 0._wp
-        end if
-
-    end subroutine s_jwl_products_mass_fraction
+    end subroutine s_jwl_floor
 
     ! Rocflu state-interpolated closure
 
@@ -105,9 +58,8 @@ contains
     !! modflu/RFLU_ModJWL.F90 (RFLU_JWL_P_ER, RFLU_JWL_E_PR, RFLU_JWL_T_PR, and RFLU_JWL_C_ER).
     !!
     !! An and Bn blend linearly from 0 to A/B as e crosses [air_e0, e_j]; omega and cv blend
-    !! linearly from air values to JWL reference values as rho crosses [air_rho0, rho0].
-    !! A C1-smooth cubic Hermite S-curve in Y over [0.95, 1.0] replaces the original hard
-    !! cut at Y = 0.99, eliminating the pressure jump at the pure-products interface.
+    !! linearly from air to products values as rho crosses [air_rho0, rho0]. Blended
+    !! coefficients are used for Y <= 0.99, pure JWL for Y > 0.99.
     subroutine s_jwl_rocflu_coeffs(rho, e, Y, A, B, omega0, rho0, E0, air_e0, air_rho0, air_gamma, cv_j, cv_a, An, Bn, omega, cv, &
                                    & mA, mB, momega)
 
@@ -115,10 +67,21 @@ contains
 
         real(wp), intent(in)  :: rho, e, Y, A, B, omega0, rho0, E0, air_e0, air_rho0, air_gamma, cv_j, cv_a
         real(wp), intent(out) :: An, Bn, omega, cv, mA, mB, momega
-        real(wp)              :: e_j, xi, phi
-        real(wp), parameter   :: y_blend_lo = 0.95_wp
+        real(wp)              :: e_j, xi
+        real(wp), parameter   :: y_products_cutoff = 0.99_wp
 
         e_j = E0/rho0
+
+        if (Y > y_products_cutoff) then
+            An = A
+            Bn = B
+            omega = omega0
+            cv = cv_j
+            mA = 0._wp
+            mB = 0._wp
+            momega = 0._wp
+            return
+        end if
 
         ! Blended energy coefficients (Region I/II/III).
         mA = 0._wp
@@ -146,19 +109,6 @@ contains
             momega = 0._wp
         end if
 
-        ! C1 cubic Hermite Y-blend: ramps smoothly from mixture coefficients at Y = y_blend_lo
-        ! to pure-JWL coefficients at Y = 1. Replaces the original hard cut at Y = 0.99.
-        if (Y <= y_blend_lo) return
-        phi = (Y - y_blend_lo)/(1._wp - y_blend_lo)
-        phi = phi*phi*(3._wp - 2._wp*phi)
-        An = (1._wp - phi)*An + phi*A
-        Bn = (1._wp - phi)*Bn + phi*B
-        omega = (1._wp - phi)*omega + phi*omega0
-        cv = (1._wp - phi)*cv + phi*cv_j
-        mA = (1._wp - phi)*mA
-        mB = (1._wp - phi)*mB
-        momega = (1._wp - phi)*momega
-
     end subroutine s_jwl_rocflu_coeffs
 
     !> Rocflu single-fluid state-interpolated closure: (rho, e, Y) -> (p, T, c²).
@@ -173,173 +123,114 @@ contains
 
         rho_s = max(rho, sgm_eps)
         Y_s = min(max(Y, 0._wp), 1._wp)
-        if (Y_s <= 0.01_wp) then
-            pres = air_gamma*rho_s*e
-            T = e/cv_a
-            c2 = (air_gamma + 1._wp)*pres/rho_s
-        else
-            call s_jwl_rocflu_coeffs(rho_s, e, Y_s, A, B, omega0, rho0, E0, air_e0, air_rho0, air_gamma, cv_j, cv_a, An, Bn, &
-                                     & omega, cv, mA, mB, momega)
-            V = rho0/rho_s
-            exp1 = exp(-R1*V)
-            exp2 = exp(-R2*V)
-            coef1 = (1._wp - omega/(R1*V))*exp1
-            coef2 = (1._wp - omega/(R2*V))*exp2
-            pres = An*coef1 + Bn*coef2 + omega*rho_s*e
-            T = (pres - An*exp1 - Bn*exp2)/(omega*cv*rho_s)
-            c2 = exp1*An*(R1*rho0/rho_s**2 - omega/rho_s - omega/(R1*rho0) - rho_s*momega/(R1*rho0)) + mA*pres*coef1/rho_s**2 &
-                          & + exp2*Bn*(R2*rho0/rho_s**2 - omega/rho_s - omega/(R2*rho0) - rho_s*momega/(R2*rho0)) &
-                          & + mB*pres*coef2/rho_s**2 + omega*(e + pres/rho_s) + momega*rho_s*e
-        end if
-        call s_jwl_floor_positive(pres, sgm_eps)
-        call s_jwl_floor_positive(T, 1._wp)
-        call s_jwl_floor_positive(c2, sgm_eps)
+        ! Single Garno cutoff (YP = 99%): the blended branch covers all Y <= 0.99 and
+        ! decays exactly to the ideal-gas air law (p = omega*rho*e, T = e/cv, c2 = (omega+1)p/rho)
+        ! as An, Bn -> 0 (e -> air_e0) and the cold-curve exponentials -> 0 (rho -> air_rho0).
+        call s_jwl_rocflu_coeffs(rho_s, e, Y_s, A, B, omega0, rho0, E0, air_e0, air_rho0, air_gamma, cv_j, cv_a, An, Bn, omega, &
+                                 & cv, mA, mB, momega)
+        V = rho0/rho_s
+        exp1 = exp(-R1*V)
+        exp2 = exp(-R2*V)
+        coef1 = (1._wp - omega/(R1*V))*exp1
+        coef2 = (1._wp - omega/(R2*V))*exp2
+        pres = An*coef1 + Bn*coef2 + omega*rho_s*e
+        T = (pres - An*exp1 - Bn*exp2)/(omega*cv*rho_s)
+        c2 = exp1*An*(R1*rho0/rho_s**2 - omega/rho_s - omega/(R1*rho0) - rho_s*momega/(R1*rho0)) + mA*pres*coef1/rho_s**2 &
+                      & + exp2*Bn*(R2*rho0/rho_s**2 - omega/rho_s - omega/(R2*rho0) - rho_s*momega/(R2*rho0)) &
+                      & + mB*pres*coef2/rho_s**2 + omega*(e + pres/rho_s) + momega*rho_s*e
+        call s_jwl_floor(pres, sgm_eps)
+        call s_jwl_floor(T, 1._wp)
+        call s_jwl_floor(c2, sgm_eps)
 
     end subroutine s_jwl_rocflu_state_er
 
     !> Analytic inverse of the Rocflu pressure closure: (rho, p, Y) -> e.
     !!
-    !! Derived by substituting An = mA*e + (A - mA*e_j) into the pressure formula and
-    !! solving for e. The denominator (mA*C1 + mB*C2 + omega*rho) is strictly positive.
+    !! The coefficient model makes An(e) and Bn(e) piecewise linear in e. Evaluating
+    !! coefficients at the Region-II midpoint gives the exact linear slope for the
+    !! active branch, then the low- and high-energy branches correct the saturated
+    !! offsets used by the forward pressure law.
     subroutine s_jwl_rocflu_energy_pr(rho, pres, Y, A, B, R1, R2, omega0, rho0, E0, air_e0, air_rho0, air_gamma, cv_j, cv_a, e)
 
         $:GPU_ROUTINE(function_name='s_jwl_rocflu_energy_pr',parallelism='[seq]', cray_noinline=True)
 
         real(wp), intent(in)  :: rho, pres, Y, A, B, R1, R2, omega0, rho0, E0, air_e0, air_rho0, air_gamma, cv_j, cv_a
         real(wp), intent(out) :: e
-        real(wp)              :: rho_s, Y_s, e_j, An, Bn, omega, cv, mA, mB, momega, V, C1, C2
+        real(wp)              :: rho_s, Y_s, e_j, e_eval, An, Bn, omega, cv, mA, mB, momega, V, C1, C2
 
         rho_s = max(rho, sgm_eps)
         Y_s = min(max(Y, 0._wp), 1._wp)
-        if (Y_s <= 0.01_wp) then
-            e = pres/(air_gamma*rho_s)
-            call s_jwl_floor_nonnegative(e)
-            return
-        end if
 
         e_j = E0/rho0
-        ! Evaluate coefficients at the midpoint energy; omega, mA, mB depend only on rho and Y,
-        ! so the evaluation point for e does not affect the inversion.
-        call s_jwl_rocflu_coeffs(rho_s, 0.5_wp*(e_j + air_e0), Y_s, A, B, omega0, rho0, E0, air_e0, air_rho0, air_gamma, cv_j, &
-                                 & cv_a, An, Bn, omega, cv, mA, mB, momega)
+        e_eval = 0.5_wp*(e_j + air_e0)
+        call s_jwl_rocflu_coeffs(rho_s, e_eval, Y_s, A, B, omega0, rho0, E0, air_e0, air_rho0, air_gamma, cv_j, cv_a, An, Bn, &
+                                 & omega, cv, mA, mB, momega)
         V = rho0/rho_s
         C1 = (1._wp - omega/(R1*V))*exp(-R1*V)
         C2 = (1._wp - omega/(R2*V))*exp(-R2*V)
-        ! General Region-II linear inverse; correct for all Y including the blend zone.
-        e = (pres + (mA*e_j - A)*C1 + (mB*e_j - B)*C2)/(mA*C1 + mB*C2 + omega*rho_s)
+
+        ! Region II: exact linear inverse for the active coefficient branch.
+        e = (pres + (mA*C1 + mB*C2)*e_eval - An*C1 - Bn*C2)/max(mA*C1 + mB*C2 + omega*rho_s, sgm_eps)
         if (e < air_e0) then
-            ! Region I: An=0, Bn=0 -> p = omega*rho*e.
-            e = pres/(omega*rho_s)
+            ! Region I: subtract the low-energy coefficient offsets, which are nonzero in the pure-JWL branch.
+            e = (pres - (An - mA*(e_eval - air_e0))*C1 - (Bn - mB*(e_eval - air_e0))*C2)/max(omega*rho_s, sgm_eps)
         else if (e > e_j) then
             ! Region III: An=A, Bn=B -> p = A*C1 + B*C2 + omega*rho*e.
             e = (pres - A*C1 - B*C2)/max(omega*rho_s, sgm_eps)
         end if
-        call s_jwl_floor_nonnegative(e)
+        call s_jwl_floor(e, 0._wp)
 
     end subroutine s_jwl_rocflu_energy_pr
 
-    ! Black-box closure and public dispatch wrappers
+    ! Public entry points: look up fluid jidx's parameters, then evaluate the closure.
 
-    !> Black-box Rocflu closure: (rho, e, Y) -> (p, T, c).
-    subroutine s_jwl_rocflu_closure(rho_m, e_m, Y, component_ids, ncomp, jidx, p_m, T_m, c_m)
+    !> Full state from energy for fluid jidx: (rho, e, Y) -> (p, T, c).
+    subroutine s_jwl_mix_state_er(rho, e, Y, jidx, pres, T, c)
 
-        $:GPU_ROUTINE(function_name='s_jwl_rocflu_closure',parallelism='[seq]', cray_noinline=True)
+        $:GPU_ROUTINE(function_name='s_jwl_mix_state_er',parallelism='[seq]', cray_noinline=True)
 
-        real(wp), intent(in)  :: rho_m, e_m, Y(ncomp)
-        integer, intent(in)   :: component_ids(ncomp), ncomp, jidx
-        real(wp), intent(out) :: p_m, T_m, c_m
-        real(wp)              :: Y_s, c2
-
-        call s_jwl_products_mass_fraction(Y, component_ids, ncomp, Y_s)
-        call s_jwl_rocflu_state_er(rho_m, e_m, Y_s, jwl_As(jidx), jwl_Bs(jidx), jwl_R1s(jidx), jwl_R2s(jidx), jwl_omegas(jidx), &
-                                   & jwl_rho0s(jidx), jwl_E0s(jidx), jwl_air_e0s(jidx), jwl_air_rho0s(jidx), &
-                                   & jwl_air_gammas(jidx), jwl_cv_prod, jwl_cv_air, p_m, T_m, c2)
-        c_m = sqrt(max(c2, sgm_eps))
-
-    end subroutine s_jwl_rocflu_closure
-
-    !> Black-box mixture closure dispatcher: (rho, e, Y, alpha_j, component_ids) -> (p, T, c).
-    subroutine s_jwl_mixture_closure(rho_m, e_m, Y, alpha_j, component_ids, ncomp, jidx, p_m, T_m, c_m)
-
-        $:GPU_ROUTINE(function_name='s_jwl_mixture_closure',parallelism='[seq]', cray_noinline=True)
-
-        real(wp), intent(in)  :: rho_m, e_m, Y(ncomp), alpha_j
-        integer, intent(in)   :: component_ids(ncomp), ncomp, jidx
-        real(wp), intent(out) :: p_m, T_m, c_m
-
-        select case (jwl_mix_type)
-        case (jwl_mix_type_rocflu)
-            call s_jwl_rocflu_closure(rho_m, e_m, Y, component_ids, ncomp, jidx, p_m, T_m, c_m)
-        case default
-            ! Unreachable: s_check_jwl_inputs prohibits all modes except jwl_mix_type_rocflu.
-            p_m = ieee_value(0._wp, ieee_quiet_nan)
-            T_m = p_m
-            c_m = p_m
-        end select
-
-    end subroutine s_jwl_mixture_closure
-
-    !> Dispatch pressure-from-energy to the active JWL closure.
-    subroutine s_jwl_mix_pressure_er(rho, e, Y, alpha_j, jidx, pres)
-
-        $:GPU_ROUTINE(function_name='s_jwl_mix_pressure_er',parallelism='[seq]', cray_noinline=True)
-
-        real(wp), intent(in)  :: rho, e, Y, alpha_j
+        real(wp), intent(in)  :: rho, e, Y
         integer, intent(in)   :: jidx
-        real(wp), intent(out) :: pres
-        real(wp)              :: T_dummy, c2_dummy
+        real(wp), intent(out) :: pres, T, c
+        real(wp)              :: c2
 
-        select case (jwl_mix_type)
-        case (jwl_mix_type_rocflu)
-            call s_jwl_rocflu_state_er(rho, e, Y, jwl_As(jidx), jwl_Bs(jidx), jwl_R1s(jidx), jwl_R2s(jidx), jwl_omegas(jidx), &
-                                       & jwl_rho0s(jidx), jwl_E0s(jidx), jwl_air_e0s(jidx), jwl_air_rho0s(jidx), &
-                                       & jwl_air_gammas(jidx), jwl_cv_prod, jwl_cv_air, pres, T_dummy, c2_dummy)
-        case default
-            pres = ieee_value(0._wp, ieee_quiet_nan)
-        end select
+        call s_jwl_rocflu_state_er(rho, e, Y, jwl_As(jidx), jwl_Bs(jidx), jwl_R1s(jidx), jwl_R2s(jidx), jwl_omegas(jidx), &
+                                   & jwl_rho0s(jidx), jwl_E0s(jidx), jwl_air_e0s(jidx), jwl_air_rho0s(jidx), &
+                                   & jwl_air_gammas(jidx), jwl_cv_prod, jwl_cv_air, pres, T, c2)
+        c = sqrt(max(c2, sgm_eps))
 
-    end subroutine s_jwl_mix_pressure_er
+    end subroutine s_jwl_mix_state_er
 
-    !> Dispatch energy-from-pressure to the active JWL closure.
-    subroutine s_jwl_mix_energy_pr(rho, pres, Y, alpha_j, jidx, e)
+    !> Energy from pressure for fluid jidx: (rho, p, Y) -> e.
+    subroutine s_jwl_mix_energy_pr(rho, pres, Y, jidx, e)
 
         $:GPU_ROUTINE(function_name='s_jwl_mix_energy_pr',parallelism='[seq]', cray_noinline=True)
 
-        real(wp), intent(in)  :: rho, pres, Y, alpha_j
+        real(wp), intent(in)  :: rho, pres, Y
         integer, intent(in)   :: jidx
         real(wp), intent(out) :: e
 
-        select case (jwl_mix_type)
-        case (jwl_mix_type_rocflu)
-            call s_jwl_rocflu_energy_pr(max(rho, sgm_eps), pres, min(max(Y, 0._wp), 1._wp), jwl_As(jidx), jwl_Bs(jidx), &
-                                        & jwl_R1s(jidx), jwl_R2s(jidx), jwl_omegas(jidx), jwl_rho0s(jidx), jwl_E0s(jidx), &
-                                        & jwl_air_e0s(jidx), jwl_air_rho0s(jidx), jwl_air_gammas(jidx), jwl_cv_prod, jwl_cv_air, e)
-        case default
-            e = ieee_value(0._wp, ieee_quiet_nan)
-        end select
+        call s_jwl_rocflu_energy_pr(max(rho, sgm_eps), pres, min(max(Y, 0._wp), 1._wp), jwl_As(jidx), jwl_Bs(jidx), &
+                                    & jwl_R1s(jidx), jwl_R2s(jidx), jwl_omegas(jidx), jwl_rho0s(jidx), jwl_E0s(jidx), &
+                                    & jwl_air_e0s(jidx), jwl_air_rho0s(jidx), jwl_air_gammas(jidx), jwl_cv_prod, jwl_cv_air, e)
 
     end subroutine s_jwl_mix_energy_pr
 
-    !> Dispatch sound speed to the active closure.
-    subroutine s_jwl_mix_sound_speed(rho, pres, Y, alpha_j, jidx, c)
+    !> Sound speed for fluid jidx: invert to energy, then evaluate c.
+    subroutine s_jwl_mix_sound_speed(rho, pres, Y, jidx, c)
 
         $:GPU_ROUTINE(function_name='s_jwl_mix_sound_speed',parallelism='[seq]', cray_noinline=True)
 
-        real(wp), intent(in)  :: rho, pres, Y, alpha_j
+        real(wp), intent(in)  :: rho, pres, Y
         integer, intent(in)   :: jidx
         real(wp), intent(out) :: c
         real(wp)              :: e, p_m, T_m, c2
 
-        select case (jwl_mix_type)
-        case (jwl_mix_type_rocflu)
-            call s_jwl_mix_energy_pr(rho, pres, Y, alpha_j, jidx, e)
-            call s_jwl_rocflu_state_er(rho, e, min(max(Y, 0._wp), 1._wp), jwl_As(jidx), jwl_Bs(jidx), jwl_R1s(jidx), &
-                                       & jwl_R2s(jidx), jwl_omegas(jidx), jwl_rho0s(jidx), jwl_E0s(jidx), jwl_air_e0s(jidx), &
-                                       & jwl_air_rho0s(jidx), jwl_air_gammas(jidx), jwl_cv_prod, jwl_cv_air, p_m, T_m, c2)
-            c = sqrt(max(c2, sgm_eps))
-        case default
-            c = ieee_value(0._wp, ieee_quiet_nan)
-        end select
+        call s_jwl_mix_energy_pr(rho, pres, Y, jidx, e)
+        call s_jwl_rocflu_state_er(rho, e, min(max(Y, 0._wp), 1._wp), jwl_As(jidx), jwl_Bs(jidx), jwl_R1s(jidx), jwl_R2s(jidx), &
+                                   & jwl_omegas(jidx), jwl_rho0s(jidx), jwl_E0s(jidx), jwl_air_e0s(jidx), jwl_air_rho0s(jidx), &
+                                   & jwl_air_gammas(jidx), jwl_cv_prod, jwl_cv_air, p_m, T_m, c2)
+        c = sqrt(max(c2, sgm_eps))
 
     end subroutine s_jwl_mix_sound_speed
 
@@ -347,25 +238,26 @@ contains
     impure subroutine s_initialize_jwl_module
 
         use m_mpi_common, only: s_mpi_abort
-        use m_helper_basic, only: f_is_default
+        use m_helper_basic, only: f_approx_equal, f_is_default
 
-        integer :: i, n_jwl, air_idx
+        integer  :: i, n_jwl, air_idx
+        real(wp) :: jwl_E0_from_Q
 
-        @:ALLOCATE(jwl_As    (1:num_fluids))
-        @:ALLOCATE(jwl_Bs    (1:num_fluids))
-        @:ALLOCATE(jwl_R1s   (1:num_fluids))
-        @:ALLOCATE(jwl_R2s   (1:num_fluids))
-        @:ALLOCATE(jwl_omegas(1:num_fluids))
-        @:ALLOCATE(jwl_rho0s (1:num_fluids))
-        @:ALLOCATE(jwl_E0s   (1:num_fluids))
-        @:ALLOCATE(jwl_air_e0s    (1:num_fluids))
-        @:ALLOCATE(jwl_air_rho0s  (1:num_fluids))
-        @:ALLOCATE(jwl_air_gammas (1:num_fluids))
+        @:ALLOCATE(jwl_As(1:num_fluids), jwl_Bs(1:num_fluids), jwl_R1s(1:num_fluids), jwl_R2s(1:num_fluids), &
+                   & jwl_omegas(1:num_fluids), jwl_rho0s(1:num_fluids), jwl_E0s(1:num_fluids))
+        @:ALLOCATE(jwl_air_e0s(1:num_fluids), jwl_air_rho0s(1:num_fluids), jwl_air_gammas(1:num_fluids))
 
         jwl_idx = 0
         n_jwl = 0
         air_idx = 0
         do i = 1, num_fluids
+            if (fluid_pp(i)%eos == eos_jwl .and. .not. f_is_default(fluid_pp(i)%jwl_rho0)) then
+                if (f_is_default(fluid_pp(i)%jwl_E0) .and. .not. f_is_default(fluid_pp(i)%jwl_Q)) then
+                    fluid_pp(i)%jwl_E0 = fluid_pp(i)%jwl_rho0*fluid_pp(i)%jwl_Q
+                else if (.not. f_is_default(fluid_pp(i)%jwl_E0) .and. f_is_default(fluid_pp(i)%jwl_Q)) then
+                    fluid_pp(i)%jwl_Q = fluid_pp(i)%jwl_E0/fluid_pp(i)%jwl_rho0
+                end if
+            end if
             jwl_As(i) = fluid_pp(i)%jwl_A
             jwl_Bs(i) = fluid_pp(i)%jwl_B
             jwl_R1s(i) = fluid_pp(i)%jwl_R1
@@ -383,16 +275,22 @@ contains
                     & .or. f_is_default(fluid_pp(i)%jwl_R2) .or. f_is_default(fluid_pp(i)%jwl_omega) &
                     & .or. f_is_default(fluid_pp(i)%jwl_rho0) .or. f_is_default(fluid_pp(i)%jwl_E0)) then
                     call s_mpi_abort('fluid_pp%eos = eos_jwl requires jwl_A, jwl_B, jwl_R1, jwl_R2, ' &
-                                     & // 'jwl_omega, jwl_rho0, and jwl_E0 to all be set.')
+                                     & // 'jwl_omega, jwl_rho0, and either jwl_Q or jwl_E0 to be set.')
+                end if
+                if (.not. f_is_default(fluid_pp(i)%jwl_Q)) then
+                    jwl_E0_from_Q = fluid_pp(i)%jwl_rho0*fluid_pp(i)%jwl_Q
+                    if (.not. f_approx_equal(fluid_pp(i)%jwl_E0, jwl_E0_from_Q, 1.e-8_wp)) then
+                        call s_mpi_abort('fluid_pp%eos = eos_jwl requires jwl_E0 = jwl_rho0*jwl_Q when both jwl_E0 and jwl_Q are set.')
+                    end if
                 end if
                 if (f_is_default(fluid_pp(i)%jwl_air_e0) .or. f_is_default(fluid_pp(i)%jwl_air_rho0) &
                     & .or. f_is_default(fluid_pp(i)%jwl_air_gamma)) then
                     call s_mpi_abort('fluid_pp%eos = eos_jwl requires jwl_air_e0, jwl_air_rho0, and jwl_air_gamma to all be set.')
                 end if
                 if (fluid_pp(i)%jwl_R1 <= 0._wp .or. fluid_pp(i)%jwl_R2 <= 0._wp .or. fluid_pp(i)%jwl_omega <= 0._wp &
-                    & .or. fluid_pp(i)%jwl_rho0 <= 0._wp .or. fluid_pp(i)%jwl_air_rho0 <= 0._wp &
+                    & .or. fluid_pp(i)%jwl_rho0 <= 0._wp .or. fluid_pp(i)%jwl_E0 <= 0._wp .or. fluid_pp(i)%jwl_air_rho0 <= 0._wp &
                     & .or. fluid_pp(i)%jwl_air_gamma <= 0._wp) then
-                    call s_mpi_abort('JWL parameters jwl_R1, jwl_R2, jwl_omega, jwl_rho0, jwl_air_rho0, ' &
+                    call s_mpi_abort('JWL parameters jwl_R1, jwl_R2, jwl_omega, jwl_rho0, jwl_Q/jwl_E0, jwl_air_rho0, ' &
                                      & // 'and jwl_air_gamma must be positive.')
                 end if
             else if (air_idx == 0) then
@@ -413,7 +311,7 @@ contains
         if (jwl_idx > 0) jwl_cv_prod = fluid_pp(jwl_idx)%cv
         if (air_idx > 0) jwl_cv_air = fluid_pp(air_idx)%cv
 
-        if (jwl_idx > 0 .and. jwl_mix_type == jwl_mix_type_rocflu) then
+        if (jwl_idx > 0) then
             if (f_is_default(jwl_cv_prod) .or. jwl_cv_prod <= 0._wp) then
                 call s_mpi_abort('The Rocflu closure requires positive fluid_pp%cv for the JWL fluid.')
             end if
@@ -428,7 +326,6 @@ contains
         $:GPU_UPDATE(device='[jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, jwl_E0s]')
         $:GPU_UPDATE(device='[jwl_air_e0s, jwl_air_rho0s, jwl_air_gammas, jwl_idx]')
         $:GPU_UPDATE(device='[jwl_cv_prod, jwl_cv_air]')
-        $:GPU_UPDATE(device='[jwl_mix_type]')
 
     end subroutine s_initialize_jwl_module
 

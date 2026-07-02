@@ -12,7 +12,7 @@ module m_checker_common
     use m_mpi_proxy
     use m_helper_basic
     use m_helper
-    use m_constants, only: eos_stiffened_gas, eos_jwl, model_eqns_5eq, jwl_mix_type_rocflu
+    use m_constants, only: eos_stiffened_gas, eos_jwl, model_eqns_5eq
 
     implicit none
 
@@ -38,6 +38,7 @@ contains
 
         integer           :: i, n_jwl, jwl_fluid, air_fluid
         character(len=10) :: iStr
+        real(wp)          :: jwl_E0_from_Q
 
         n_jwl = 0
         jwl_fluid = 0
@@ -53,20 +54,34 @@ contains
                 n_jwl = n_jwl + 1
                 jwl_fluid = i
 
+                if (.not. f_is_default(fluid_pp(i)%jwl_rho0)) then
+                    if (f_is_default(fluid_pp(i)%jwl_E0) .and. .not. f_is_default(fluid_pp(i)%jwl_Q)) then
+                        fluid_pp(i)%jwl_E0 = fluid_pp(i)%jwl_rho0*fluid_pp(i)%jwl_Q
+                    else if (.not. f_is_default(fluid_pp(i)%jwl_E0) .and. f_is_default(fluid_pp(i)%jwl_Q)) then
+                        fluid_pp(i)%jwl_Q = fluid_pp(i)%jwl_E0/fluid_pp(i)%jwl_rho0
+                    end if
+                    if (.not. f_is_default(fluid_pp(i)%jwl_E0) .and. .not. f_is_default(fluid_pp(i)%jwl_Q)) then
+                        jwl_E0_from_Q = fluid_pp(i)%jwl_rho0*fluid_pp(i)%jwl_Q
+                        @:PROHIBIT(.not. f_approx_equal(fluid_pp(i)%jwl_E0, jwl_E0_from_Q, 1.e-8_wp), &
+                                   & "fluid_pp(" // trim(iStr) // ")%jwl_E0 must equal " // "fluid_pp(" // trim(iStr) &
+                                   & // ")%jwl_rho0 * fluid_pp(" // trim(iStr) // ")%jwl_Q when both are set")
+                    end if
+                end if
+
                 @:PROHIBIT(f_is_default(fluid_pp(i)%jwl_A) .or. f_is_default(fluid_pp(i)%jwl_B) &
                            & .or. f_is_default(fluid_pp(i)%jwl_R1) .or. f_is_default(fluid_pp(i)%jwl_R2) &
                            & .or. f_is_default(fluid_pp(i)%jwl_omega) .or. f_is_default(fluid_pp(i)%jwl_rho0) &
                            & .or. f_is_default(fluid_pp(i)%jwl_E0), &
                            & "fluid_pp(" // trim(iStr) // ")%eos = eos_jwl requires jwl_A, jwl_B, jwl_R1, " &
-                           & // "jwl_R2, jwl_omega, jwl_rho0, and jwl_E0")
+                           & // "jwl_R2, jwl_omega, jwl_rho0, and either jwl_Q or jwl_E0")
                 @:PROHIBIT(f_is_default(fluid_pp(i)%jwl_air_e0) .or. f_is_default(fluid_pp(i)%jwl_air_rho0) &
                            & .or. f_is_default(fluid_pp(i)%jwl_air_gamma), &
                            & "fluid_pp(" // trim(iStr) // ")%eos = eos_jwl requires jwl_air_e0, " &
                            & // "jwl_air_rho0, and jwl_air_gamma")
                 @:PROHIBIT(fluid_pp(i)%jwl_R1 <= 0._wp .or. fluid_pp(i)%jwl_R2 <= 0._wp .or. fluid_pp(i)%jwl_omega <= 0._wp &
-                           & .or. fluid_pp(i)%jwl_rho0 <= 0._wp .or. fluid_pp(i)%jwl_air_rho0 <= 0._wp &
-                           & .or. fluid_pp(i)%jwl_air_gamma <= 0._wp, &
-                           & "JWL parameters jwl_R1, jwl_R2, jwl_omega, jwl_rho0, " &
+                           & .or. fluid_pp(i)%jwl_rho0 <= 0._wp .or. fluid_pp(i)%jwl_E0 <= 0._wp &
+                           & .or. fluid_pp(i)%jwl_air_rho0 <= 0._wp .or. fluid_pp(i)%jwl_air_gamma <= 0._wp, &
+                           & "JWL parameters jwl_R1, jwl_R2, jwl_omega, jwl_rho0, jwl_Q/jwl_E0, " &
                            & // "jwl_air_rho0, and jwl_air_gamma must be positive")
             else if (air_fluid == 0) then
                 air_fluid = i
@@ -76,15 +91,14 @@ contains
         @:PROHIBIT(n_jwl > 1, "At most one fluid may use eos_jwl")
         @:PROHIBIT(jwl_fluid > 0 .and. model_eqns /= model_eqns_5eq, "JWL EOS is only supported with model_eqns_5eq")
 
-        @:PROHIBIT(jwl_fluid > 0 .and. jwl_mix_type /= jwl_mix_type_rocflu, &
-                   & "Only jwl_mix_type = 3 (Rocflu) is supported; modes 0, 1, and 2 have been removed")
-
-        if (jwl_fluid > 0 .and. jwl_mix_type == jwl_mix_type_rocflu) then
+        if (jwl_fluid > 0) then
             @:PROHIBIT(num_fluids > 1 .and. air_fluid == 0, "Rocflu closure requires one non-JWL ideal-gas fluid")
             @:PROHIBIT(f_is_default(fluid_pp(jwl_fluid)%cv) .or. fluid_pp(jwl_fluid)%cv <= 0._wp, &
                        & "Rocflu closure requires positive fluid_pp%cv for the JWL fluid")
-            @:PROHIBIT(air_fluid > 0 .and. (f_is_default(fluid_pp(air_fluid)%cv) .or. fluid_pp(air_fluid)%cv <= 0._wp), &
-                       & "Rocflu closure requires positive fluid_pp%cv for the non-JWL air fluid")
+            if (air_fluid > 0) then
+                @:PROHIBIT(f_is_default(fluid_pp(air_fluid)%cv) .or. fluid_pp(air_fluid)%cv <= 0._wp, &
+                           & "Rocflu closure requires positive fluid_pp%cv for the non-JWL air fluid")
+            end if
             @:PROHIBIT(fluid_pp(jwl_fluid)%jwl_rho0 <= fluid_pp(jwl_fluid)%jwl_air_rho0 &
                        & .or. fluid_pp(jwl_fluid)%jwl_E0/fluid_pp(jwl_fluid)%jwl_rho0 <= fluid_pp(jwl_fluid)%jwl_air_e0, &
                        & "Rocflu closure requires increasing air-to-products reference density and energy")
