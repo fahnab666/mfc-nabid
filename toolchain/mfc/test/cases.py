@@ -2494,6 +2494,76 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             "patch_icpp(3)%alpha(2)": 0.5,
         }
         cases.append(define_case_d(stack, "Rocflu", overrides, override_tol=1e-7))
+
+        # Stiffened-gas ambient (underwater): exercises the Y-blended closure branch,
+        # the stiffened p <-> e inverse, and the constant-volume-burst products state.
+        rho_water = 1000.0
+        water_gamma_mfc = 1.0 / 5.12
+        water_pi_inf_mfc = 6.12 * 3.43e8 / 5.12
+        water_e0 = (101325.0 * water_gamma_mfc + water_pi_inf_mfc) / rho_water
+        overrides_water = {
+            "num_patches": 3,
+            "patch_icpp(1)%alpha_rho(2)": (1.0 - eps_jwl) * rho_water,
+            "patch_icpp(2)%alpha_rho(2)": eps_jwl * rho_water,
+            "patch_icpp(2)%pres": 9.311e9,
+            "patch_icpp(3)%geometry": 1,
+            "patch_icpp(3)%alter_patch(1)": "T",
+            "patch_icpp(3)%alter_patch(2)": "T",
+            "patch_icpp(3)%x_centroid": 0.5,
+            "patch_icpp(3)%length_x": 0.2,
+            "patch_icpp(3)%vel(1)": 0.0,
+            "patch_icpp(3)%pres": 5.0e8,
+            "patch_icpp(3)%alpha_rho(1)": 815.0,
+            "patch_icpp(3)%alpha_rho(2)": 500.0,
+            "patch_icpp(3)%alpha(1)": 0.5,
+            "patch_icpp(3)%alpha(2)": 0.5,
+            "fluid_pp(1)%jwl_air_e0": water_e0,
+            "fluid_pp(1)%jwl_air_rho0": rho_water,
+            "fluid_pp(2)%gamma": water_gamma_mfc,
+            "fluid_pp(2)%pi_inf": water_pi_inf_mfc,
+            "fluid_pp(2)%cv": 4186.0,
+        }
+        cases.append(define_case_d(stack, "Rocflu Stiffened", overrides_water, override_tol=1e-7))
+
+        # Reaction sources: program burn (kinematic lighting time) plus Arrhenius
+        # afterburn with its advected progress variable.
+        overrides_sources = {
+            "num_patches": 3,
+            "patch_icpp(2)%pres": 101325.0,
+            "patch_icpp(2)%alpha_rho(1)": 99.999999,
+            "patch_icpp(3)%geometry": 1,
+            "patch_icpp(3)%alter_patch(1)": "T",
+            "patch_icpp(3)%alter_patch(2)": "T",
+            "patch_icpp(3)%x_centroid": 0.5,
+            "patch_icpp(3)%length_x": 0.2,
+            "patch_icpp(3)%vel(1)": 0.0,
+            "patch_icpp(3)%pres": 5.0e8,
+            "patch_icpp(3)%alpha_rho(1)": 250.0,
+            "patch_icpp(3)%alpha_rho(2)": 250.0,
+            "patch_icpp(3)%alpha(1)": 0.5,
+            "patch_icpp(3)%alpha(2)": 0.5,
+            "prog_burn": "T",
+            "pb_D_cj": 6930.0,
+            "pb_width": 0.05,
+            "pb_x_det": 0.0,
+            "jwl_afterburn": "T",
+            "jwl_q_ab": 5.6e6,
+            "jwl_ab_A": 1.0e6,
+            "jwl_ab_theta": 5000.0,
+            "jwl_ab_n": 0.0,
+        }
+        cases.append(define_case_d(stack, "Sources", overrides_sources, override_tol=1e-7))
+
+        # JWL++ pressure-driven reactive burn (mutually exclusive with prog_burn):
+        # a high-pressure slug drives the self-propagating reaction progress.
+        overrides_reactive = {
+            "patch_icpp(2)%pres": 101325.0,
+            "patch_icpp(2)%alpha_rho(1)": 1629.9999837,
+            "jwl_reactive": "T",
+            "jwl_G": 1.0e-15,
+            "jwl_b_exp": 2.0,
+        }
+        cases.append(define_case_d(stack, "Reactive", overrides_reactive, override_tol=1e-7))
         stack.pop()
 
         # 2D MTHINC on a stretched (non-uniform) x-grid.

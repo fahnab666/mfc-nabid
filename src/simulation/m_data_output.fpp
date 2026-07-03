@@ -1239,6 +1239,12 @@ contains
                                                 & pi_inf, gamma, rho, qv, rhoYks(:), pres, T, &
                                                 & q_cons_vf(eqn_idx%stress%beg)%sf(j - 2, k, l), &
                                                 & q_cons_vf(eqn_idx%mom%beg)%sf(j - 2, k, l), G_local)
+                    else if (jwl_idx > 0 .and. jwl_idx <= eqn_idx%cont%end) then
+                        ! Pass the cell's products mass fraction so probes in air or
+                        ! mixed cells do not evaluate the pure-products branch.
+                        call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k, l), q_cons_vf(eqn_idx%alf)%sf(j - 2, k, l), &
+                                                & dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T, &
+                                                & jwl_Y=q_cons_vf(jwl_idx)%sf(j - 2, k, l)/max(rho, sgm_eps))
                     else
                         call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k, l), q_cons_vf(eqn_idx%alf)%sf(j - 2, k, l), &
                                                 & dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T)
@@ -1343,6 +1349,10 @@ contains
                                                     & dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T, &
                                                     & q_cons_vf(eqn_idx%stress%beg)%sf(j - 2, k - 2, l), &
                                                     & q_cons_vf(eqn_idx%mom%beg)%sf(j - 2, k - 2, l), G_local)
+                        else if (jwl_idx > 0 .and. jwl_idx <= eqn_idx%cont%end) then
+                            call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k - 2, l), q_cons_vf(eqn_idx%alf)%sf(j - 2, &
+                                                    & k - 2, l), dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T, &
+                                                    & jwl_Y=q_cons_vf(jwl_idx)%sf(j - 2, k - 2, l)/max(rho, sgm_eps))
                         else
                             call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k - 2, l), q_cons_vf(eqn_idx%alf)%sf(j - 2, &
                                                     & k - 2, l), dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T)
@@ -1430,6 +1440,11 @@ contains
                                                         & k - 2, l - 2), dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T, &
                                                         & q_cons_vf(eqn_idx%stress%beg)%sf(j - 2, k - 2, l - 2), &
                                                         & q_cons_vf(eqn_idx%mom%beg)%sf(j - 2, k - 2, l - 2), G_local)
+                            else if (jwl_idx > 0 .and. jwl_idx <= eqn_idx%cont%end) then
+                                call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k - 2, l - 2), &
+                                                        & q_cons_vf(eqn_idx%alf)%sf(j - 2, k - 2, l - 2), dyn_p, pi_inf, gamma, &
+                                                        & rho, qv, rhoYks, pres, T, jwl_Y=q_cons_vf(jwl_idx)%sf(j - 2, k - 2, &
+                                                        & l - 2)/max(rho, sgm_eps))
                             else
                                 call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k - 2, l - 2), &
                                                         & q_cons_vf(eqn_idx%alf)%sf(j - 2, k - 2, l - 2), dyn_p, pi_inf, gamma, &

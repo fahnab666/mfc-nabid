@@ -152,6 +152,8 @@ module m_derived_types
         integer               :: c        !< Color function equation
         integer               :: damage   !< Damage variable equation
         integer               :: psi      !< Psi variable equation
+        integer               :: abn      !< JWL afterburn progress equation
+        integer               :: rxn      !< JWL++ reaction progress equation
     end type eqn_idx_info
 
     !> Initial-condition state assembled by pre_process: working primitive and

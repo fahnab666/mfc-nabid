@@ -753,6 +753,46 @@ class CaseValidator:
                     value = self.get(f"fluid_pp({i})%{name}")
                     self.prohibit(value is not None and value <= 0, f"fluid_pp({i})%{name} must be positive")
 
+        # Paths that evaluate stiffened-gas gamma/pi_inf mixture relations, which are
+        # meaningless for JWL cells.
+        has_jwl = any(self.get(f"fluid_pp({i})%eos") == 2 for i in range(1, num_fluids + 1))
+        if has_jwl:
+            self.prohibit(self.get("wave_speeds") == 2, "wave_speeds = 2 (pressure-based) is not supported with eos_jwl; use wave_speeds = 1")
+            self.prohibit(self.get("alt_soundspeed", "F") == "T", "alt_soundspeed is not supported with eos_jwl")
+            self.prohibit(self.get("hypoelasticity", "F") == "T" or self.get("hyperelasticity", "F") == "T", "elasticity is not supported with eos_jwl")
+            for bc in ["bc_x%beg", "bc_x%end", "bc_y%beg", "bc_y%end", "bc_z%beg", "bc_z%end"]:
+                v = self.get(bc)
+                self.prohibit(v is not None and -12 <= v <= -5, f"characteristic (CBC) boundary conditions ({bc} = {v}) are not supported with eos_jwl")
+
+        # JWL reaction sources
+        afterburn = self.get("jwl_afterburn", "F") == "T"
+        pburn = self.get("prog_burn", "F") == "T"
+        reactive = self.get("jwl_reactive", "F") == "T"
+        self.prohibit((afterburn or pburn or reactive) and not has_jwl, "jwl_afterburn, prog_burn, and jwl_reactive require a fluid with eos_jwl")
+        if reactive:
+            self.prohibit(self.get("riemann_solver") != 2, "jwl_reactive requires riemann_solver = 2 (HLLC)")
+            self.prohibit(pburn, "jwl_reactive and prog_burn are mutually exclusive detonation models")
+            for name in ["jwl_G", "jwl_b_exp"]:
+                v = self.get(name)
+                self.prohibit(v is None or v <= 0, f"jwl_reactive requires positive {name}")
+        if afterburn:
+            self.prohibit(self.get("riemann_solver") != 2, "jwl_afterburn requires riemann_solver = 2 (HLLC)")
+            model = self.get("jwl_ab_model", 2)
+            self.prohibit(model not in [1, 2], "jwl_ab_model must be 1 (mixing-rate) or 2 (Arrhenius)")
+            q_ab = self.get("jwl_q_ab")
+            self.prohibit(q_ab is None or q_ab <= 0, "jwl_afterburn requires positive jwl_q_ab")
+            if model == 1:
+                tau = self.get("jwl_ab_tau")
+                self.prohibit(tau is None or tau <= 0, "jwl_ab_model = 1 requires positive jwl_ab_tau")
+            else:
+                for name in ["jwl_ab_A", "jwl_ab_theta"]:
+                    v = self.get(name)
+                    self.prohibit(v is None or v <= 0, f"jwl_ab_model = 2 requires positive {name}")
+        if pburn:
+            for name in ["pb_D_cj", "pb_width"]:
+                v = self.get(name)
+                self.prohibit(v is None or v <= 0, f"prog_burn requires positive {name}")
+
     def check_surface_tension(self):
         """Checks constraints on surface tension"""
         surface_tension = self.get("surface_tension", "F") == "T"

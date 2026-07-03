@@ -106,6 +106,10 @@ contains
             if (air_fluid > 0) then
                 @:PROHIBIT(f_is_default(fluid_pp(air_fluid)%cv) .or. fluid_pp(air_fluid)%cv <= 0._wp, &
                            & "Rocflu closure requires positive fluid_pp%cv for the non-JWL air fluid")
+                ! The ambient fluid may be ideal gas (pi_inf = 0/unset) or stiffened gas
+                ! (pi_inf > 0, e.g. water); negative stiffness is meaningless.
+                @:PROHIBIT(.not. f_is_default(fluid_pp(air_fluid)%pi_inf) .and. fluid_pp(air_fluid)%pi_inf < 0._wp, &
+                           & "Rocflu closure requires non-negative fluid_pp%pi_inf for the non-JWL fluid")
             end if
             if (.not. f_is_default(fluid_pp(jwl_fluid)%jwl_ej_rho_ref)) then
                 rho_ref = fluid_pp(jwl_fluid)%jwl_ej_rho_ref

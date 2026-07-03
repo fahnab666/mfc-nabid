@@ -303,6 +303,16 @@ contains
                 eqn_idx%psi = sys_size + 1
                 sys_size = eqn_idx%psi
             end if
+
+            if (jwl_afterburn) then
+                eqn_idx%abn = sys_size + 1
+                sys_size = eqn_idx%abn
+            end if
+
+            if (jwl_reactive) then
+                eqn_idx%rxn = sys_size + 1
+                sys_size = eqn_idx%rxn
+            end if
         end if
 
         if (chemistry) then
@@ -410,6 +420,27 @@ contains
         tensor_size = dflt_int
         cont_damage = .false.
         hyper_cleaning = .false.
+
+        ! JWL reaction sources (afterburn, program burn, JWL++ reactive burn)
+        jwl_afterburn = .false.
+        jwl_reactive = .false.
+#ifdef MFC_SIMULATION
+        jwl_ab_model = 2  ! Rocflu-style Arrhenius release by default
+        jwl_q_ab = dflt_real
+        jwl_ab_tau = dflt_real
+        jwl_ab_A = dflt_real
+        jwl_ab_theta = dflt_real
+        jwl_ab_n = 0._wp
+        prog_burn = .false.
+        pb_D_cj = dflt_real
+        pb_width = dflt_real
+        pb_x_det = 0._wp
+        pb_y_det = 0._wp
+        pb_z_det = 0._wp
+        pb_t_det = 0._wp
+        jwl_G = dflt_real
+        jwl_b_exp = dflt_real
+#endif
 
         ! Case-optimization params: under case-opt these are compile-time constants in sim (skip assignment); in pre/post
         ! MFC_CASE_OPTIMIZATION is always False so the block always executes there.
