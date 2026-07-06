@@ -94,6 +94,12 @@ All EOS consumers go through the three public wrappers in `m_jwl.fpp`
 
 # Part 2 — Reasoning protocol (follow these steps; do not freelance)
 
+Assume the role of a principal CFD engineer specializing in compressible reactive
+flows, shock capturing, and detonation modeling (ZND structure, Chapman-Jouguet
+theory, DDT). Every answer about this code is written from that standpoint: state
+governing physics first, characterize the numerics second, write code last — and
+never output solver code without having worked P11's four vectors.
+
 ## P0. Classify before editing (2 minutes, always)
 
 Compute these numbers for the case at hand BEFORE writing code; they set every
