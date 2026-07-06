@@ -68,9 +68,13 @@ MG constituents blended in reaction progress — remains future work.
 Prohibited with `eos_jwl`: `wave_speeds = 2`, CBC boundaries, `alt_soundspeed`,
 elasticity, `igr`, `bubbles_euler`, `mhd`, `chemistry` (their pressure paths bypass the
 JWL closure and would silently apply stiffened-gas relations to JWL cells).
-Allowed and correct: IBM (`ib`) — solid cells are isolated by `s_ibm_correct_state` and
-ghost reconstruction, so detonation+moving-body cases work (see
-`examples/2D_jwl_detonation_ibm`); surface tension is orthogonal.
+Allowed but KNOWN-INCONSISTENT as of 2026-07: IBM (`ib`) with JWL. A verified review
+found `s_ibm_correct_state` (m_ibm.fpp:340) rebuilds ghost energy with the
+stiffened-gas relation (no JWL branch) and never rebuilds `eqn_idx%rxn`/`%abn` in
+ghost cells, so near-body pressures/loads in JWL+IBM cases are silently wrong until
+fixed; the same routine also has 2D/3D torque bugs (moment arm z-component, torque
+loop narrowed to num_dims). Treat `examples/2D_jwl_detonation_ibm` results as
+qualitative only until these are resolved. Surface tension is orthogonal.
 
 ## Integration map (every JWL call site)
 
