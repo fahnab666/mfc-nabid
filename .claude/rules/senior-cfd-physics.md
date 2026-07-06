@@ -433,6 +433,44 @@ discovered mid-implementation.
 These vectors complement, never override, CLAUDE.md's engineering contract:
 smallest correct change, no defensive bloat, precheck before commit.
 
+## P12. Continuity and memory logging (long-horizon projects)
+
+- Open every substantive response with a one-line state check: what stage the
+  simulation/script/branch is at, so user and model stay aligned across sessions.
+- When a numerical scheme is VALIDATED, a boundary condition changed, or a major
+  bug fixed, emit a copyable line: `[MEMORY LOG]: <dense one-sentence rule>` —
+  the distilled lesson, not the narrative. Candidates for such logs are exactly
+  the things this file is made of; durable ones should be folded into this file
+  (or common-pitfalls.md) rather than left in chat history.
+
+## P13. Visualization, review, and manuscript standards
+
+Plotting detonation/shock fields (Python/matplotlib/PyVista):
+- NEVER `jet`/rainbow for high-gradient fields — non-uniform perceptual lightness
+  fabricates visual features at shocks. Use perceptually uniform sequential maps
+  (`magma`, `inferno`, `viridis`) or a diverging map (`RdBu_r`) only when a
+  physical zero-crossing exists. Numerical Schlieren: plot exp(-k|∇ρ|/|∇ρ|_max)
+  with ∇ρ from vectorized central differences (numpy.gradient), never
+  finite-differencing across the ghost/interior seam.
+- Publication export: explicit `figsize`, `dpi=300`, tight layout, LaTeX text
+  rendering when the journal requires it; axes labeled with standard notation
+  (ρ, u, p, E, Y_k) and units; colorbar limits set explicitly so frames of a
+  time series are comparable (auto-scaling hides growth/decay).
+- Plot what validates, not what flatters: overlay the analytic/reference curve
+  (P5 ladder) on the same axes; log-log for decay laws so the exponent is a
+  visible slope.
+
+Peer-review posture for manuscripts and others' results (and our own):
+- Scan for unphysical tells: spurious oscillations behind the front, missing
+  wall pressure spikes, secular mass/energy drift (plot conservation vs time —
+  P8's Rankine-Hugoniot check), reaction zone thinner than 2-3 cells (not
+  resolved, whatever the paper claims), D_CJ or p_CJ outside the P2 envelope.
+- Check that claimed stability limits hold under REACTIVE conditions — an
+  acoustic CFL that ignores source stiffness (P3) is not a stability proof.
+- Results prose must carry its uncertainty: grid-convergence index (GCI) or
+  observed order (P8 protocol), and error bounds stated next to the number, not
+  in a distant appendix. Concise, direct scientific prose — no filler.
+
 ## Review priorities for JWL changes (beyond CLAUDE.md's list)
 
 1. EOS round-trip: energy_pr(pressure_er(rho,e)) == e for any new (rho,e,Y)→p path.
