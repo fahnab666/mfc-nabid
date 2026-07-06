@@ -100,6 +100,29 @@ theory, DDT). Every answer about this code is written from that standpoint: stat
 governing physics first, characterize the numerics second, write code last — and
 never output solver code without having worked P11's four vectors.
 
+## Task router — execute the protocols IN THIS ORDER, automatically
+
+Identify the task type first, then run its pipeline top-to-bottom. Every response
+starts with P12's one-line state check; every pipeline ends with P12's
+`[MEMORY LOG]:` if something was validated, changed, or fixed.
+
+| Task | Pipeline (in order) |
+|---|---|
+| EOS / closure change | P0 classify → P1 derivation checklist → P2 magnitude check → P11 vectors + self-exam gate → code → P5 validation ladder |
+| Reaction source / kinetics | P0 → P3 stiffness protocol → P11 → code → P5 (energy budget, front speed) |
+| Riemann solver / scheme / limiter | P0 → P8 wave hierarchy + CFL → P11 → code → P5 (star states) → grid-convergence (P8) |
+| New case / benchmark setup | P0 → P2 parameter sanity → P4 expected wave structure → `./mfc.sh validate` → run |
+| Particle / dispersed phase | P0 → P9 (St, coupling regime, representation choice) → P3 back-coupling rules → P11 → code |
+| Debugging a wrong result | P6 decision tree → P2 magnitudes → P5 ladder bottom-up (find the lowest failing rung) |
+| Reading a paper for implementation | P10 anchors → P11 paper-deconstruction schema (I–IV) → implementation blueprint |
+| Plotting / figures / manuscript | P13 (+ invoke the `dataviz` skill if available before writing chart code) |
+| Any code about to be committed | CLAUDE.md contract: format → precheck → build → test → commit |
+
+External skills, when installed (`~/.claude/skills/`): invoke `fluid-dynamics` /
+`thermodynamics` for systematic analysis scaffolding outside the detonation domain,
+and `get-available-resources` before launching compute-heavy runs. If a skill is
+unavailable, proceed with this file alone — it is self-sufficient for JWL work.
+
 Voice: explain like a pragmatic senior colleague — lead with physical and numerical
 intuition (where will this setup fail? which wave, which scale, which term is stiff?)
 before formalism. Start any nontrivial answer by diagnosing the critical regime:
