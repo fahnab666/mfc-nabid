@@ -260,6 +260,75 @@ touch the EOS: particles carry their own incompressible state; only the gas phas
 sees JWL. Volume-displacement effects (dense loading) would need `alpha`-consistent
 treatment — revisit the alpha-vs-Y rule before any such change.
 
+## P8. Compressible fluid-dynamics reasoning (general, beyond JWL)
+
+Before any solver/scheme change, classify the flow the change will see:
+
+- **Mach regime**: Ma < 0.3 incompressible-like (pressure decouples from density —
+  acoustic CFL dominates dt); 0.3–1 subsonic compressible; transonic and supersonic
+  flows carry shocks — any reconstruction change must be assessed at a shock, not in
+  smooth flow. Detonation fronts are Ma 5–20 relative to the ambient.
+- **Wave hierarchy**: every 1D compressible state change decomposes into
+  acoustic (u±c), contact/material (u), and for MHD Alfvén/magnetosonic families.
+  Ask "which wave does my change affect?" — a flux change that is fine on acoustics
+  can still diffuse contacts (material interfaces, progress variables). Anything
+  that must stay sharp at interfaces rides the HLLC contact wave.
+- **CFL discipline**: dt is set by max(|u|+c) over the domain. An EOS change that
+  raises c anywhere tightens dt everywhere; a c that is wrongly LOW is worse — the
+  scheme runs "stable" outside its stability region locally and produces noise that
+  looks like physics. When a run goes noisy after an EOS edit, suspect c first.
+- **Shock relations as ground truth**: across any captured shock, verify
+  Rankine-Hugoniot (mass/momentum/energy jump) from the OUTPUT fields, not the
+  scheme's internals. A conservative scheme gets these right even at 3 cells per
+  shock; if they're violated, a source term or non-conservative path is leaking.
+- **Grid convergence protocol**: 3 grids × factor 2; compute observed order
+  p = log2((f_c - f_m)/(f_m - f_f)). Shock-dominated quantities converge at ~1st
+  order regardless of nominal scheme order — that is expected, not a bug. Only
+  smooth-region quantities show design order.
+- **Viscous/turbulent scales**: MFC's detonation work is inviscid-dominated
+  (Re of a blast is enormous; boundary layers are unresolvable and not modeled).
+  Do not add viscous terms "for stability" — stabilization belongs in the
+  numerics (limiter, reconstruction), never in fake physics.
+
+## P9. Particle / dispersed-phase physics (Euler-Lagrange)
+
+MFC's dispersed-phase machinery: `m_bubbles_EE.fpp` (Euler-Euler, PROHIBITED with
+`eos_jwl`), `m_bubbles_EL.fpp` + `m_bubbles_EL_kernels.fpp` (Euler-Lagrange bubbles),
+`m_particle_cloud.fpp` (particle-bed IB generation). Lagrange bubbles floor
+`buff_size` (see common-pitfalls). Reasoning rules for any dispersed-phase work:
+
+- **Stokes number first**: St = tau_p/tau_f with tau_p = rho_p d²/(18 mu_g) (Stokes
+  drag) and tau_f the resolved flow time scale. St << 1: particles are flow tracers
+  (an Eulerian scalar suffices — cheaper and no statistical noise); St >> 1:
+  ballistic (flow barely matters); St ~ 1: the interesting, expensive regime that
+  actually needs Lagrangian tracking. Choosing the representation IS the physics
+  decision.
+- **Coupling regime by volume fraction**: alpha_p < 1e-6 one-way (flow → particle
+  only); 1e-6–1e-3 two-way (add momentum/energy back-coupling source terms);
+  > 1e-3 four-way (collisions matter) — MFC has no four-way machinery; dense beds
+  are represented as IB solids (`m_particle_cloud.fpp`), not point particles.
+- **Point-particle validity**: d_p << dx is REQUIRED. A particle comparable to the
+  cell size invalidates the undisturbed-velocity assumption in the drag law; that
+  regime needs resolved particles (IB), not a bigger drag coefficient.
+- **Drag beyond Stokes**: post-detonation flows are high-Re_p, high-Ma_p — Stokes
+  drag under-predicts by orders of magnitude. Use a compressible correlation
+  (e.g. Parmar/Loth-type Ma,Re-dependent C_D) and include unsteady forces
+  (pressure-gradient force scales with the fluid acceleration — in a blast this
+  can EXCEED quasi-steady drag; added mass matters for bubbles, rho_p ~ rho_f).
+- **Back-coupling discipline**: two-way source terms follow the SAME rules as
+  reaction sources (P3): deposit to the RHS of the conserved equations, conserve
+  the pair exactly (what the particle gains the gas loses), and clamp per substep
+  so RK convex combinations cannot overshoot. Kernel-spread deposition
+  (`m_bubbles_EL_kernels.fpp` pattern) must sum to exactly the point value —
+  check the kernel normalization over ghost-cell-truncated stencils at domain
+  edges.
+- **Particle time stepping**: tau_p can be stiffer than the acoustic CFL. If
+  tau_p < dt, subcycle or analytically integrate the drag (exponential
+  integrator) — explicit Euler on stiff drag oscillates and injects momentum.
+- **Statistical honesty**: N computational parcels ≠ N physical particles. Any
+  parcel-weighted statistic carries O(1/sqrt(N)) noise; a "converged" mean needs a
+  noise estimate before it can validate anything.
+
 ## Review priorities for JWL changes (beyond CLAUDE.md's list)
 
 1. EOS round-trip: energy_pr(pressure_er(rho,e)) == e for any new (rho,e,Y)→p path.
