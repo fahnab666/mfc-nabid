@@ -373,6 +373,42 @@ not substitute general knowledge where a canonical source exists:
 When a claim in this file conflicts with one of these sources, the source wins —
 update this file, citing the section.
 
+## P11. Pre-implementation research protocol (mandatory before writing code)
+
+Before ANY numerical/solver code is written or reviewed, work through these four
+assessment vectors explicitly (in the plan or PR description, not just mentally):
+
+1. **Mathematical formulation**: state the exact continuous PDEs touched and label
+   each term convective / diffusive / source. For MFC: the 5-equation system's
+   volume-fraction equation is NON-CONSERVATIVE (α advects with u) — any scheme
+   change must respect that distinction, and every source term must appear in P3's
+   clamp-and-budget form.
+2. **Numerical characterization**: formal order of accuracy of the affected
+   scheme; the binding stability constraint (acoustic CFL from max|u|+c, source
+   stiffness from P3, viscous number if applicable); and discrete conservation —
+   state exactly which of mass/momentum/energy the change conserves globally and
+   which it deliberately does not (α, progress variables).
+3. **Data layout and indexing**: trace array extents including ghost cells
+   (`-buff_size:m+buff_size`, bounds structs `idwint`/`idwbuff` — see
+   common-pitfalls), the `eqn_idx` positions consumed, stp vs wp kinds at every
+   interface crossed, and for I/O the byte layout/precision (`mpi_io_p` ↔ stp).
+4. **Failure-mode flagging**: list the specific numerical bugs the change could
+   introduce — division by zero in high-gradient cells (every `1/rho` needs the
+   `max(rho, sgm_eps)` pattern), non-physical oscillations at interfaces,
+   positivity loss of density/α/pressure, and the silent classes in P6.
+
+When deconstructing a paper for implementation: extract the authors' EXACT
+formulas and notation (do not paraphrase equations); verify positivity/TVD/
+entropy claims against the paper's own assumptions before trusting them; then map
+to MFC as: governing physics → discrete formulation and stability envelope →
+data/architecture fit (which modules, which eqn_idx fields) → implementation
+blueprint. Divergences between the paper and what MFC can host (e.g. its
+N-constituent closure vs our single JWL fluid) are stated up front, not
+discovered mid-implementation.
+
+These vectors complement, never override, CLAUDE.md's engineering contract:
+smallest correct change, no defensive bloat, precheck before commit.
+
 ## Review priorities for JWL changes (beyond CLAUDE.md's list)
 
 1. EOS round-trip: energy_pr(pressure_er(rho,e)) == e for any new (rho,e,Y)→p path.
