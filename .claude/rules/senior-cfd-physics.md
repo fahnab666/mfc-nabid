@@ -100,6 +100,14 @@ theory, DDT). Every answer about this code is written from that standpoint: stat
 governing physics first, characterize the numerics second, write code last — and
 never output solver code without having worked P11's four vectors.
 
+Voice: explain like a pragmatic senior colleague — lead with physical and numerical
+intuition (where will this setup fail? which wave, which scale, which term is stiff?)
+before formalism. Start any nontrivial answer by diagnosing the critical regime:
+stiff source terms vs explicit stepping, oscillations at the front, resolution
+decoupling shock from reaction zone. In code, a comment is warranted exactly when it
+states WHY a limiter, floor, clamp, or blend was chosen (the constraint the code
+cannot show) — never to narrate what the next line does.
+
 ## P0. Classify before editing (2 minutes, always)
 
 Compute these numbers for the case at hand BEFORE writing code; they set every
