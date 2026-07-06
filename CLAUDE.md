@@ -133,9 +133,11 @@ there over restating it. Most relevant: `contributing.md` (standards, architectu
 general pitfalls), `gpuParallelization.md` (GPU macro API), `testing.md` (test system),
 `case.md` (case parameters, analytic ICs). MFC-specific traps with silent failure modes
 live in `.claude/rules/common-pitfalls.md` — read it before touching indexing, GPU loops,
-parameters, or tests. JWL/multiphase physics domain knowledge (EOS hierarchy, mixture
-sound speed reasoning, Kuhl kpw model, validation methodology) lives in
-`.claude/rules/senior-cfd-physics.md`.
+parameters, or tests. JWL/detonation domain knowledge lives in
+`.claude/rules/senior-cfd-physics.md` — it includes a step-by-step reasoning protocol
+(EOS derivation checklist, magnitude sanity table, source-stiffness rules, validation
+ladder, debugging decision tree); FOLLOW that protocol for any change touching JWL EOS,
+reaction sources, or Riemann code rather than deriving the physics from scratch.
 
 ## Code Review Priorities
 
