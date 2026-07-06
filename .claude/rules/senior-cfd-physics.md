@@ -329,6 +329,50 @@ MFC's dispersed-phase machinery: `m_bubbles_EE.fpp` (Euler-Euler, PROHIBITED wit
   parcel-weighted statistic carries O(1/sqrt(N)) noise; a "converged" mean needs a
   noise estimate before it can validate anything.
 
+## P10. Literature anchors (which paper governs which decision)
+
+Cite and consult the governing reference before changing the corresponding code; do
+not substitute general knowledge where a canonical source exists:
+
+- **JWL form, calibration limits, parameter restrictions**: Menikoff, "JWL Equation
+  of State", LA-UR-15-29536 (LANL). Key lessons: JWL is calibrated on the principal
+  isentrope from cylinder-test data — it is only trustworthy near that isentrope
+  (V ∈ ~[1, 7]); reactant JWL fits use an energy offset Δe (heat of detonation
+  convention) — exactly the role of `jwl_delta_e`; ω is nearly constant only over
+  the calibrated range. Off-isentrope states (strong reflected shocks) are
+  extrapolation — treat quantitative results there with suspicion.
+- **Original JWL fit**: Lee, Hornig, Kury, UCRL-50422 (1968).
+- **Five-equation model**: Kapila et al., Phys. Fluids 13, 3002 (2001) (reduction,
+  detonation-to-deflagration origin); Allaire, Clerc, Kokh, JCP 181, 577 (2002)
+  (interface-capturing form MFC uses). The Allaire form has NO pressure-relaxation
+  K∇·u term in the volume-fraction equation — mixture-cell states are
+  closure-defined, which is exactly why the Rocflu interpolation exists.
+- **Rocflu closure + particle-laden detonation**: Garno, Ouellet, Bae, Jackson,
+  Kim, Haftka, Hughes, Balachandar, Phys. Rev. Fluids 5, 123201 (2020) — source of
+  the state-interpolated mixture closure AND the Δe reactant treatment (Eq. 17);
+  its Eqs. 8-13 are the sanctioned path to a true two-phase reactant/product model.
+- **Reactive burn (JWL++)**: Souers, Anderson, Mercer, McGuire, Vitello,
+  Propellants Explos. Pyrotech. 25, 54 (2000) — rate dλ/dt = G p^b (1-λ); G, b are
+  EMPIRICAL per explosive and grid-sensitive; recalibrate after any resolution or
+  limiter change, never copy across explosives.
+- **Ignition & growth (upgrade path)**: Lee & Tarver, Phys. Fluids 23, 2362 (1980)
+  — the standard when hot-spot ignition physics matters (Pop-plot, shock-to-
+  detonation transition). JWL++ cannot capture SDT run distance; do not tune it to.
+- **Stiffened gas**: Le Métayer, Massoni, Saurel, Int. J. Therm. Sci. 43, 265
+  (2004) — parameter meaning and fitting; water γ_sg and π_inf come in correlated
+  pairs — never mix values from different fits.
+- **Blast scaling**: Kinney & Graham, "Explosive Shocks in Air" (2nd ed., 1985) —
+  far-field overpressure vs scaled distance Z = R/W^(1/3); Cole, "Underwater
+  Explosions" (1948) — similitude p ∝ (W^(1/3)/R)^1.13.
+- **Compressible particle forces**: Parmar, Haselbacher, Balachandar, AIAA J. 48,
+  1273 (2010) and Ling, Haselbacher, Balachandar, Int. J. Multiph. Flow 37, 1026
+  (2011) — in blast-particle interaction the unsteady (pressure-gradient, added-
+  mass) forces can dominate quasi-steady drag; a Stokes-drag-only model is wrong
+  in exactly the regime MFC targets.
+
+When a claim in this file conflicts with one of these sources, the source wins —
+update this file, citing the section.
+
 ## Review priorities for JWL changes (beyond CLAUDE.md's list)
 
 1. EOS round-trip: energy_pr(pressure_er(rho,e)) == e for any new (rho,e,Y)→p path.
