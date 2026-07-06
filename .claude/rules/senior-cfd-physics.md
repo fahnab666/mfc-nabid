@@ -420,6 +420,16 @@ blueprint. Divergences between the paper and what MFC can host (e.g. its
 N-constituent closure vs our single JWL fluid) are stated up front, not
 discovered mid-implementation.
 
+5. **Self-cross-examination gate** (after drafting, before presenting): challenge
+   the first instinct — where is the hidden trap in the math or the array stride?
+   Dry-run the data flow through the loops by hand, checking ghost-cell off-by-one
+   at `-buff_size`/`m+buff_size` and allocation extents. Stress the design:
+   if the front speed were 10x, does the CFL/clamp logic still hold? If the
+   chemistry stiffens toward infinite rate, does the source saturate at the
+   `(1-x)/dt` bound or blow up? Only present after the draft survives this pass —
+   and present it complete: no placeholder loops or "to be implemented" stubs in
+   solver code.
+
 These vectors complement, never override, CLAUDE.md's engineering contract:
 smallest correct change, no defensive bloat, precheck before commit.
 
