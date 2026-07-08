@@ -287,9 +287,13 @@ contains
         #:endif
 
         do i = 1, num_fluids_max
-            #:for VAR in [ 'gamma','pi_inf','G','cv','qv','qvp' ]
+            #:for VAR in [ 'gamma','pi_inf','G','cv','qv','qvp',               &
+                & 'jwl_A', 'jwl_B', 'jwl_R1', 'jwl_R2', 'jwl_omega',           &
+                & 'jwl_rho0', 'jwl_Q', 'jwl_E0', 'jwl_air_e0', 'jwl_air_rho0', &
+                & 'jwl_air_p0', 'jwl_ej_rho_ref', 'jwl_delta_e' ]
                 call MPI_BCAST(fluid_pp(i)%${VAR}$, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)
             #:endfor
+            call MPI_BCAST(fluid_pp(i)%eos, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(fluid_pp(i)%Re(1), 2, mpi_p, 0, MPI_COMM_WORLD, ierr)
         end do
 

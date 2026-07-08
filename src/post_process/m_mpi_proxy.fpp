@@ -126,6 +126,12 @@ contains
             call MPI_BCAST(fluid_pp(i)%qv, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(fluid_pp(i)%qvp, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(fluid_pp(i)%G, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)
+            call MPI_BCAST(fluid_pp(i)%eos, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
+            #:for VAR in [ 'jwl_A', 'jwl_B', 'jwl_R1', 'jwl_R2', 'jwl_omega',   &
+                & 'jwl_rho0', 'jwl_Q', 'jwl_E0', 'jwl_air_e0', 'jwl_air_rho0',  &
+                & 'jwl_air_p0', 'jwl_ej_rho_ref', 'jwl_delta_e' ]
+                call MPI_BCAST(fluid_pp(i)%${VAR}$, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)
+            #:endfor
         end do
 
         ! Subgrid bubble parameters
