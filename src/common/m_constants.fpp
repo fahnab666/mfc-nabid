@@ -16,6 +16,13 @@ module m_constants
     real(wp), parameter  :: verysmall = 1.e-12_wp       !< Very small number
     !> Radius cutoff to avoid division by zero for 3D spherical harmonic patch (geometry 14)
     real(wp), parameter :: small_radius = 1.e-32_wp
+
+    ! Equation-of-state selectors for fluid_pp(:)%eos.
+    integer, parameter :: eos_stiffened_gas = 1
+    integer, parameter :: eos_jwl = 2
+
+    ! Five-equation (Allaire et al., JCP 2002) model_eqns selector; JWL is only supported here.
+    integer, parameter  :: model_eqns_5eq = 2
     integer, parameter  :: num_stcls_min = 5                   !< Minimum # of stencils
     integer, parameter  :: path_len = 400                      !< Maximum path length
     integer, parameter  :: name_len = 50                       !< Maximum name length

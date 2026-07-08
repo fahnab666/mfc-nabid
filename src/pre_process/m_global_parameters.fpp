@@ -547,6 +547,20 @@ contains
             fluid_pp(i)%qv = 0._wp
             fluid_pp(i)%qvp = 0._wp
             fluid_pp(i)%G = 0._wp
+            fluid_pp(i)%eos = 1  ! eos_stiffened_gas
+            fluid_pp(i)%jwl_A = dflt_real
+            fluid_pp(i)%jwl_B = dflt_real
+            fluid_pp(i)%jwl_R1 = dflt_real
+            fluid_pp(i)%jwl_R2 = dflt_real
+            fluid_pp(i)%jwl_omega = dflt_real
+            fluid_pp(i)%jwl_rho0 = dflt_real
+            fluid_pp(i)%jwl_Q = dflt_real
+            fluid_pp(i)%jwl_E0 = dflt_real
+            fluid_pp(i)%jwl_air_e0 = dflt_real
+            fluid_pp(i)%jwl_air_rho0 = dflt_real
+            fluid_pp(i)%jwl_air_p0 = dflt_real
+            fluid_pp(i)%jwl_ej_rho_ref = dflt_real
+            fluid_pp(i)%jwl_delta_e = 0._wp
         end do
 
         Bx0 = dflt_real
