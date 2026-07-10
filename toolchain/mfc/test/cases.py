@@ -1754,6 +1754,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                 "2D_Thermal_Flatplate",  # formatted I/O field overflow on gfortran 12
                 "2D_moving_lag_bubs",  # adap_dt hangs on reduced grid
                 "3D_moving_lag_particles",  # adap_dt hangs on reduced grid
+                "2D_jwl_el_test",  # 10k-particle EL input; golden dominated by per-bubble evolution dump
             ]
             if path in casesToSkip:
                 continue

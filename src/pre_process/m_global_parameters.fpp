@@ -60,29 +60,34 @@ module m_global_parameters
     real(wp) :: x_b, y_b, z_b
 
     ! Simulation Algorithm Parameters
-    integer            :: model_eqns                   !< Multicomponent flow model
-    logical            :: relax                        !< activate phase change
-    integer            :: relax_model                  !< Relax Model
-    real(wp)           :: palpha_eps                   !< trigger parameter for the p relaxation procedure, phase change model
-    real(wp)           :: ptgalpha_eps                 !< trigger parameter for the pTg relaxation procedure, phase change model
-    integer            :: num_fluids                   !< Number of different fluids present in the flow
-    logical            :: mpp_lim                      !< Alpha limiter
-    integer            :: sys_size                     !< Number of unknowns in the system of equations
-    integer            :: recon_type                   !< Reconstruction Type
-    integer            :: weno_polyn                   !< Degree of the WENO polynomials (polyn)
-    integer            :: muscl_polyn                  !< Degree of the MUSCL polynomials (polyn)
-    integer            :: weno_order                   !< Order of accuracy for the WENO reconstruction
-    integer            :: muscl_order                  !< Order of accuracy for the MUSCL reconstruction
-    logical            :: hypoelasticity               !< activate hypoelasticity
-    logical            :: hyperelasticity              !< activate hyperelasticity
-    logical            :: elasticity                   !< elasticity modeling, true for hyper or hypo
-    logical            :: mhd                          !< Magnetohydrodynamics
-    logical            :: relativity                   !< Relativity for RMHD
-    integer            :: b_size                       !< Number of components in the b tensor
-    integer            :: tensor_size                  !< Number of components in the nonsymmetric tensor
-    logical            :: pre_stress                   !< activate pre_stressed domain
-    logical            :: cont_damage                  !< continuum damage modeling
-    logical            :: hyper_cleaning               !< Hyperbolic cleaning for MHD
+    integer  :: model_eqns       !< Multicomponent flow model
+    logical  :: relax            !< activate phase change
+    integer  :: relax_model      !< Relax Model
+    real(wp) :: palpha_eps       !< trigger parameter for the p relaxation procedure, phase change model
+    real(wp) :: ptgalpha_eps     !< trigger parameter for the pTg relaxation procedure, phase change model
+    integer  :: num_fluids       !< Number of different fluids present in the flow
+    logical  :: mpp_lim          !< Alpha limiter
+    integer  :: sys_size         !< Number of unknowns in the system of equations
+    integer  :: recon_type       !< Reconstruction Type
+    integer  :: weno_polyn       !< Degree of the WENO polynomials (polyn)
+    integer  :: muscl_polyn      !< Degree of the MUSCL polynomials (polyn)
+    integer  :: weno_order       !< Order of accuracy for the WENO reconstruction
+    integer  :: muscl_order      !< Order of accuracy for the MUSCL reconstruction
+    logical  :: hypoelasticity   !< activate hypoelasticity
+    logical  :: hyperelasticity  !< activate hyperelasticity
+    logical  :: elasticity       !< elasticity modeling, true for hyper or hypo
+    logical  :: mhd              !< Magnetohydrodynamics
+    logical  :: relativity       !< Relativity for RMHD
+    integer  :: b_size           !< Number of components in the b tensor
+    integer  :: tensor_size      !< Number of components in the nonsymmetric tensor
+    logical  :: pre_stress       !< activate pre_stressed domain
+    logical  :: cont_damage      !< continuum damage modeling
+    logical  :: hyper_cleaning   !< Hyperbolic cleaning for MHD
+
+    !> JWL reaction-source flags (only these two size the system; other JWL source parameters are simulation-only). They add
+    !! advected progress equations.
+    logical            :: jwl_afterburn                !< Enable JWL afterburn energy release
+    logical            :: jwl_reactive                 !< Enable JWL++ pressure-driven reactive burn
     logical            :: igr                          !< Use information geometric regularization
     integer            :: igr_order                    !< IGR reconstruction order
     logical, parameter :: chemistry = .${chemistry}$.  !< Chemistry modeling
@@ -286,6 +291,8 @@ contains
         tensor_size = dflt_int
         cont_damage = .false.
         hyper_cleaning = .false.
+        jwl_afterburn = .false.
+        jwl_reactive = .false.
 
         mhd = .false.
         relativity = .false.
@@ -849,6 +856,16 @@ contains
             if (hyper_cleaning) then
                 eqn_idx%psi = sys_size + 1
                 sys_size = eqn_idx%psi
+            end if
+
+            if (jwl_afterburn) then
+                eqn_idx%abn = sys_size + 1
+                sys_size = eqn_idx%abn
+            end if
+
+            if (jwl_reactive) then
+                eqn_idx%rxn = sys_size + 1
+                sys_size = eqn_idx%rxn
             end if
         end if
 

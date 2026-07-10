@@ -94,9 +94,9 @@ contains
             & polydisperse, poly_sigma, qbmm, sigR, sigV, dist_type, rhoRV, file_per_process, relax, relax_model, palpha_eps, &
             & ptgalpha_eps, ib, num_ibs, patch_ib, sigma, adv_n, cfl_adap_dt, cfl_const_dt, n_start, n_start_old, &
             & surface_tension, hyperelasticity, pre_stress, elliptic_smoothing, elliptic_smoothing_iters, viscous, &
-            & bubbles_lagrange, num_bc_patches, patch_bc, Bx0, relativity, cont_damage, igr, igr_order, down_sample, recon_type, &
-            & muscl_order, fft_wrt, fd_order, lag_params, simplex_perturb, simplex_params, interface_file, normFac, normMag, &
-            & g0_ic, p0_ic, hyper_cleaning, particles_lagrange, particle_pp
+            & bubbles_lagrange, num_bc_patches, patch_bc, Bx0, relativity, cont_damage, jwl_afterburn, jwl_reactive, igr, &
+            & igr_order, down_sample, recon_type, muscl_order, fft_wrt, fd_order, lag_params, simplex_perturb, simplex_params, &
+            & interface_file, normFac, normMag, g0_ic, p0_ic, hyper_cleaning, particles_lagrange, particle_pp
 
         ! Inquiring the status of the pre_process.inp file
         file_loc = 'pre_process.inp'

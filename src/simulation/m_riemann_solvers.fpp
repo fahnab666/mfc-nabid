@@ -2206,6 +2206,18 @@ contains
                                                 & eqn_idx%c) + xi_P*qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%c))*s_S
                                 end if
 
+                                ! JWL afterburn progress flux (advected with the flow, color-function treatment)
+                                if (jwl_afterburn) then
+                                    flux_rsx_vf(${SF('')}$, eqn_idx%abn) = (xi_M*qL_prim_rsx_vf(${SF('')}$, &
+                                                & eqn_idx%abn) + xi_P*qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%abn))*s_S
+                                end if
+
+                                ! JWL++ reaction progress flux
+                                if (jwl_reactive) then
+                                    flux_rsx_vf(${SF('')}$, eqn_idx%rxn) = (xi_M*qL_prim_rsx_vf(${SF('')}$, &
+                                                & eqn_idx%rxn) + xi_P*qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%rxn))*s_S
+                                end if
+
                                 ! Geometrical source flux for cylindrical coordinates
                                 #:if (NORM_DIR == 2)
                                     if (cyl_coord) then
@@ -3014,6 +3026,10 @@ contains
                                     Y_jwl_L = min(max(qL_prim_rsx_vf(${SF('')}$, jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
                                     Y_jwl_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
                                     lambda_jwl_L = 1._wp; lambda_jwl_R = 1._wp
+                                    if (jwl_reactive) then
+                                        lambda_jwl_L = min(max(qL_prim_rsx_vf(${SF('')}$, eqn_idx%rxn), 0._wp), 1._wp)
+                                        lambda_jwl_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%rxn), 0._wp), 1._wp)
+                                    end if
                                     @:JWL_RECONSTRUCT_ENERGY()
                                     H_L = (E_L + pres_L)/rho_L
                                     H_R = (E_R + pres_R)/rho_R
@@ -3264,6 +3280,22 @@ contains
                                     flux_rsx_vf(${SF('')}$, eqn_idx%c) = xi_M*qL_prim_rsx_vf(${SF('')}$, &
                                                 & eqn_idx%c)*(vel_L(dir_idx(1)) + s_M*xi_L_m1) &
                                                 & + xi_P*qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%c)*(vel_R(dir_idx(1)) + s_P*xi_R_m1)
+                                end if
+
+                                ! JWL afterburn progress flux (advected with the flow, color-function treatment)
+                                if (jwl_afterburn) then
+                                    flux_rsx_vf(${SF('')}$, eqn_idx%abn) = xi_M*qL_prim_rsx_vf(${SF('')}$, &
+                                                & eqn_idx%abn)*(vel_L(dir_idx(1)) + s_M*xi_L_m1) &
+                                                & + xi_P*qR_prim_rsx_vf(${SF(' + 1')}$, &
+                                                & eqn_idx%abn)*(vel_R(dir_idx(1)) + s_P*xi_R_m1)
+                                end if
+
+                                ! JWL++ reaction progress flux
+                                if (jwl_reactive) then
+                                    flux_rsx_vf(${SF('')}$, eqn_idx%rxn) = xi_M*qL_prim_rsx_vf(${SF('')}$, &
+                                                & eqn_idx%rxn)*(vel_L(dir_idx(1)) + s_M*xi_L_m1) &
+                                                & + xi_P*qR_prim_rsx_vf(${SF(' + 1')}$, &
+                                                & eqn_idx%rxn)*(vel_R(dir_idx(1)) + s_P*xi_R_m1)
                                 end if
 
                                 ! REFERENCE MAP FLUX.

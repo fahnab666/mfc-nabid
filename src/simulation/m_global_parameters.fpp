@@ -178,11 +178,35 @@ module m_global_parameters
     logical            :: bulk_stress                  !< Bulk stresses
     logical            :: cont_damage                  !< Continuum damage modeling
     logical            :: hyper_cleaning               !< Hyperbolic cleaning for MHD for divB=0
-    integer            :: num_igr_iters                !< number of iterations for elliptic solve
-    integer            :: num_igr_warm_start_iters     !< number of warm start iterations for elliptic solve
-    real(wp)           :: alf_factor                   !< alpha factor for IGR
-    logical            :: bodyForces
-    logical            :: bf_x, bf_y, bf_z             !< body force toggle in three directions
+
+    !> @name JWL reaction sources (afterburn, kinematic program burn, JWL++ reactive burn)
+    !> @{
+    logical  :: jwl_afterburn  !< Enable JWL afterburn energy release
+    logical  :: jwl_reactive   !< Enable JWL++ pressure-driven reactive burn
+    logical  :: prog_burn      !< Enable kinematic program burn
+    integer  :: jwl_ab_model   !< Afterburn rate model: 1 mixing-rate, 2 Arrhenius
+    real(wp) :: jwl_q_ab       !< Afterburn specific energy release (J/kg)
+    real(wp) :: jwl_ab_tau     !< Afterburn mixing time scale (model 1)
+    real(wp) :: jwl_ab_A       !< Afterburn Arrhenius prefactor (model 2)
+    real(wp) :: jwl_ab_theta   !< Afterburn activation temperature (model 2)
+    real(wp) :: jwl_ab_n       !< Afterburn pressure exponent (model 2)
+    real(wp) :: pb_D_cj        !< Program burn detonation front speed
+    real(wp) :: pb_width       !< Program burn reaction zone width
+    real(wp) :: pb_x_det       !< Detonation point x-coordinate
+    real(wp) :: pb_y_det       !< Detonation point y-coordinate
+    real(wp) :: pb_z_det       !< Detonation point z-coordinate
+    real(wp) :: pb_t_det       !< Detonation initiation time
+    real(wp) :: jwl_G          !< JWL++ reaction rate coefficient
+    real(wp) :: jwl_b_exp      !< JWL++ reaction pressure exponent
+    $:GPU_DECLARE(create='[jwl_afterburn, jwl_reactive, prog_burn, jwl_ab_model, jwl_q_ab, jwl_ab_tau, jwl_ab_A, jwl_ab_theta]')
+    $:GPU_DECLARE(create='[jwl_ab_n, pb_D_cj, pb_width, pb_x_det, pb_y_det, pb_z_det, pb_t_det, jwl_G, jwl_b_exp]')
+    !> @}
+
+    integer  :: num_igr_iters             !< number of iterations for elliptic solve
+    integer  :: num_igr_warm_start_iters  !< number of warm start iterations for elliptic solve
+    real(wp) :: alf_factor                !< alpha factor for IGR
+    logical  :: bodyForces
+    logical  :: bf_x, bf_y, bf_z          !< body force toggle in three directions
     !> amplitude, frequency, and phase shift sinusoid in each direction
     #:for dir in {'x', 'y', 'z'}
         #:for param in {'k','w','p','g'}
@@ -619,6 +643,25 @@ contains
         bulk_stress = .false.
         cont_damage = .false.
         hyper_cleaning = .false.
+
+        ! JWL reaction sources (afterburn, program burn, JWL++ reactive burn)
+        jwl_afterburn = .false.
+        jwl_reactive = .false.
+        prog_burn = .false.
+        jwl_ab_model = 2  ! Rocflu-style Arrhenius release by default
+        jwl_q_ab = dflt_real
+        jwl_ab_tau = dflt_real
+        jwl_ab_A = dflt_real
+        jwl_ab_theta = dflt_real
+        jwl_ab_n = 0._wp
+        pb_D_cj = dflt_real
+        pb_width = dflt_real
+        pb_x_det = 0._wp
+        pb_y_det = 0._wp
+        pb_z_det = 0._wp
+        pb_t_det = 0._wp
+        jwl_G = dflt_real
+        jwl_b_exp = dflt_real
         num_igr_iters = dflt_num_igr_iters
         num_igr_warm_start_iters = dflt_num_igr_warm_start_iters
         alf_factor = dflt_alf_factor
@@ -1237,6 +1280,16 @@ contains
                 eqn_idx%psi = sys_size + 1
                 sys_size = eqn_idx%psi
             end if
+
+            if (jwl_afterburn) then
+                eqn_idx%abn = sys_size + 1
+                sys_size = eqn_idx%abn
+            end if
+
+            if (jwl_reactive) then
+                eqn_idx%rxn = sys_size + 1
+                sys_size = eqn_idx%rxn
+            end if
         end if
 
         ! END: Volume Fraction Model
@@ -1353,6 +1406,10 @@ contains
         $:GPU_UPDATE(device='[chem_params]')
 
         $:GPU_UPDATE(device='[cont_damage, tau_star, cont_damage_s, alpha_bar]')
+
+        $:GPU_UPDATE(device='[jwl_afterburn, jwl_ab_model, jwl_q_ab, jwl_ab_tau, jwl_ab_A, jwl_ab_theta, jwl_ab_n]')
+        $:GPU_UPDATE(device='[prog_burn, pb_D_cj, pb_width, pb_x_det, pb_y_det, pb_z_det, pb_t_det]')
+        $:GPU_UPDATE(device='[jwl_reactive, jwl_G, jwl_b_exp]')
 
         $:GPU_UPDATE(device='[hyper_cleaning, hyper_cleaning_speed, hyper_cleaning_tau]')
 

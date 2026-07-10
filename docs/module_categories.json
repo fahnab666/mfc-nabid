@@ -31,7 +31,8 @@
             "m_body_forces",
             "m_pressure_relaxation",
             "m_collisions",
-            "m_jwl"
+            "m_jwl",
+            "m_jwl_sources"
         ]
     },
     {

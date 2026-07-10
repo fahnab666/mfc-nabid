@@ -920,6 +920,18 @@ def _load():
     _r("sigma", REAL, {"surface_tension"}, math=r"\f$\sigma\f$")
     _r("surface_tension", LOG, {"surface_tension"})
 
+    # JWL reaction sources (afterburn and program burn)
+    _r("jwl_afterburn", LOG, desc="Enable JWL afterburn energy release (adds a progress variable equation)")
+    _r("jwl_ab_model", INT, desc="Afterburn rate model: 1 = mixing-rate, 2 = Arrhenius (Rocflu-style, default)")
+    for n in ["jwl_q_ab", "jwl_ab_tau", "jwl_ab_A", "jwl_ab_theta", "jwl_ab_n"]:
+        _r(n, REAL)
+    _r("prog_burn", LOG, desc="Enable kinematic program burn (Rocflu-style lighting-time energy release)")
+    for n in ["pb_D_cj", "pb_width", "pb_x_det", "pb_y_det", "pb_z_det", "pb_t_det"]:
+        _r(n, REAL)
+    _r("jwl_reactive", LOG, desc="Enable JWL++ pressure-driven reactive burn (adds a reaction progress equation)")
+    for n in ["jwl_G", "jwl_b_exp"]:
+        _r(n, REAL)
+
     # Chemistry
     _r("cantera_file", STR, {"chemistry"})
     _r("chemistry", LOG, {"chemistry"})

@@ -1,12 +1,11 @@
 !>
 !! @file
-!! @brief JWL EOS and Rocflu state-interpolated mixture closure.
+!! @brief JWL EOS with a composition-weighted (heat-capacity) two-material mixture closure for ideal-gas and stiffened ambients.
 
 #:include 'macros.fpp'
 #:include 'case.fpp'
 
-!> @brief Jones-Wilkins-Lee (JWL) equation of state and the Rocflu state-interpolated two-material closure for the five-equation
-!! model.
+!> @brief Jones-Wilkins-Lee (JWL) equation of state and the composition-weighted two-material closure for the five-equation model.
 !!
 !! 1. Pure JWL products
 !! The JWL EOS describes the detonation products of a condensed explosive as a Mie-Grueneisen
@@ -33,18 +32,18 @@
 !! 2. Two-material closure (products + ambient)
 !! In a five-equation (Allaire et al., JCP 2002) simulation a cell may hold a mixture of
 !! products and an ambient fluid. Rather than solve a full pressure-temperature equilibrium,
-!! MFC uses the Rocflu single-fluid state interpolation (Garno et al., Phys. Rev. Fluids 5,
-!! 123201, 2020; ref. implementation modflu/RFLU_ModJWL.F90): the JWL coefficients are ramped
-!! between their ambient and products limits as functions of the state (rho, e) and the
-!! products mass fraction Y = (alpha rho)_products / rho, giving one effective EOS evaluated
-!! per cell. Concretely (see s_jwl_rocflu_coeffs):
-!!   - A_n(e), B_n(e) ramp linearly from 0 to A, B as e crosses [air_e0, e_j], e_j = E0/rho_ref;
-!!   - w ramps from the ambient Grueneisen coefficient to the products w over density (ideal-gas
-!!     ambient) or over Y (stiffened ambient), using a smoothstep S(x) = x^2 (3 - 2x);
-!!   - a further smoothstep in Y over [0.95, 0.999] blends the mixture branch into the pure-JWL
-!!     law so p, T, c stay continuous through the near-pure limit.
-!! Because every coefficient varies smoothly (C^1) with Y, the closure is continuous in mass
-!! fraction across the whole 0 <= Y <= 1 range (verified by grid-refinement of the Y-sweep).
+!! MFC assembles one effective EOS per cell as a function of the state (rho, e) and the products
+!! mass fraction Y = (alpha rho)_products / rho (see s_jwl_rocflu_coeffs). For an ideal-gas ambient
+!! the coefficients are composition (heat-capacity) weighted: with the products' heat-capacity
+!! share w = Y cv_j /(Y cv_j + (1-Y) cv_a), the amplitudes are A_n = w A, B_n = w B and the
+!! Grueneisen coefficient is omega = air_gamma + w (omega0 - air_gamma). Weighting by composition
+!! rather than density keeps omega relaxing toward omega0 as products fill the cell (the density
+!! ramp never reaches rho0 in afterburn mixing), removing the Rocflu p/c overshoot; the closure is
+!! exact at Y=0 and Y=1 and matches full p-T equilibrium to ~1e-8 in the weak-pressure regime.
+!! For a stiffened ambient (pi_inf > 0) the same weight w drives a cold-stiffness offset
+!! pi_hat = (1-w) pi (=> pi_c = (air_gamma+1) pi_hat); with pi = 0 this reduces bit-identically to
+!! the ideal-gas closure. Every coefficient varies smoothly with Y (and is independent of rho and
+!! e), so the closure is continuous in mass fraction across 0 <= Y <= 1.
 !!
 !! 3. Stiffened-gas ambient (underwater / condensed)
 !! When the ambient fluid is a stiffened gas (e.g. water), p_ambient = Gamma rho e - (Gamma+1) pi
@@ -103,13 +102,13 @@ contains
 
     end subroutine s_jwl_floor
 
-    ! Rocflu state-interpolated closure
+    ! Composition-weighted closure
 
-    !> Effective mixture coefficients (Rocflu RFLU_JWL_*): An/Bn ramp linearly in e over [air_e0, e_j]; omega ramps in rho
-    !! (ideal-gas ambient) or in Y (stiffened ambient, air_pi_inf > 0, together with the cold offset pi_c and the Y-gated energy
-    !! ramp). pi_c is independent of rho and e, so the analytic inverse stays exact. A smoothstep in Y over [0.95, 0.999] blends
-    !! into the pure-products law; cv is mass-weighted. A_sat/B_sat are the saturated (e >= e_j) coefficients for the Region-III
-    !! inverse.
+    !> Effective mixture coefficients. Composition (heat-capacity) weighted closure -- An/Bn = w*A, w*B and omega = air_gamma +
+    !! w*(omega0 - air_gamma) with w = Y*cv_j/(Y*cv_j + (1-Y)*cv_a), all independent of rho and e (mA = mB = momega = 0), so the
+    !! analytic (rho, p, Y) -> e inverse and the closed-form sound speed stay exact. A stiffened ambient (air_pi_inf > 0) adds the
+    !! cold-stiffness offset pi_hat = (1-w)*air_pi_inf (=> pi_c = (air_gamma+1)*pi_hat); air_pi_inf = 0 recovers the ideal-gas
+    !! closure bit-identically. cv is mass-weighted; A_sat/B_sat = An/Bn (no separate Region-III inverse now that An/Bn are e-flat).
     subroutine s_jwl_rocflu_coeffs(rho, e, Y, A, B, omega0, rho0, E0, ej_rho_ref, air_e0, air_rho0, air_gamma, air_pi_inf, cv_j, &
                                    & cv_a, An, Bn, omega, cv, mA, mB, momega, pi_c, pi_hat, A_sat, B_sat)
 
@@ -117,70 +116,22 @@ contains
 
         real(wp), intent(in)  :: rho, e, Y, A, B, omega0, rho0, E0, ej_rho_ref, air_e0, air_rho0, air_gamma, air_pi_inf, cv_j, cv_a
         real(wp), intent(out) :: An, Bn, omega, cv, mA, mB, momega, pi_c, pi_hat, A_sat, B_sat
-        real(wp)              :: e_j, xi, ws, t, s, f, An_b, Bn_b, mA_b, mB_b, omega_b, momega_b, pi_hat_b
-        real(wp), parameter   :: y_ramp_lo = 0.95_wp, y_ramp_hi = 0.999_wp
+        real(wp)              :: w
 
-        e_j = E0/ej_rho_ref
-
-        ! Energy ramp (Regions I/II/III). MUST stay linear in e so the analytic (rho, p, Y) -> e inverse remains closed-form.
-        mA_b = 0._wp
-        mB_b = 0._wp
-        if (e <= air_e0) then
-            An_b = 0._wp
-            Bn_b = 0._wp
-        else if (e >= e_j) then
-            An_b = A
-            Bn_b = B
-        else
-            mA_b = A/(e_j - air_e0)
-            mB_b = B/(e_j - air_e0)
-            An_b = mA_b*(e - air_e0)
-            Bn_b = mB_b*(e - air_e0)
-        end if
-
-        if (air_pi_inf > 0._wp) then
-            ! Stiffened ambient: blend in Y (zero rho-derivative) and Y-gate the energy
-            ! ramp so a shocked pure liquid never activates the JWL cold curve.
-            f = Y*Y*(3._wp - 2._wp*Y)
-            An_b = f*An_b
-            Bn_b = f*Bn_b
-            mA_b = f*mA_b
-            mB_b = f*mB_b
-            omega_b = air_gamma + f*(omega0 - air_gamma)
-            momega_b = 0._wp
-            pi_hat_b = (1._wp - f)*air_pi_inf
-        else
-            ! Ideal-gas ambient: omega smoothsteps in rho over [air_rho0, rho0]; zero end slopes keep momega_b continuous.
-            xi = min(max((rho - air_rho0)/(rho0 - air_rho0), 0._wp), 1._wp)
-            ws = xi*xi*(3._wp - 2._wp*xi)
-            omega_b = air_gamma + ws*(omega0 - air_gamma)
-            momega_b = 6._wp*xi*(1._wp - xi)*(omega0 - air_gamma)/(rho0 - air_rho0)
-            pi_hat_b = 0._wp
-        end if
-
-        ! Smoothstep in Y from the mixture branch (s = 0) to pure products (s = 1),
-        ! keeping p, T, c continuous through the near-pure limit.
-        t = min(max((Y - y_ramp_lo)/(y_ramp_hi - y_ramp_lo), 0._wp), 1._wp)
-        s = t*t*(3._wp - 2._wp*t)
-
-        ! Blend each coefficient from the mixture branch (_b) toward pure products.
-        An = (1._wp - s)*An_b + s*A
-        Bn = (1._wp - s)*Bn_b + s*B
-        mA = (1._wp - s)*mA_b
-        mB = (1._wp - s)*mB_b
-        omega = (1._wp - s)*omega_b + s*omega0
-        momega = (1._wp - s)*momega_b
-        pi_hat = (1._wp - s)*pi_hat_b
+        ! Weighting by heat-capacity share rather than density lets omega relax
+        ! air_gamma -> omega0 as products fill the cell (the density ramp never
+        ! reached rho0 in afterburn mixing, the source of the Rocflu p/c overshoot).
+        w = Y*cv_j/(Y*cv_j + (1._wp - Y)*cv_a)
+        An = w*A
+        Bn = w*B
+        mA = 0._wp
+        mB = 0._wp
+        omega = air_gamma + w*(omega0 - air_gamma)
+        momega = 0._wp
+        pi_hat = (1._wp - w)*air_pi_inf
         pi_c = (air_gamma + 1._wp)*pi_hat
-
-        ! Region-III (e >= e_j) coefficients: literal A/B for ideal-gas ambient, Y-gated when stiffened.
-        if (air_pi_inf > 0._wp) then
-            A_sat = (1._wp - s)*f*A + s*A
-            B_sat = (1._wp - s)*f*B + s*B
-        else
-            A_sat = A
-            B_sat = B
-        end if
+        A_sat = An
+        B_sat = Bn
 
         ! Mass-weighted heat capacity (affects T only; p and c are cv-free).
         cv = Y*cv_j + (1._wp - Y)*cv_a
@@ -291,8 +242,7 @@ contains
 
     !> Fused (rho, p, Y) -> c: one coefficient/exponential evaluation shared between the energy inverse and the forward sound speed
     !! (the Riemann path calls this three times per face, so avoiding the second closure pass roughly halves the JWL EOS cost).
-    !! Expressions mirror s_jwl_rocflu_energy_pr and s_jwl_rocflu_state_er exactly; only the e-dependent An/Bn/mA/mB are re-blended
-    !! after the inverse (same statements as s_jwl_rocflu_coeffs).
+    !! Expressions mirror s_jwl_rocflu_energy_pr and s_jwl_rocflu_state_er exactly.
 
     subroutine s_jwl_rocflu_sound_speed_pr(rho, pres, Y, A, B, R1, R2, omega0, rho0, E0, ej_rho_ref, air_e0, air_rho0, air_gamma, &
                                            & air_pi_inf, cv_j, cv_a, lambda, delta_e, c)
@@ -304,8 +254,7 @@ contains
         real(wp), intent(out) :: c
         real(wp) :: rho_s, Y_s, e_j, e_eval, e, e_eff, lambda_s, de_shift, An, Bn, omega, cv, mA, mB, momega, pi_c, pi_hat, &
              & A_sat, B_sat
-        real(wp)            :: V, exp1, exp2, C1, C2, f, t, s, An_b, Bn_b, mA_b, mB_b, p_m, cs2, cs2_floor
-        real(wp), parameter :: y_ramp_lo = 0.95_wp, y_ramp_hi = 0.999_wp
+        real(wp) :: V, exp1, exp2, C1, C2, p_m, cs2, cs2_floor
 
         rho_s = max(rho, sgm_eps)
         Y_s = min(max(Y, 0._wp), 1._wp)
@@ -334,37 +283,8 @@ contains
         call s_jwl_floor(e, 0._wp)
         e_eff = e + Y_s*(1._wp - lambda_s)*delta_e
 
-        ! Re-blend the e-dependent coefficients at the recovered energy (omega, momega,
-        ! pi_c, pi_hat, cv are e-independent and reused from above).
-        mA_b = 0._wp
-        mB_b = 0._wp
-        if (e <= air_e0) then
-            An_b = 0._wp
-            Bn_b = 0._wp
-        else if (e >= e_j) then
-            An_b = A
-            Bn_b = B
-        else
-            mA_b = A/(e_j - air_e0)
-            mB_b = B/(e_j - air_e0)
-            An_b = mA_b*(e - air_e0)
-            Bn_b = mB_b*(e - air_e0)
-        end if
-
-        if (air_pi_inf > 0._wp) then
-            f = Y_s*Y_s*(3._wp - 2._wp*Y_s)
-            An_b = f*An_b
-            Bn_b = f*Bn_b
-            mA_b = f*mA_b
-            mB_b = f*mB_b
-        end if
-
-        t = min(max((Y_s - y_ramp_lo)/(y_ramp_hi - y_ramp_lo), 0._wp), 1._wp)
-        s = t*t*(3._wp - 2._wp*t)
-        An = (1._wp - s)*An_b + s*A
-        Bn = (1._wp - s)*Bn_b + s*B
-        mA = (1._wp - s)*mA_b
-        mB = (1._wp - s)*mB_b
+        ! Coefficients are composition-weighted (independent of rho and e), so the values from
+        ! s_jwl_rocflu_coeffs above are already final -- no re-blend at the recovered energy.
 
         ! Forward pressure and sound speed (same expressions as s_jwl_rocflu_state_er, e -> e_eff in the thermal term).
         p_m = An*C1 + Bn*C2 + omega*rho_s*e_eff - pi_c

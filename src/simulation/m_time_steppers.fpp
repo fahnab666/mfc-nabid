@@ -10,6 +10,8 @@ module m_time_steppers
 
     use m_derived_types
     use m_global_parameters
+    use m_jwl, only: jwl_idx
+    use m_variables_conversion, only: s_compute_jwl_speed_of_sound
     use m_rhs
     use m_pressure_relaxation
     use m_data_output
@@ -278,6 +280,18 @@ contains
                 @:ALLOCATE(q_prim_vf(eqn_idx%psi)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                            & idwbuff(3)%beg:idwbuff(3)%end))
                 @:ACC_SETUP_SFs(q_prim_vf(eqn_idx%psi))
+            end if
+
+            if (jwl_afterburn) then
+                @:ALLOCATE(q_prim_vf(eqn_idx%abn)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end))
+                @:ACC_SETUP_SFs(q_prim_vf(eqn_idx%abn))
+            end if
+
+            if (jwl_reactive) then
+                @:ALLOCATE(q_prim_vf(eqn_idx%rxn)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end))
+                @:ACC_SETUP_SFs(q_prim_vf(eqn_idx%rxn))
             end if
 
             if (model_eqns == 3) then
@@ -635,22 +649,24 @@ contains
             real(wp), dimension(num_vels)   :: vel    !< Cell-avg. velocity
             real(wp), dimension(num_fluids) :: alpha  !< Cell-avg. volume fraction
         #:endif
-        real(wp)               :: vel_sum  !< Cell-avg. velocity sum
-        real(wp)               :: pres     !< Cell-avg. pressure
-        real(wp)               :: gamma    !< Cell-avg. sp. heat ratio
-        real(wp)               :: pi_inf   !< Cell-avg. liquid stiffness function
-        real(wp)               :: qv       !< Cell-avg. fluid reference energy
-        real(wp)               :: c        !< Cell-avg. sound speed
-        real(wp)               :: H        !< Cell-avg. enthalpy
-        real(wp), dimension(2) :: Re       !< Cell-avg. Reynolds numbers
+        real(wp)               :: vel_sum     !< Cell-avg. velocity sum
+        real(wp)               :: pres        !< Cell-avg. pressure
+        real(wp)               :: gamma       !< Cell-avg. sp. heat ratio
+        real(wp)               :: pi_inf      !< Cell-avg. liquid stiffness function
+        real(wp)               :: qv          !< Cell-avg. fluid reference energy
+        real(wp)               :: c           !< Cell-avg. sound speed
+        real(wp)               :: H           !< Cell-avg. enthalpy
+        real(wp)               :: Y_jwl       !< Cell-avg. JWL mass fraction
+        real(wp)               :: lambda_jwl  !< Cell-avg. JWL reaction progress
+        real(wp), dimension(2) :: Re          !< Cell-avg. Reynolds numbers
         real(wp)               :: dt_local
-        integer                :: j, k, l  !< Generic loop iterators
+        integer                :: j, k, l     !< Generic loop iterators
 
         if (.not. igr) then
             call s_convert_conservative_to_primitive_variables(q_cons_ts(1)%vf, q_T_sf, q_prim_vf, idwint)
         end if
 
-        $:GPU_PARALLEL_LOOP(collapse=3, private='[vel, alpha, Re, rho, vel_sum, pres, gamma, pi_inf, c, H, qv]')
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[vel, alpha, Re, rho, vel_sum, pres, gamma, pi_inf, c, H, qv, Y_jwl, lambda_jwl]')
         do l = 0, p
             do k = 0, n
                 do j = 0, m
@@ -661,7 +677,14 @@ contains
                     end if
 
                     ! Compute mixture sound speed
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv)
+                    if (jwl_idx > 0) then
+                        Y_jwl = min(max(q_prim_vf(jwl_idx)%sf(j, k, l)/max(rho, sgm_eps), 0._wp), 1._wp)
+                        lambda_jwl = 1._wp
+                        if (jwl_reactive) lambda_jwl = min(max(q_prim_vf(eqn_idx%rxn)%sf(j, k, l), 0._wp), 1._wp)
+                        call s_compute_jwl_speed_of_sound(pres, rho, Y_jwl, c, lambda_jwl)
+                    else
+                        call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv)
+                    end if
 
                     call s_compute_dt_from_cfl(vel, c, max_dt, rho, Re, j, k, l)
                 end do
@@ -952,6 +975,14 @@ contains
 
             if (hyper_cleaning) then
                 @:DEALLOCATE(q_prim_vf(eqn_idx%psi)%sf)
+            end if
+
+            if (jwl_afterburn) then
+                @:DEALLOCATE(q_prim_vf(eqn_idx%abn)%sf)
+            end if
+
+            if (jwl_reactive) then
+                @:DEALLOCATE(q_prim_vf(eqn_idx%rxn)%sf)
             end if
 
             if (bubbles_euler) then

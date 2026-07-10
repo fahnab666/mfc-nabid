@@ -75,11 +75,11 @@ contains
             & alt_soundspeed, flux_lim, flux_wrt, cyl_coord, parallel_io, rhoref, pref, bubbles_euler, qbmm, sigR, R0ref, nb, &
             & polytropic, thermal, Ca, Web, Re_inv, polydisperse, poly_sigma, file_per_process, relax, relax_model, cf_wrt, &
             & sigma, adv_n, ib, num_ibs, cfl_adap_dt, cfl_const_dt, t_save, t_stop, n_start, cfl_target, surface_tension, &
-            & bubbles_lagrange, sim_data, hyperelasticity, Bx0, relativity, cont_damage, hyper_cleaning, num_bc_patches, igr, &
-            & igr_order, down_sample, recon_type, muscl_order, lag_header, lag_txt_wrt, lag_db_wrt, lag_id_wrt, lag_pos_wrt, &
-            & lag_pos_prev_wrt, lag_vel_wrt, lag_rad_wrt, lag_rvel_wrt, lag_r0_wrt, lag_rmax_wrt, lag_rmin_wrt, lag_dphidt_wrt, &
-            & lag_pres_wrt, lag_mv_wrt, lag_mg_wrt, lag_betaT_wrt, lag_betaC_wrt, alpha_rho_e_wrt, ib_state_wrt, &
-            & particles_lagrange, particle_pp
+            & bubbles_lagrange, sim_data, hyperelasticity, Bx0, relativity, cont_damage, hyper_cleaning, jwl_afterburn, &
+            & jwl_reactive, num_bc_patches, igr, igr_order, down_sample, recon_type, muscl_order, lag_header, lag_txt_wrt, &
+            & lag_db_wrt, lag_id_wrt, lag_pos_wrt, lag_pos_prev_wrt, lag_vel_wrt, lag_rad_wrt, lag_rvel_wrt, lag_r0_wrt, &
+            & lag_rmax_wrt, lag_rmin_wrt, lag_dphidt_wrt, lag_pres_wrt, lag_mv_wrt, lag_mg_wrt, lag_betaT_wrt, lag_betaC_wrt, &
+            & alpha_rho_e_wrt, ib_state_wrt, particles_lagrange, particle_pp
 
         ! Inquiring the status of the post_process.inp file
         file_loc = 'post_process.inp'

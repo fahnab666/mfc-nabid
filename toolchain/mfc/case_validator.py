@@ -665,6 +665,10 @@ class CaseValidator:
 
                 jwl_delta_e = self.get(f"fluid_pp({i})%jwl_delta_e")
                 self.prohibit(jwl_delta_e is not None and jwl_delta_e > 0, f"fluid_pp({i})%jwl_delta_e must be <= 0 (0 disables the reactant/product energy offset)")
+                self.prohibit(
+                    jwl_delta_e is not None and jwl_delta_e != 0 and self.get("jwl_reactive", "F") != "T",
+                    f"fluid_pp({i})%jwl_delta_e requires jwl_reactive (no reaction progress exists otherwise, so the offset would be silently ignored)",
+                )
 
         # Paths that evaluate stiffened-gas gamma/pi_inf mixture relations, which are
         # meaningless for JWL cells.
@@ -718,6 +722,47 @@ class CaseValidator:
                     air_e0 = (air_p0 * gamma_mfc + (pi_inf_amb or 0.0)) / air_rho0
             if E0 is not None and rho_ref is not None and air_e0 is not None:
                 self.prohibit(E0 / rho_ref <= air_e0, "the Rocflu closure requires products reference energy above the ambient-gas energy")
+
+        # JWL reaction sources
+        afterburn = self.get("jwl_afterburn", "F") == "T"
+        pburn = self.get("prog_burn", "F") == "T"
+        reactive = self.get("jwl_reactive", "F") == "T"
+        self.prohibit((afterburn or pburn or reactive) and not has_jwl, "jwl_afterburn, prog_burn, and jwl_reactive require a fluid with eos_jwl")
+        if reactive:
+            self.prohibit(self.get("riemann_solver") != 2, "jwl_reactive requires riemann_solver = 2 (HLLC)")
+            self.prohibit(pburn, "jwl_reactive and prog_burn are mutually exclusive detonation models")
+            for name in ["jwl_G", "jwl_b_exp"]:
+                v = self.get(name)
+                self.prohibit(v is None or v <= 0, f"jwl_reactive requires positive {name}")
+        if afterburn:
+            self.prohibit(self.get("riemann_solver") != 2, "jwl_afterburn requires riemann_solver = 2 (HLLC)")
+            model = self.get("jwl_ab_model", 2)
+            self.prohibit(model not in [1, 2], "jwl_ab_model must be 1 (mixing-rate) or 2 (Arrhenius)")
+            q_ab = self.get("jwl_q_ab")
+            self.prohibit(q_ab is None or q_ab <= 0, "jwl_afterburn requires positive jwl_q_ab")
+            if model == 1:
+                tau = self.get("jwl_ab_tau")
+                self.prohibit(tau is None or tau <= 0, "jwl_ab_model = 1 requires positive jwl_ab_tau")
+            else:
+                for name in ["jwl_ab_A", "jwl_ab_theta"]:
+                    v = self.get(name)
+                    self.prohibit(v is None or v <= 0, f"jwl_ab_model = 2 requires positive {name}")
+            # Afterburn is oxygen combustion with air; a stiffened (liquid) ambient has none.
+            for i in range(1, num_fluids + 1):
+                if self.get(f"fluid_pp({i})%eos") != 2:
+                    pi_i = self.get(f"fluid_pp({i})%pi_inf")
+                    self.prohibit(pi_i is not None and pi_i > 0, "jwl_afterburn requires an ideal-gas ambient fluid")
+        if pburn:
+            for name in ["pb_D_cj", "pb_width"]:
+                v = self.get(name)
+                self.prohibit(v is None or v <= 0, f"prog_burn requires positive {name}")
+            # In 3D cylindrical coordinates z is the azimuthal angle, so the Cartesian
+            # front distance would mix radians into meters.
+            self.prohibit(self.get("cyl_coord", "F") == "T" and (self.get("p") or 0) > 0, "prog_burn is not supported in 3D cylindrical coordinates")
+            # The front advances pb_D_cj*dt per step; larger steps skip cells entirely.
+            dt = self.get("dt")
+            if self.get("cfl_dt", "F") != "T" and None not in (dt, self.get("pb_D_cj"), self.get("pb_width")):
+                self.prohibit(self.get("pb_D_cj") * dt > self.get("pb_width"), "prog_burn requires pb_D_cj*dt <= pb_width so the front advances at most one band width per step")
 
     def check_surface_tension(self):
         """Checks constraints on surface tension"""
@@ -1240,8 +1285,11 @@ class CaseValidator:
         smooth_type = self.get("lag_params%smooth_type")
         polytropic = self.get("polytropic", "F") == "T"
         thermal = self.get("thermal")
+        bubble_model = self.get("bubble_model")
 
         self.prohibit(n is not None and n == 0, "bubbles_lagrange accepts 2D and 3D simulations only")
+        # Gilmore radial dynamics need Tait liquid constants the EL path never supplies.
+        self.prohibit(bubble_model == 1, "bubbles_lagrange does not support bubble_model = 1 (Gilmore); use 2 (Keller-Miksis) or 3 (Rayleigh-Plesset)")
         self.prohibit(file_per_process, "file_per_process must be false for bubbles_lagrange")
         self.prohibit(model_eqns == 3, "The 6-equation flow model does not support bubbles_lagrange")
         self.prohibit(polytropic, "bubbles_lagrange requires polytropic = F")

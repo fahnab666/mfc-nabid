@@ -115,9 +115,11 @@ contains
             & adv_n, adap_dt, adap_dt_tol, adap_dt_max_iters, bf_x, bf_y, bf_z, k_x, k_y, k_z, w_x, w_y, w_z, p_x, p_y, p_z, g_x, &
             & g_y, g_z, n_start, t_save, t_stop, cfl_adap_dt, cfl_const_dt, cfl_target, surface_tension, bubbles_lagrange, &
             & lag_params, hyperelasticity, R0ref, num_bc_patches, Bx0, cont_damage, tau_star, cont_damage_s, alpha_bar, &
-            & hyper_cleaning, hyper_cleaning_speed, hyper_cleaning_tau, alf_factor, num_igr_iters, num_igr_warm_start_iters, &
-            & int_comp, ic_eps, ic_beta, nv_uvm_out_of_core, nv_uvm_igr_temps_on_gpu, nv_uvm_pref_gpu, down_sample, fft_wrt, &
-            & particles_lagrange, particle_pp, lag_header
+            & jwl_afterburn, jwl_reactive, prog_burn, jwl_ab_model, jwl_q_ab, jwl_ab_tau, jwl_ab_A, jwl_ab_theta, jwl_ab_n, &
+            & pb_D_cj, pb_width, pb_x_det, pb_y_det, pb_z_det, pb_t_det, jwl_G, jwl_b_exp, hyper_cleaning, hyper_cleaning_speed, &
+            & hyper_cleaning_tau, alf_factor, num_igr_iters, num_igr_warm_start_iters, int_comp, ic_eps, ic_beta, &
+            & nv_uvm_out_of_core, nv_uvm_igr_temps_on_gpu, nv_uvm_pref_gpu, down_sample, fft_wrt, particles_lagrange, &
+            & particle_pp, lag_header
 
         ! Checking that an input file has been provided by the user. If it has, then the input file is read in, otherwise,
         ! simulation exits.

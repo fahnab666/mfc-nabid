@@ -1157,6 +1157,30 @@ This boundary condition can be used for fixed-temperature (isothermal) walls at 
 
 - These parameters are for NVIDIA Grace-Hopper and similar architectures with hardware-managed unified memory. They allow MFC to run problems larger than GPU memory by paging data between host and device.
 
+### 20. JWL Detonation Reaction Sources
+
+| Parameter        | Type    | Description                                                        |
+| ---:             | :---:   | :---                                                               |
+| `prog_burn`      | Logical | Kinematic program burn (front lights at `pb_D_cj` from the detonation point) |
+| `pb_D_cj`        | Real    | Chapman-Jouguet detonation speed of the program-burn front        |
+| `pb_width`       | Real    | Width of the energy-release band behind the front                 |
+| `pb_x_det`       | Real    | x-coordinate of the detonation point                              |
+| `pb_y_det`       | Real    | y-coordinate of the detonation point                              |
+| `pb_z_det`       | Real    | z-coordinate of the detonation point                              |
+| `pb_t_det`       | Real    | Time at which the detonation point lights                         |
+| `jwl_afterburn`  | Logical | Afterburn energy release with an advected progress variable       |
+| `jwl_ab_model`   | Integer | Afterburn rate model: 1 = mixing-rate, 2 = Arrhenius              |
+| `jwl_q_ab`       | Real    | Afterburn heat release per unit mass                              |
+| `jwl_ab_tau`     | Real    | Afterburn mixing-rate time scale (`jwl_ab_model = 1`)             |
+| `jwl_ab_A`       | Real    | Afterburn Arrhenius pre-exponential factor (`jwl_ab_model = 2`)   |
+| `jwl_ab_theta`   | Real    | Afterburn Arrhenius activation temperature (`jwl_ab_model = 2`)   |
+| `jwl_ab_n`       | Real    | Afterburn Arrhenius progress exponent                             |
+| `jwl_reactive`   | Logical | JWL++ pressure-driven reactive burn with an advected reaction progress variable |
+| `jwl_G`          | Real    | JWL++ reaction-rate coefficient                                   |
+| `jwl_b_exp`      | Real    | JWL++ pressure exponent                                           |
+
+- These sources require a fluid with `eos = 2` (JWL). Afterburn and reactive burn require `riemann_solver = 2` (HLLC); `prog_burn` and `jwl_reactive` are mutually exclusive.
+
 ## Enumerations
 
 ### Boundary conditions {#boundary-conditions}

@@ -91,26 +91,30 @@ module m_global_parameters
 
     !> @name Simulation Algorithm Parameters
     !> @{
-    integer            :: model_eqns                   !< Multicomponent flow model
-    integer            :: num_fluids                   !< Number of different fluids present in the flow
-    logical            :: relax                        !< phase change
-    integer            :: relax_model                  !< Phase change relaxation model
-    logical            :: mpp_lim                      !< Maximum volume fraction limiter
-    integer            :: sys_size                     !< Number of unknowns in the system of equations
-    integer            :: recon_type                   !< Which type of reconstruction to use
-    integer            :: weno_order                   !< Order of accuracy for the WENO reconstruction
-    integer            :: muscl_order                  !< Order of accuracy for the MUSCL reconstruction
-    logical            :: mixture_err                  !< Mixture error limiter
-    logical            :: alt_soundspeed               !< Alternate sound speed
-    logical            :: mhd                          !< Magnetohydrodynamics
-    logical            :: relativity                   !< Relativity for RMHD
-    logical            :: hypoelasticity               !< Turn hypoelasticity on
-    logical            :: hyperelasticity              !< Turn hyperelasticity on
-    logical            :: elasticity                   !< elasticity modeling, true for hyper or hypo
-    integer            :: b_size                       !< Number of components in the b tensor
-    integer            :: tensor_size                  !< Number of components in the nonsymmetric tensor
-    logical            :: cont_damage                  !< Continuum damage modeling
-    logical            :: hyper_cleaning               !< Hyperbolic cleaning for MHD
+    integer :: model_eqns       !< Multicomponent flow model
+    integer :: num_fluids       !< Number of different fluids present in the flow
+    logical :: relax            !< phase change
+    integer :: relax_model      !< Phase change relaxation model
+    logical :: mpp_lim          !< Maximum volume fraction limiter
+    integer :: sys_size         !< Number of unknowns in the system of equations
+    integer :: recon_type       !< Which type of reconstruction to use
+    integer :: weno_order       !< Order of accuracy for the WENO reconstruction
+    integer :: muscl_order      !< Order of accuracy for the MUSCL reconstruction
+    logical :: mixture_err      !< Mixture error limiter
+    logical :: alt_soundspeed   !< Alternate sound speed
+    logical :: mhd              !< Magnetohydrodynamics
+    logical :: relativity       !< Relativity for RMHD
+    logical :: hypoelasticity   !< Turn hypoelasticity on
+    logical :: hyperelasticity  !< Turn hyperelasticity on
+    logical :: elasticity       !< elasticity modeling, true for hyper or hypo
+    integer :: b_size           !< Number of components in the b tensor
+    integer :: tensor_size      !< Number of components in the nonsymmetric tensor
+    logical :: cont_damage      !< Continuum damage modeling
+    logical :: hyper_cleaning   !< Hyperbolic cleaning for MHD
+
+    !> JWL reaction-source flags that size the system (add advected progress equations).
+    logical            :: jwl_afterburn                !< Enable JWL afterburn energy release
+    logical            :: jwl_reactive                 !< Enable JWL++ pressure-driven reactive burn
     logical            :: igr                          !< enable IGR
     integer            :: igr_order                    !< IGR reconstruction order
     logical, parameter :: chemistry = .${chemistry}$.  !< Chemistry modeling
@@ -360,6 +364,8 @@ contains
         b_size = dflt_int
         tensor_size = dflt_int
         cont_damage = .false.
+        jwl_afterburn = .false.
+        jwl_reactive = .false.
         hyper_cleaning = .false.
         igr = .false.
 
@@ -782,6 +788,20 @@ contains
                 sys_size = eqn_idx%psi
             else
                 eqn_idx%psi = dflt_int
+            end if
+
+            if (jwl_afterburn) then
+                eqn_idx%abn = sys_size + 1
+                sys_size = eqn_idx%abn
+            else
+                eqn_idx%abn = dflt_int
+            end if
+
+            if (jwl_reactive) then
+                eqn_idx%rxn = sys_size + 1
+                sys_size = eqn_idx%rxn
+            else
+                eqn_idx%rxn = dflt_int
             end if
         end if
 
