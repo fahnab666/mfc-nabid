@@ -4,7 +4,7 @@
 
 #:include 'macros.fpp'
 
-!> @brief Computes gravitational and body force source terms for the momentum equations
+!> @brief Computes gravitational and user-defined body force source terms for the momentum equations
 module m_body_forces
 
     use m_derived_types
@@ -51,11 +51,14 @@ contains
         real(wp), dimension(3) :: khat, xi, sig, sig_tmp
 
         if (n > 0) then
+            ! Simulation is 3D
             if (p > 0) then
                 @:ALLOCATE(rhoM(-buff_size:buff_size + m, -buff_size:buff_size + n, -buff_size:buff_size + p))
+                ! Simulation is 2D
             else
                 @:ALLOCATE(rhoM(-buff_size:buff_size + m, -buff_size:buff_size + n, 0:0))
             end if
+            ! Simulation is 1D
         else
             @:ALLOCATE(rhoM(-buff_size:buff_size + m, 0:0, 0:0))
         end if
@@ -169,7 +172,7 @@ contains
 
     end subroutine s_initialize_body_forces_module
 
-    !> Compute the acceleration at time t
+    !> This subroutine computes the acceleration at time t
     subroutine s_compute_acceleration(t)
 
         real(wp), intent(in) :: t
@@ -184,7 +187,8 @@ contains
 
     end subroutine s_compute_acceleration
 
-    !> Compute the mixture density at each cell center
+    !> This subroutine calculates the mixture density at each cell center
+    !! @param q_cons_vf Conservative variables
     subroutine s_compute_mixture_density(q_cons_vf)
 
         type(scalar_field), dimension(sys_size), intent(in) :: q_cons_vf
@@ -205,7 +209,10 @@ contains
 
     end subroutine s_compute_mixture_density
 
-    !> Compute the body force source terms for momentum and energy equations
+    !> This subroutine calculates the source term due to body forces so the system can be advanced in time
+    !! @param q_cons_vf Conservative variables
+    !! @param q_prim_vf Primitive variables
+    !! @param rhs_vf Right-hand side accumulator
     subroutine s_compute_body_forces_rhs(q_prim_vf, q_cons_vf, rhs_vf)
 
         type(scalar_field), dimension(sys_size), intent(in)    :: q_prim_vf

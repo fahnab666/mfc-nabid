@@ -377,6 +377,18 @@ def _emit_bub_pp(lines: List[str]) -> None:
     lines.append("        end if")
 
 
+def _emit_particle_pp(lines: List[str]) -> None:
+    """Emit the particle_pp member broadcast block (all targets, under particles_lagrange guard).
+
+    All particle_pp members in the registry are REAL — emit them all sorted.
+    """
+    particle_members = sorted(k.split("%", 1)[1] for k in REGISTRY.all_params if k.startswith("particle_pp%"))
+    lines.append("        if (particles_lagrange) then")
+    for mem in particle_members:
+        lines.append(f"            call MPI_BCAST(particle_pp%{mem}, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)")
+    lines.append("        end if")
+
+
 def _emit_lag_params(lines: List[str]) -> None:
     """Emit the lag_params member broadcast block (sim-only, under bubbles_lagrange guard).
 
@@ -508,6 +520,11 @@ def generate_bcast_fpp(target: str) -> str:
     if "bub_pp" in NAMELIST_VARS and target in NAMELIST_VARS["bub_pp"]:
         lines.append("        ! bub_pp members (under bubbles guard)")
         _emit_bub_pp(lines)
+        lines.append("")
+
+    if "particle_pp" in NAMELIST_VARS and target in NAMELIST_VARS["particle_pp"]:
+        lines.append("        ! particle_pp members (under particles_lagrange guard)")
+        _emit_particle_pp(lines)
         lines.append("")
 
     if target == "sim":

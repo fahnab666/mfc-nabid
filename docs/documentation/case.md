@@ -876,6 +876,7 @@ Details of the transducer acoustic source model can be found in \cite Maeda17.
 | ---:               | :----:  |          :---                                  |
 | `bubbles_euler`    | Logical | Ensemble-averaged bubble modeling |
 | `bubbles_lagrange` | Logical | Volume-averaged bubble modeling |
+| `particles_lagrange` | Logical | Euler-Lagrange subgrid solid-particle modeling |
 | `bubble_model`     | Integer | [1] Gilmore; [2] Keller--Miksis; [3] Rayleigh-Plesset |
 | `Ca`               | Real    | Cavitation number |
 | `Web`              | Real    | Weber number |

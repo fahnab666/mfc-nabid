@@ -10,6 +10,8 @@ module m_initial_condition
     use m_mpi_proxy
     use m_helper
     use m_variables_conversion
+    ! one form to another
+
     use m_icpp_patches
     use m_assign_variables
     use m_perturbation
@@ -42,10 +44,14 @@ contains
         allocate (ic%patch_id_fp(0:m,0:n,0:p))
 
         if (qbmm .and. .not. polytropic) then
+            ! Allocate bubble pressure pb and vapor mass mv for non-polytropic qbmm at all quad nodes and R0 bins
             allocate (pb%sf(0:m,0:n,0:p,1:nnode,1:nb))
             allocate (mv%sf(0:m,0:n,0:p,1:nnode,1:nb))
         end if
 
+        ! Setting default values for conservative and primitive variables so that in the case that the initial condition is wrongly
+        ! laid out on the grid the simulation component will catch the problem on start- up. The conservative variables do not need
+        ! to be similarly treated since they are computed directly from the primitive variables.
         do i = 1, sys_size
             ic%q_cons_vf(i)%sf = -1.e-6_stp  ! real(dflt_real, kind=stp) ! TODO :: remove this magic number
             ic%q_prim_vf(i)%sf = -1.e-6_stp  ! real(dflt_real, kind=stp)
@@ -119,12 +125,15 @@ contains
 
     end subroutine s_initialize_initial_condition_module
 
-    !> Iterate over patches and, depending on the geometry type, call the related subroutine to setup the said geometry on the grid
-    !! using the primitive variables included with the patch parameters. The subroutine is complete once the primitive variables are
-    !! converted to conservative ones.
+    !> This subroutine peruses the patches and depending on the type of geometry associated with a particular patch, it calls the
+    !! related subroutine to setup the said geometry on the grid using the primitive variables included with the patch parameters.
+    !! The subroutine is complete once the primitive variables are converted to conservative ones.
     impure subroutine s_generate_initial_condition
 
         integer :: i
+
+        ! Converting the conservative variables to the primitive ones given preexisting initial condition data files were read in on
+        ! start-up
 
         if (old_ic) then
             call s_convert_conservative_to_primitive_variables(ic%q_cons_vf, ic%q_T_sf, ic%q_prim_vf, idwbuff)
@@ -160,6 +169,8 @@ contains
     impure subroutine s_finalize_initial_condition_module
 
         integer :: i
+
+        ! Dellocating the primitive and conservative variables
 
         do i = 1, sys_size
             deallocate (ic%q_prim_vf(i)%sf)

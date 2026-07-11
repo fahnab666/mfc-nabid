@@ -17,8 +17,8 @@ module m_hyperelastic
 
     private; public :: s_hyperelastic_rmt_stress_update, s_initialize_hyperelastic_module, s_finalize_hyperelastic_module
 
-    ! The btensor at the cell-interior Gaussian quadrature points. These tensor is needed to be calculated once and make the code
-    ! DRY.
+    !! The btensor at the cell-interior Gaussian quadrature points. These tensor is needed to be calculated once and make the code
+    !! DRY.
     type(vector_field) :: btensor
     $:GPU_DECLARE(create='[btensor]')
 
@@ -31,7 +31,9 @@ module m_hyperelastic
 
 contains
 
-    !> Initialize the hyperelastic module
+    !> The following subroutine handles the calculation of the btensor. The calculation of the btensor takes qprimvf. calculate the
+    !! grad_xi, grad_xi is a nxn tensor calculate the inverse of grad_xi to obtain F, F is a nxn tensor calculate the FFtranspose to
+    !! obtain the btensor, btensor is nxn tensor btensor is symmetric, save the data space
     impure subroutine s_initialize_hyperelastic_module
 
         integer :: i  !< generic iterator
@@ -71,7 +73,11 @@ contains
 
     end subroutine s_initialize_hyperelastic_module
 
-    !> Compute the left Cauchy-Green deformation tensor and update the hyperelastic stress
+    !> The following subroutine handles the calculation of the btensor. The calculation of the btensor takes qprimvf.
+    !! @param q_cons_vf Conservative variables
+    !! @param q_prim_vf Primitive variables
+    !! calculate the grad_xi, grad_xi is a nxn tensor calculate the inverse of grad_xi to obtain F, F is a nxn tensor calculate the
+    !! FFtranspose to obtain the btensor, btensor is nxn tensor btensor is symmetric, save the data space
     subroutine s_hyperelastic_rmt_stress_update(q_cons_vf, q_prim_vf)
 
         type(scalar_field), dimension(sys_size), intent(inout) :: q_cons_vf
@@ -105,6 +111,7 @@ contains
                         & Gs_hyper)
                     rho = max(rho, sgm_eps)
                     G_local = max(G_local, sgm_eps)
+                    ! if ( G_local <= verysmall ) G_K = 0._wp
 
                     if (G_local > verysmall) then
                         $:GPU_LOOP(parallelism='[seq]')
@@ -190,7 +197,15 @@ contains
 
     end subroutine s_hyperelastic_rmt_stress_update
 
-    !> Compute the neo-Hookean Cauchy stress from the left Cauchy-Green tensor
+    !> The following subroutine handles the calculation of the btensor. The calculation of the btensor takes qprimvf.
+    !! @param btensor_in Left Cauchy-Green deformation tensor
+    !! @param q_prim_vf Primitive variables
+    !! @param G_param Elastic shear modulus
+    !! @param j x-direction cell index
+    !! @param k y-direction cell index
+    !! @param l z-direction cell index
+    !! calculate the grad_xi, grad_xi is a nxn tensor calculate the inverse of grad_xi to obtain F, F is a nxn tensor calculate the
+    !! FFtranspose to obtain the btensor, btensor is nxn tensor btensor is symmetric, save the data space
     subroutine s_neoHookean_cauchy_solver(btensor_in, q_prim_vf, G_param, j, k, l)
 
         $:GPU_ROUTINE(parallelism='[seq]')
@@ -201,10 +216,11 @@ contains
         real(wp)                                               :: trace
         real(wp), parameter                                    :: f13 = 1._wp/3._wp
         integer                                                :: i  !< Generic loop iterators
+
         ! tensor is the symmetric tensor & calculate the trace of the tensor
         trace = btensor_in(1)%sf(j, k, l) + btensor_in(3)%sf(j, k, l) + btensor_in(6)%sf(j, k, l)
 
-        ! Deviatoric left Cauchy-Green tensor: dev(b) = b - (tr(b)/3)*I
+        ! calculate the deviatoric of the tensor
         #:for IJ in [1,3,6]
             btensor_in(${IJ}$)%sf(j, k, l) = btensor_in(${IJ}$)%sf(j, k, l) - f13*trace
         #:endfor
@@ -218,7 +234,15 @@ contains
 
     end subroutine s_neoHookean_cauchy_solver
 
-    !> Compute the Mooney-Rivlin Cauchy stress from the left Cauchy-Green tensor
+    !> The following subroutine handles the calculation of the btensor. The calculation of the btensor takes qprimvf.
+    !! @param btensor_in Left Cauchy-Green deformation tensor
+    !! @param q_prim_vf Primitive variables
+    !! @param G_param Elastic shear modulus
+    !! @param j x-direction cell index
+    !! @param k y-direction cell index
+    !! @param l z-direction cell index
+    !! calculate the grad_xi, grad_xi is a nxn tensor calculate the inverse of grad_xi to obtain F, F is a nxn tensor calculate the
+    !! FFtranspose to obtain the btensor, btensor is nxn tensor btensor is symmetric, save the data space
     subroutine s_Mooney_Rivlin_cauchy_solver(btensor_in, q_prim_vf, G_param, j, k, l)
 
         $:GPU_ROUTINE(parallelism='[seq]')
@@ -229,10 +253,11 @@ contains
         real(wp)                                               :: trace
         real(wp), parameter                                    :: f13 = 1._wp/3._wp
         integer                                                :: i  !< Generic loop iterators
-        ! TODO: Make 1D and 2D capable
+
+        ! TODO Make this 1D and 2D capable tensor is the symmetric tensor & calculate the trace of the tensor
         trace = btensor_in(1)%sf(j, k, l) + btensor_in(3)%sf(j, k, l) + btensor_in(6)%sf(j, k, l)
 
-        ! Deviatoric left Cauchy-Green tensor: dev(b) = b - (tr(b)/3)*I
+        ! calculate the deviatoric of the tensor
         btensor_in(1)%sf(j, k, l) = btensor_in(1)%sf(j, k, l) - f13*trace
         btensor_in(3)%sf(j, k, l) = btensor_in(3)%sf(j, k, l) - f13*trace
         btensor_in(6)%sf(j, k, l) = btensor_in(6)%sf(j, k, l) - f13*trace
@@ -247,10 +272,11 @@ contains
 
     end subroutine s_Mooney_Rivlin_cauchy_solver
 
-    !> Finalize the hyperelastic module
+    !> @brief Deallocates memory for hyperelastic deformation tensor and finite-difference coefficients.
     impure subroutine s_finalize_hyperelastic_module()
 
         integer :: i  !< iterator
+
         ! Deallocating memory
 
         do i = 1, b_size

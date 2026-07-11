@@ -41,11 +41,21 @@
     case (200)  ! Two-fluid cubic interface
         if (y_cc(j) <= (-x_cc(i)**3 + 1)**(1._wp/3._wp)) then
             ! Volume Fractions
+            < < < < < < < HEAD
+            q_prim_vf(advxb)%sf(i, j, 0) = eps
+            q_prim_vf(advxe)%sf(i, j, 0) = 1._wp - eps
+            ! Denssities
+            q_prim_vf(contxb)%sf(i, j, 0) = eps*1000._wp
+            q_prim_vf(contxe)%sf(i, j, 0) = (1._wp - eps)*1._wp
+            ! Pressure
+            q_prim_vf(E_idx)%sf(i, j, 0) = 1000._wp
+            == == == =
             q_prim_vf(eqn_idx%adv%beg)%sf(i, j, 0) = eps
             q_prim_vf(eqn_idx%adv%end)%sf(i, j, 0) = 1._wp - eps
             q_prim_vf(eqn_idx%cont%beg)%sf(i, j, 0) = eps*1000._wp
             q_prim_vf(eqn_idx%cont%end)%sf(i, j, 0) = (1._wp - eps)*1._wp
             q_prim_vf(eqn_idx%E)%sf(i, j, 0) = 1000._wp
+            > > > > > > > upstream/master
         end if
     case (202)  ! Gresho vortex (Gouasmi et al 2022 JCP)
         r = ((x_cc(i) - 0.5_wp)**2 + (y_cc(j) - 0.5_wp)**2)**0.5_wp
@@ -355,10 +365,10 @@
                       & - patch_icpp(1)%x_centroid)**2.0 - (y_cc(j) - patch_icpp(1)%y_centroid)**2.0)))**1.4
             q_prim_vf(eqn_idx%mom%beg + 0)%sf(i, j, &
                       & 0) = patch_icpp(1)%vel(1) + (y_cc(j) - patch_icpp(1)%y_centroid)*(5.0/(2.0*pi))*exp(1.0*(1.0 - (x_cc(i) &
-                      & - patch_icpp(1)%x_centroid)**2.0 - (y_cc(j) - patch_icpp(1)%y_centroid)**2.0))
+                      & - patch_icpp(1) %x_centroid)**2.0 - (y_cc(j) - patch_icpp(1)%y_centroid)**2.0))
             q_prim_vf(eqn_idx%mom%beg + 1)%sf(i, j, &
                       & 0) = patch_icpp(1)%vel(2) - (x_cc(i) - patch_icpp(1)%x_centroid)*(5.0/(2.0*pi))*exp(1.0*(1.0 - (x_cc(i) &
-                      & - patch_icpp(1)%x_centroid)**2.0 - (y_cc(j) - patch_icpp(1)%y_centroid)**2.0))
+                      & - patch_icpp(1) %x_centroid)**2.0 - (y_cc(j) - patch_icpp(1)%y_centroid)**2.0))
         end if
     case (281)  ! Acoustic pulse
         ! This is patch is hard-coded for test suite optimization used in the 2D_acoustic_pulse case: This analytic patch uses

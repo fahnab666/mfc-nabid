@@ -64,7 +64,8 @@ module m_global_parameters
     real(wp), allocatable, dimension(:) :: dx, dy, dz
     !> @}
 
-    integer :: buff_size  !< Number of ghost cells for boundary condition storage
+    integer              :: buff_size     !< Number of ghost cells for boundary condition storage
+    integer, allocatable :: beta_vars(:)  !< Indices of variables to communicate for bubble/particle coupling
     !> @name IO options for adaptive time-stepping
     !> @{
     logical :: cfl_dt
@@ -97,6 +98,8 @@ module m_global_parameters
 
     ! shear_num, shear_indices, shear_BC_flip_num, shear_BC_flip_indices: in m_global_parameters_common
     ! proc_coords, start_idx, mpiiofs, mpi_info_int: in m_global_parameters_common
+    type(int_bounds_info), dimension(3)                    :: nidx  !< Indices for neighboring processors (particle halo exchange)
+    integer, allocatable, dimension(:,:,:)                 :: neighbor_ranks  !< Neighbor ranks for particle exchange
     type(ib_airfoil_parameters), allocatable, dimension(:) :: ib_airfoil  !< Per-airfoil NACA parameters (unused in post_process)
     !> Per-airfoil computed surface grids (unused in post_process)
     type(ib_airfoil_grid), allocatable, dimension(:) :: ib_airfoil_grids
@@ -135,8 +138,11 @@ module m_global_parameters
     real(wp), dimension(:), allocatable :: pb0, mass_g0, mass_v0, Pe_T, k_v, k_g
     real(wp), dimension(:), allocatable :: Re_trans_T, Re_trans_c, Im_trans_T, Im_trans_c, omegaN
     real(wp) :: p0ref, rho0ref, T0ref, ss, pv, vd, mu_l, mu_v, mu_g, gam_v, gam_g, M_v, M_g, cp_v, cp_g, R_v, R_g
+
+    ! Solid particle physical parameters (per-rank copies of particle_pp members, set in s_initialize_particles_model)
+    real(wp) :: cp_particle, rho0ref_particle
     real(wp) :: G
-    integer :: nmom
+    integer  :: nmom
     !> @}
 
     real(wp) :: wall_time, wall_time_avg  !< Wall time measurements
@@ -154,6 +160,15 @@ contains
         ! IB flags, parallel I/O flags, fft_wrt)
 
         call s_assign_common_defaults
+
+        ! Subgrid particle defaults
+        particles_lagrange = .false.
+        particle_pp%rho0ref_particle = dflt_real
+        particle_pp%cp_particle = dflt_real
+        particle_pp%ksp_col = dflt_real
+        particle_pp%nu_col = dflt_real
+        particle_pp%E_col = dflt_real
+        particle_pp%cor_col = dflt_real
 
         ! Boundary conditions (bc_x/y/z are per-target declarations, not visible in common)
         bc_x%beg = dflt_int; bc_x%end = dflt_int
@@ -328,6 +343,15 @@ contains
 
         ! Populate eqn_idx, sys_size, b_size, tensor_size, elasticity, shear_* (shared logic)
         call s_initialize_eqn_idx(nmom, nb)
+
+        ! Lagrange bubble/particle coupling: indices of variables to communicate
+        if (bubbles_lagrange) then
+            allocate (beta_vars(1:3))
+            beta_vars(1:3) = [1, 2, 5]
+        else if (particles_lagrange) then
+            allocate (beta_vars(1:7))
+            beta_vars(1:7) = [1, 2, 3, 4, 5, 6, 7]
+        end if
 
         ! post-only: 6eq alf is a dummy (no void fraction in 6eq)
         if (model_eqns == model_eqns_6eq) eqn_idx%alf = 1
@@ -587,6 +611,9 @@ contains
 
         if (ib) MPI_IO_IB_DATA%var%sf => null()
 #endif
+
+        if (allocated(neighbor_ranks)) deallocate (neighbor_ranks)
+        if (allocated(beta_vars)) deallocate (beta_vars)
 
     end subroutine s_finalize_global_parameters_module
 

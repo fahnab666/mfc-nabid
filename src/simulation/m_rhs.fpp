@@ -21,6 +21,7 @@ module m_rhs
     use m_cbc
     use m_bubbles_EE
     use m_bubbles_EL
+    use m_particles_EL
     use m_qbmm
     use m_hypoelastic
     use m_hyperelastic
@@ -42,9 +43,13 @@ module m_rhs
 
     private; public :: s_initialize_rhs_module, s_compute_rhs, s_finalize_rhs_module
 
+    !! This variable contains the WENO-reconstructed values of the cell-average conservative variables, which are located in
+    !! q_cons_vf, at cell-interior Gaussian quadrature points (QP).
     type(vector_field) :: q_cons_qp  !< WENO-reconstructed cell-average conservative variables at quadrature points
     $:GPU_DECLARE(create='[q_cons_qp]')
 
+    !! The primitive variables at cell-interior Gaussian quadrature points. These are calculated from the conservative variables and
+    !! q_cons_qp.
     type(vector_field) :: q_prim_qp  !< Primitive variables at cell-interior quadrature points
     $:GPU_DECLARE(create='[q_prim_qp]')
 
@@ -116,9 +121,18 @@ module m_rhs
     integer :: iglob
     $:GPU_DECLARE(create='[iglob]')
 
+    ! Edge states used for particle solver
+    real(wp), allocatable, dimension(:,:,:,:) :: qL_rsx_save, qR_rsx_save
+    real(wp), allocatable, dimension(:,:,:,:) :: qL_rsy_save, qR_rsy_save
+    real(wp), allocatable, dimension(:,:,:,:) :: qL_rsz_save, qR_rsz_save
+    $:GPU_DECLARE(create='[qL_rsx_save, qR_rsx_save]')
+    $:GPU_DECLARE(create='[qL_rsy_save, qR_rsy_save]')
+    $:GPU_DECLARE(create='[qL_rsz_save, qR_rsz_save]')
+
 contains
 
-    !> Initialize the RHS module
+    !> The computation of parameters, the allocation of memory, the association of pointers and/or the execution of any other
+    !! procedures that are necessary to setup the module.
     impure subroutine s_initialize_rhs_module
 
         integer :: i, j, k, l, id  !< Generic loop iterators
@@ -186,6 +200,7 @@ contains
             $:GPU_ENTER_DATA(attach='[q_prim_qp%vf(eqn_idx%psi)%sf]')
         end if
 
+        ! Allocation/Association of flux_n, flux_src_n, and flux_gsrc_n
         if (.not. igr) then
             @:ALLOCATE(flux_n(1:num_dims))
             @:ALLOCATE(flux_src_n(1:num_dims))
@@ -198,9 +213,9 @@ contains
 
                 if (i == 1) then
                     do l = 1, sys_size
-                        @:ALLOCATE(flux_n(i)%vf(l)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                        @:ALLOCATE(flux_n(i)%vf(l)%sf( idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                                    & idwbuff(3)%beg:idwbuff(3)%end))
-                        @:ALLOCATE(flux_gsrc_n(i)%vf(l)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                        @:ALLOCATE(flux_gsrc_n(i)%vf(l)%sf( idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                                    & idwbuff(3)%beg:idwbuff(3)%end))
                     end do
 
@@ -233,7 +248,7 @@ contains
                     end if
                 else
                     do l = 1, sys_size
-                        @:ALLOCATE(flux_gsrc_n(i)%vf(l)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                        @:ALLOCATE(flux_gsrc_n(i)%vf(l)%sf( idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                                    & idwbuff(3)%beg:idwbuff(3)%end))
                     end do
                 end if
@@ -257,6 +272,7 @@ contains
                     end do
                 end if
             end do
+            ! END: Allocation/Association of flux_n, flux_src_n, and flux_gsrc_n
         end if
 
         if ((.not. igr)) then
@@ -267,6 +283,7 @@ contains
             @:ALLOCATE(qL_prim(1:num_dims))
             @:ALLOCATE(qR_prim(1:num_dims))
 
+            ! Allocation/Association of dqK_prim_ds_n
             @:ALLOCATE(dqL_prim_dx_n(1:num_dims))
             @:ALLOCATE(dqL_prim_dy_n(1:num_dims))
             @:ALLOCATE(dqL_prim_dz_n(1:num_dims))
@@ -290,6 +307,21 @@ contains
                        & 1:sys_size))
             @:ALLOCATE(qR_rsx_vf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, idwbuff(3)%beg:idwbuff(3)%end, &
                        & 1:sys_size))
+
+            if (particles_lagrange) then
+                @:ALLOCATE(qL_rsx_save(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end, 1:sys_size))
+                @:ALLOCATE(qR_rsx_save(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end, 1:sys_size))
+                @:ALLOCATE(qL_rsy_save(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end, 1:sys_size))
+                @:ALLOCATE(qR_rsy_save(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end, 1:sys_size))
+                @:ALLOCATE(qL_rsz_save(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end, 1:sys_size))
+                @:ALLOCATE(qR_rsz_save(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end, 1:sys_size))
+            end if
 
             if (.not. viscous) then
                 do i = 1, num_dims
@@ -365,7 +397,7 @@ contains
                     do l = eqn_idx%mom%beg, eqn_idx%mom%end
                         @:ALLOCATE(dqL_prim_dx_n(i)%vf(l)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                                    & idwbuff(3)%beg:idwbuff(3)%end))
-                        @:ALLOCATE(dqR_prim_dx_n(i)%vf(l)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                        @:ALLOCATE(dqR_prim_dx_n(i)%vf(l)%sf( idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                                    & idwbuff(3)%beg:idwbuff(3)%end))
                     end do
 
@@ -373,7 +405,7 @@ contains
                         do l = eqn_idx%mom%beg, eqn_idx%mom%end
                             @:ALLOCATE(dqL_prim_dy_n(i)%vf(l)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                                        & idwbuff(3)%beg:idwbuff(3)%end))
-                            @:ALLOCATE(dqR_prim_dy_n(i)%vf(l)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                            @:ALLOCATE(dqR_prim_dy_n(i)%vf(l)%sf( idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                                        & idwbuff(3)%beg:idwbuff(3)%end))
                         end do
                     end if
@@ -382,7 +414,7 @@ contains
                         do l = eqn_idx%mom%beg, eqn_idx%mom%end
                             @:ALLOCATE(dqL_prim_dz_n(i)%vf(l)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                                        & idwbuff(3)%beg:idwbuff(3)%end))
-                            @:ALLOCATE(dqR_prim_dz_n(i)%vf(l)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                            @:ALLOCATE(dqR_prim_dz_n(i)%vf(l)%sf( idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                                        & idwbuff(3)%beg:idwbuff(3)%end))
                         end do
                     end if
@@ -437,7 +469,7 @@ contains
             do i = 0, 2
                 do j = 0, 2
                     do k = 1, nb
-                        @:ALLOCATE(mom_3d(i, j, k)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                        @:ALLOCATE(mom_3d(i, j, k)%sf( idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                                    & idwbuff(3)%beg:idwbuff(3)%end))
                         @:ACC_SETUP_SFs(mom_3d(i, j, k))
                     end do
@@ -445,7 +477,7 @@ contains
             end do
 
             do i = 1, nmomsp
-                @:ALLOCATE(mom_sp(i)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                @:ALLOCATE(mom_sp(i)%sf( idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                            & idwbuff(3)%beg:idwbuff(3)%end))
                 @:ACC_SETUP_SFs(mom_sp(i))
             end do
@@ -463,7 +495,7 @@ contains
 
     end subroutine s_initialize_rhs_module
 
-    !> Compute the right-hand side of the semi-discrete governing equations for a single time stage
+    !> @brief Computes the right-hand side of the semi-discrete governing equations for a single time stage.
     impure subroutine s_compute_rhs(q_cons_vf, q_T_sf, q_prim_vf, bc_type, rhs_vf, pb_in, rhs_pb, mv_in, rhs_mv, t_step, &
                                     & time_avg, stage)
 
@@ -484,7 +516,6 @@ contains
         real(wp) :: t_start, t_finish
         integer :: id
         integer(kind=8) :: i, j, k, l, q  !< Generic loop iterators
-
         ! RHS: halo exchange -> reconstruct -> Riemann solve -> flux difference -> source terms
 
         call nvtxStartRange("COMPUTE-RHS")
@@ -685,6 +716,49 @@ contains
                     end if
                 end if
 
+                if (particles_lagrange) then
+                    if (id == 1) then
+                        $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
+                        do i = 1, sys_size
+                            do l = idwbuff(3)%beg, idwbuff(3)%end
+                                do k = idwbuff(2)%beg, idwbuff(2)%end
+                                    do j = idwbuff(1)%beg, idwbuff(1)%end
+                                        qL_rsx_save(j, k, l, i) = qL_rsx_vf(j, k, l, i)
+                                        qR_rsx_save(j, k, l, i) = qR_rsx_vf(j, k, l, i)
+                                    end do
+                                end do
+                            end do
+                        end do
+                        $:END_GPU_PARALLEL_LOOP()
+                    else if (id == 2) then
+                        $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
+                        do i = 1, sys_size
+                            do l = idwbuff(3)%beg, idwbuff(3)%end
+                                do k = idwbuff(2)%beg, idwbuff(2)%end
+                                    do j = idwbuff(1)%beg, idwbuff(1)%end
+                                        qL_rsy_save(j, k, l, i) = qL_rsx_vf(j, k, l, i)
+                                        qR_rsy_save(j, k, l, i) = qR_rsx_vf(j, k, l, i)
+                                    end do
+                                end do
+                            end do
+                        end do
+                        $:END_GPU_PARALLEL_LOOP()
+                    else if (id == 3) then
+                        $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
+                        do i = 1, sys_size
+                            do l = idwbuff(3)%beg, idwbuff(3)%end
+                                do k = idwbuff(2)%beg, idwbuff(2)%end
+                                    do j = idwbuff(1)%beg, idwbuff(1)%end
+                                        qL_rsz_save(j, k, l, i) = qL_rsx_vf(j, k, l, i)
+                                        qR_rsz_save(j, k, l, i) = qR_rsx_vf(j, k, l, i)
+                                    end do
+                                end do
+                            end do
+                        end do
+                        $:END_GPU_PARALLEL_LOOP()
+                    end if
+                end if
+
                 ! Reconstruct viscous derivatives for viscosity
                 if (weno_Re_flux) then
                     iv%beg = eqn_idx%mom%beg; iv%end = eqn_idx%mom%end
@@ -723,6 +797,9 @@ contains
                                       & flux_gsrc_n(id)%vf, id, irx, iry, irz)
                 call nvtxEndRange
 
+                !$:GPU_UPDATE(host='[flux_n(1)%vf(1)%sf]')
+                ! print *, "FLUX", flux_n(1)%vf(1)%sf(100:300, 0, 0)
+
                 ! Additional physics and source terms RHS addition for advection source
                 call nvtxStartRange("RHS-ADVECTION-SRC")
                 call s_compute_advection_source_term(id, rhs_vf, q_cons_qp, q_prim_qp, flux_src_n(id))
@@ -748,7 +825,7 @@ contains
                     call nvtxEndRange
                 end if
 
-                ! Bubble dynamics source terms
+                ! RHS additions for sub-grid bubbles_euler
                 if (bubbles_euler) then
                     call nvtxStartRange("RHS-BUBBLES-COMPUTE")
                     call s_compute_bubbles_EE_rhs(id, q_prim_qp%vf, divu)
@@ -812,14 +889,31 @@ contains
         end if
 
         if (bubbles_lagrange) then
-            ! RHS additions for sub-grid bubbles_lagrange
-            call nvtxStartRange("RHS-EL-BUBBLES-SRC")
-            call s_compute_bubbles_EL_source(q_cons_qp%vf(1:sys_size), q_prim_qp%vf(1:sys_size), rhs_vf)
-            call nvtxEndRange
             ! Compute bubble dynamics
             if (.not. adap_dt) then
                 call nvtxStartRange("RHS-EL-BUBBLES-DYN")
-                call s_compute_bubble_EL_dynamics(q_prim_qp%vf(1:sys_size), stage)
+                call s_compute_bubble_EL_dynamics(q_prim_qp%vf(1:sys_size), bc_type, stage)
+                call nvtxEndRange
+            end if
+
+            if (lag_params%solver_approach == 2) then
+                call nvtxStartRange("RHS-EL-BUBBLES-SRC")
+                call s_compute_bubbles_EL_source(q_cons_qp%vf(1:sys_size), q_prim_qp%vf(1:sys_size), rhs_vf, bc_type)
+                call nvtxEndRange
+            end if
+        end if
+
+        if (particles_lagrange) then
+            ! Compute particle dynamics, forces, dvdt
+            call nvtxStartRange("RHS-EL-PARTICLES-DYN")
+            call s_compute_particle_EL_dynamics(q_cons_qp%vf(1:sys_size), q_prim_qp%vf(1:sys_size), bc_type, stage, qL_rsx_save, &
+                                                & qL_rsy_save, qL_rsz_save, qR_rsx_save, qR_rsy_save, qR_rsz_save, rhs_vf)
+            call nvtxEndRange
+
+            ! RHS additions for sub-grid particles_lagrange
+            if (lag_params%solver_approach == 2) then
+                call nvtxStartRange("RHS-EL-PARTICLES-SRC")
+                call s_compute_particles_EL_source(q_cons_qp%vf(1:sys_size), q_prim_qp%vf(1:sys_size), rhs_vf, stage)
                 call nvtxEndRange
             end if
         end if
@@ -838,7 +932,7 @@ contains
 
         ! END: Additional physics and source terms
 
-        if (run_time_info .or. probe_wrt .or. ib .or. bubbles_lagrange) then
+        if (run_time_info .or. probe_wrt .or. ib .or. bubbles_lagrange .or. particles_lagrange) then
             if (.not. igr) then
                 $:GPU_PARALLEL_LOOP(private='[i, j, k, l]', collapse=4)
                 do i = 1, sys_size
@@ -866,7 +960,7 @@ contains
 
     end subroutine s_compute_rhs
 
-    !> Accumulate advection source contributions from a given coordinate direction into the RHS
+    !> @brief Accumulates advection source contributions from a given coordinate direction into the RHS.
     subroutine s_compute_advection_source_term(idir, rhs_vf, q_cons_vf, q_prim_vf, flux_src_n_vf)
 
         integer, intent(in) :: idir
@@ -1102,7 +1196,7 @@ contains
 
     contains
 
-        !> Add the advection source flux-difference terms for a single coordinate direction to the RHS
+        !> @brief Adds the advection source flux-difference terms for a single coordinate direction to the RHS.
         subroutine s_add_directional_advection_source_terms(current_idir, rhs_vf_arg, q_cons_vf_arg, q_prim_vf_arg, &
             & flux_src_n_vf_arg, Kterm_arg)
             integer, intent(in)                                    :: current_idir
@@ -1340,7 +1434,7 @@ contains
 
     end subroutine s_compute_advection_source_term
 
-    !> Add viscous, surface-tension, and species-diffusion source flux contributions to the RHS for a given direction
+    !> @brief Adds viscous, surface-tension, and species-diffusion source flux contributions to the RHS for a given direction.
     subroutine s_compute_additional_physics_rhs(idir, q_prim_vf, rhs_vf, flux_src_n_in, dq_prim_dx_vf, dq_prim_dy_vf, dq_prim_dz_vf)
 
         integer, intent(in)                                    :: idir
@@ -1953,6 +2047,12 @@ contains
                 @:DEALLOCATE(mom_sp(i)%sf)
             end do
             @:DEALLOCATE(mom_sp, mom_3d)
+        end if
+
+        if (particles_lagrange) then
+            @:DEALLOCATE(qL_rsx_save, qR_rsx_save)
+            @:DEALLOCATE(qL_rsy_save, qR_rsy_save)
+            @:DEALLOCATE(qL_rsz_save, qR_rsz_save)
         end if
 
     end subroutine s_finalize_rhs_module

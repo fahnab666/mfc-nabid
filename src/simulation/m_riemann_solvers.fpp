@@ -17,6 +17,10 @@ module m_riemann_solvers
     use m_riemann_solver_hll
     use m_riemann_solver_hlld
 
+    #:if USING_AMD
+        use m_chemistry, only: molecular_weights_nonparameter
+    #:endif
+
     implicit none
 
     private; public :: s_initialize_riemann_solvers_module, s_riemann_solver, s_hll_riemann_solver, s_hllc_riemann_solver, &
@@ -50,7 +54,8 @@ contains
 
     end subroutine s_riemann_solver
 
-    !> Initialize the Riemann solvers module
+    !> The computation of parameters, the allocation of memory, the association of pointers and/or the execution of any other
+    !! procedures that are necessary to setup the module.
     impure subroutine s_initialize_riemann_solvers_module
 
         ! Allocating the variables that will be utilized to formulate the left, right, and average states of the Riemann problem, as

@@ -16,6 +16,7 @@ module m_time_steppers
     use m_data_output
     use m_bubbles_EE
     use m_bubbles_EL
+    use m_particles_EL  !< Lagrange particle dynamics routines
     use m_ibm
     use m_hyperelastic
     use m_mpi_proxy
@@ -35,6 +36,7 @@ module m_time_steppers
     type(scalar_field), allocatable, dimension(:)    :: q_prim_vf  !< Cell-average primitive variables at the current time-stage
     type(scalar_field), allocatable, dimension(:)    :: rhs_vf     !< Cell-average RHS variables at the current time-stage
     type(integer_field), allocatable, dimension(:,:) :: bc_type    !< Boundary condition identifiers
+
     !> Cell-average primitive variables at consecutive TIMESTEPS
     type(vector_field), allocatable, dimension(:) :: q_prim_ts1, q_prim_ts2
     real(wp), allocatable, dimension(:,:,:,:,:)   :: rhs_pb
@@ -61,7 +63,8 @@ module m_time_steppers
 
 contains
 
-    !> Initialize the time steppers module
+    !> The computation of parameters, the allocation of memory, the association of pointers and/or the execution of any other
+    !! procedures that are necessary to setup the module.
     impure subroutine s_initialize_time_steppers_module
 
 #ifdef FRONTIER_UNIFIED
@@ -461,7 +464,7 @@ contains
 
     end subroutine s_initialize_time_steppers_module
 
-    !> Advance the solution one full step using a TVD Runge-Kutta time integrator
+    !> @brief Advances the solution one full step using a TVD Runge-Kutta time integrator.
     impure subroutine s_tvd_rk(t_step, time_avg, nstage)
 
 #ifdef _CRAYFTN
@@ -505,7 +508,12 @@ contains
                 end if
             end if
 
-            if (bubbles_lagrange .and. .not. adap_dt) call s_update_lagrange_tdv_rk(stage=s)
+            if (bubbles_lagrange .and. .not. adap_dt) call s_update_lagrange_tdv_rk(q_prim_vf, bc_type, stage=s)
+
+            if (particles_lagrange) then
+                call s_update_lagrange_particles_tdv_rk(q_prim_vf, bc_type, stage=s)
+            end if
+
             $:GPU_PARALLEL_LOOP(collapse=4)
             do i = 1, sys_size
                 do l = 0, p
@@ -570,6 +578,7 @@ contains
                 ! check if any IBMS are moving, and if so, update the markers, ghost points, levelsets, and levelset norms
                 if (moving_immersed_boundary_flag) then
                     call s_propagate_immersed_boundaries(s)
+                    ! compute ib forces for fixed immersed boundaries if requested for output
                 end if
 
                 ! update the ghost fluid properties point values based on IB state
@@ -581,11 +590,10 @@ contains
             end if
         end do
 
+        !
         if (ib) then
-            if (moving_immersed_boundary_flag) then
-                call s_wrap_periodic_ibs()  ! wraps the positions of IBs to the local proc
-                call s_handoff_ib_ownership()  ! recomputes which ranks own which IBs and communicate to neighbors
-            else if (ib_state_wrt) then
+            if (moving_immersed_boundary_flag) call s_wrap_periodic_ibs()
+            if (ib_state_wrt .and. (.not. moving_immersed_boundary_flag)) then
                 call s_compute_ib_forces(q_prim_vf, fluid_pp)
             end if
         end if
@@ -607,33 +615,34 @@ contains
     end subroutine s_tvd_rk
 
     !> Bubble source part in Strang operator splitting scheme
+    !! @param stage Current time-stage
     impure subroutine s_adaptive_dt_bubble(stage)
 
         integer, intent(in) :: stage
 
-        call s_convert_conservative_to_primitive_variables(q_cons_ts(1)%vf, q_T_sf, q_prim_vf, idwint)
+        call s_convert_conservative_to_primitive_variables(q_cons_ts(1)%vf, q_T_sf, q_prim_vf, idwbuff)
 
         if (bubbles_euler) then
             call s_compute_bubble_EE_source(q_cons_ts(1)%vf, q_prim_vf, rhs_vf, divu)
             call s_comp_alpha_from_n(q_cons_ts(1)%vf)
         else if (bubbles_lagrange) then
             call s_populate_variables_buffers(bc_type, q_prim_vf, pb_ts(1)%sf, mv_ts(1)%sf, q_T_sf)
-            call s_compute_bubble_EL_dynamics(q_prim_vf, stage)
+            call s_compute_bubble_EL_dynamics(q_prim_vf, bc_type, stage)
             call s_transfer_data_to_tmp()
-            call s_smear_voidfraction()
+            call s_smear_voidfraction(bc_type)
             if (stage == 3) then
                 if (lag_params%write_bubbles_stats) call s_calculate_lag_bubble_stats()
                 if (lag_params%write_bubbles) then
                     $:GPU_UPDATE(host='[gas_p, gas_mv, intfc_rad, intfc_vel]')
-                    call s_write_lag_particles(mytime)
+                    call s_write_lag_bubble_evol(mytime)
                 end if
-                call s_write_void_evol(mytime)
+                if (lag_params%write_void_evol) call s_write_void_evol(mytime)
             end if
         end if
 
     end subroutine s_adaptive_dt_bubble
 
-    !> Compute the global time step size from CFL stability constraints across all cells
+    !> @brief Computes the global time step size from CFL stability constraints across all cells.
     impure subroutine s_compute_dt()
 
         real(wp) :: rho  !< Cell-avg. density
@@ -720,7 +729,10 @@ contains
 
     end subroutine s_compute_dt
 
-    !> Apply the body forces source term at each Runge-Kutta stage
+    !> This subroutine applies the body forces source term at each Runge-Kutta stage
+    !! @param q_cons_vf Conservative variables
+    !! @param q_prim_vf_in Primitive variables
+    !! @param rhs_vf_in Right-hand side variables
     subroutine s_apply_bodyforces(q_cons_vf, q_prim_vf_in, rhs_vf_in, ldt)
 
         type(scalar_field), dimension(1:sys_size), intent(inout) :: q_cons_vf
@@ -781,10 +793,11 @@ contains
         integer, intent(in) :: s
         integer             :: i
         integer             :: gbl_id  ! used for analytic ib patch motion
+        logical             :: forces_computed
 
         call nvtxStartRange("PROPAGATE-IMMERSED-BOUNDARIES")
 
-        if (moving_immersed_boundary_flag) call s_compute_ib_forces(q_prim_vf, fluid_pp)
+        forces_computed = .false.
 
         $:GPU_PARALLEL_LOOP(private='[i, gbl_id]', copyin='[s]')
         do i = 1, num_ibs
@@ -799,6 +812,11 @@ contains
 
             ! Compute forces BEFORE the RK velocity blend so the device copy of patch_ib%vel matches the host (pre-blend) when
             ! velocity-dependent collision damping forces are evaluated on the GPU.
+            if (patch_ib(i)%moving_ibm == 2 .and. .not. forces_computed) then
+                call s_compute_ib_forces(q_prim_vf, fluid_pp)
+                forces_computed = .true.
+            end if
+
             if (patch_ib(i)%moving_ibm > 0) then
                 patch_ib(i)%vel = (rk_coef(s, 1)*patch_ib(i)%step_vel + rk_coef(s, 2)*patch_ib(i)%vel)/rk_coef(s, 4)
                 patch_ib(i)%angular_vel = (rk_coef(s, 1)*patch_ib(i)%step_angular_vel + rk_coef(s, &
@@ -811,11 +829,12 @@ contains
                     ! update the velocity from the force value
                     patch_ib(i)%vel = patch_ib(i)%vel + rk_coef(s, 3)*dt*(patch_ib(i)%force/patch_ib(i)%mass)/rk_coef(s, 4)
 
-                    ! update the angular velocity with the torque value
+                    ! Update angular velocity from torque, then recompute moment of inertia
                     patch_ib(i)%angular_vel = (patch_ib(i)%angular_vel*patch_ib(i)%moment) + (rk_coef(s, &
                              & 3)*dt*patch_ib(i)%torque/rk_coef(s, 4))  ! add the torque to the angular momentum
                     if (num_dims == 3) call s_compute_moment_of_inertia(patch_ib(i), patch_ib(i)%angular_vel, patch_ib(i)%moment)
                     ! update the moment of inertia to be based on the direction of the angular momentum
+                    ! convert back to angular velocity with the new moment of inertia
                     patch_ib(i)%angular_vel = patch_ib(i)%angular_vel/patch_ib(i)%moment
                 end if
 
@@ -840,7 +859,8 @@ contains
 
     end subroutine s_propagate_immersed_boundaries
 
-    !> Save the temporary q_prim_vf vector into q_prim_ts for use in p_main
+    !> This subroutine saves the temporary q_prim_vf vector into the q_prim_ts vector that is then used in p_main
+    !! @param t_step current time-step
     subroutine s_time_step_cycling(t_step)
 
         integer, intent(in) :: t_step
@@ -922,6 +942,7 @@ contains
         use hipfort_check
 #endif
         integer :: i, j  !< Generic loop iterators
+
         ! Deallocating the cell-average conservative variables
 #if defined(__NVCOMPILER_GPU_UNIFIED_MEM)
         do j = 1, sys_size

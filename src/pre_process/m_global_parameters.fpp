@@ -1,6 +1,6 @@
 !>
 !! @file
-!! @brief Contains module m_global_parameters
+!! Contains module m_global_parameters
 
 #:include 'case.fpp'
 
@@ -53,10 +53,13 @@ module m_global_parameters
     ! Cell indices (InDices With BUFFer): includes buffer except in pre_process
     type(int_bounds_info) :: idwbuff(1:3)
     type(int_bounds_info) :: bc_x, bc_y, bc_z  !< Boundary conditions in the x-, y- and z-coordinate directions
+    integer               :: fd_number         !< FD half-stencil size: MAX(1, fd_order/2) (particle/bubble Lagrange smearing)
     ! simplex_params: auto-generated in generated_decls.fpp
 
     ! fluid_rho (perturbs surrounding-air density to break grid symmetry): auto-generated in generated_decls.fpp
     ! proc_coords, start_idx, mpiiofs, mpi_info_int: in m_global_parameters_common
+    type(int_bounds_info), dimension(3)    :: nidx            !< Indices for neighboring processors (particle halo exchange)
+    integer, allocatable, dimension(:,:,:) :: neighbor_ranks  !< Neighbor ranks for particle exchange
 #ifdef MFC_MPI
     type(mpi_io_var), public :: MPI_IO_DATA
 #endif
@@ -87,17 +90,24 @@ module m_global_parameters
     real(wp), dimension(:), allocatable :: pb0, mass_g0, mass_v0, Pe_T, k_v, k_g
     real(wp), dimension(:), allocatable :: Re_trans_T, Re_trans_c, Im_trans_T, Im_trans_c, omegaN
     real(wp) :: p0ref, rho0ref, T0ref, ss, pv, vd, mu_l, mu_v, mu_g, gam_v, gam_g, M_v, M_g, cp_v, cp_g, R_v, R_g
+
+    ! Solid particle physical parameters
+    real(wp) :: cp_particle, rho0ref_particle
     !> @}
 
     integer, allocatable, dimension(:,:,:) :: logic_grid
     type(pres_field)                       :: pb
     type(pres_field)                       :: mv
-    integer                                :: buff_size  !< Number of ghost cells for boundary condition storage
+    integer                                :: buff_size     !< Number of ghost cells for boundary condition storage
+    integer, allocatable                   :: beta_vars(:)  !< Indices of variables to communicate for bubble/particle coupling
+
+    ! Variables for hardcoded initial conditions that are read from input files
+    character(LEN=2*path_len) :: interface_file
+    real(wp)                  :: normFac, normMag, g0_ic, p0_ic
 
 contains
 
-    !> Assigns default values to user inputs prior to reading them in. This allows for an easier consistency check of these
-    !! parameters once they are read from the input file.
+    !> Assigns default values to user inputs prior to reading them in.
     impure subroutine s_assign_default_values_to_user_inputs
 
         integer :: i  !< Generic loop operator
@@ -184,6 +194,8 @@ contains
         elliptic_smoothing_iters = dflt_int
         elliptic_smoothing = .false.
 
+        particles_lagrange = .false.
+
         simplex_perturb = .false.
         simplex_params%perturb_vel(:) = .false.
         simplex_params%perturb_vel_freq(:) = dflt_real
@@ -196,6 +208,8 @@ contains
 
         ! Initial condition parameters
         num_patches = dflt_int
+
+        fd_order = dflt_int
 
         do i = 1, num_patches_max
             patch_icpp(i)%geometry = dflt_int
@@ -389,6 +403,14 @@ contains
         bub_pp%R_v = dflt_real; R_v = dflt_real
         bub_pp%R_g = dflt_real; R_g = dflt_real
 
+        ! Subgrid particle parameters
+        particle_pp%rho0ref_particle = dflt_real
+        particle_pp%cp_particle = dflt_real
+        particle_pp%ksp_col = dflt_real
+        particle_pp%nu_col = dflt_real
+        particle_pp%E_col = dflt_real
+        particle_pp%cor_col = dflt_real
+
     end subroutine s_assign_default_values_to_user_inputs
 
     !> Computation of parameters, allocation procedures, and/or any other tasks needed to properly setup the module
@@ -486,8 +508,19 @@ contains
             end if
         end if
 
+        ! Lagrange bubble/particle coupling: indices of variables to communicate
+        if (bubbles_lagrange) then
+            allocate (beta_vars(1:3))
+            beta_vars(1:3) = [1, 2, 5]
+        else if (particles_lagrange) then
+            allocate (beta_vars(1:7))
+            beta_vars(1:7) = [1, 2, 3, 4, 5, 6, 7]
+        end if
+
+        if (bubbles_lagrange .or. particles_lagrange) fd_number = max(1, fd_order/2)
+
         call s_configure_coordinate_bounds(recon_type, weno_polyn, muscl_polyn, igr_order, buff_size, idwint, idwbuff, viscous, &
-                                           & bubbles_lagrange, m, n, p, num_dims, igr, ib)
+                                           & bubbles_lagrange, particles_lagrange, m, n, p, num_dims, igr, ib, fd_number)
 
 #ifdef MFC_MPI
         if (qbmm .and. .not. polytropic) then
@@ -536,14 +569,14 @@ contains
 
     end subroutine s_initialize_global_parameters_module
 
-    !> Configure MPI parallel I/O settings and allocate processor coordinate arrays.
+    !> Configures MPI parallel I/O settings and allocates processor coordinate arrays.
     impure subroutine s_initialize_parallel_io
 
         call s_initialize_parallel_io_common
 
     end subroutine s_initialize_parallel_io
 
-    !> Deallocate all global grid, index, and equation-of-state parameter arrays.
+    !> Deallocates all global grid, index, and equation-of-state parameter arrays.
     impure subroutine s_finalize_global_parameters_module
 
         integer :: i
@@ -576,6 +609,9 @@ contains
             deallocate (MPI_IO_DATA%view)
         end if
 #endif
+
+        if (allocated(neighbor_ranks)) deallocate (neighbor_ranks)
+        if (allocated(beta_vars)) deallocate (beta_vars)
 
     end subroutine s_finalize_global_parameters_module
 

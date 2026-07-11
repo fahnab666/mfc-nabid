@@ -61,7 +61,7 @@ module m_viscous
 
 contains
 
-    !> Initialize the viscous module
+    !> @brief Allocates and populates the viscous Reynolds number arrays and transfers data to the GPU.
     impure subroutine s_initialize_viscous_module
 
         integer :: i, j  !< generic loop iterators
@@ -78,7 +78,11 @@ contains
 
     end subroutine s_initialize_viscous_module
 
-    !> Compute viscous stress tensor near cylindrical axis, avoiding 1/r singularity at y_cb(-1)=0
+    !> The purpose of this subroutine is to compute the viscous
+    ! stress tensor for the cells directly next to the axis in cylindrical coordinates. This is necessary to avoid the 1/r
+    ! singularity that arises at the cell boundary coinciding with the axis, i.e., y_cb(-1) = 0. @param q_prim_vf Cell-average
+    ! primitive variables @param grad_x_vf Cell-average primitive variable derivatives, x-dir @param grad_y_vf Cell-average
+    ! primitive variable derivatives, y-dir @param grad_z_vf Cell-average primitive variable derivatives, z-dir
     subroutine s_compute_viscous_stress_cylindrical_boundary(q_prim_vf, grad_x_vf, grad_y_vf, grad_z_vf, tau_Re_vf, ix, iy, iz)
 
         type(scalar_field), dimension(sys_size), intent(in) :: q_prim_vf
@@ -187,7 +191,6 @@ contains
                                 end if
                             end if
 
-                            ! Shear stress near cylindrical axis: includes v/r hoop term
                             tau_Re(2, 1) = (grad_y_vf(1)%sf(j, k, l) + grad_x_vf(2)%sf(j, k, l))/Re_visc(1)
 
                             tau_Re(2, 2) = (4._wp*grad_y_vf(2)%sf(j, k, l) - 2._wp*grad_x_vf(1)%sf(j, k, &
@@ -999,7 +1002,20 @@ contains
 
     end subroutine s_reconstruct_cell_boundary_values_visc_deriv
 
-    !> Compute cell-average spatial derivatives via the scalar divergence theorem
+    !> The purpose of this subroutine is to employ the inputted left and right cell-boundary integral-averaged variables to compute
+    !! the relevant cell-average first-order spatial derivatives in the x-, y- or z-direction by means of the scalar divergence
+    !! theorem.
+    !! @param vL_vf Left cell-boundary integral averages
+    !! @param vR_vf Right cell-boundary integral averages
+    !! @param dv_ds_vf Cell-average first-order spatial derivatives
+    !! @param norm_dir Splitting coordinate direction
+    !! @param ix Index bounds in the x-direction
+    !! @param iy Index bounds in the y-direction
+    !! @param iz Index bounds in the z-direction
+    !! @param iv_in Variable index bounds
+    !! @param dL Cell width array
+    !! @param dim Dimension size
+    !! @param buff_size_in Buffer layer size
     subroutine s_apply_scalar_divergence_theorem(vL_vf, vR_vf, dv_ds_vf, norm_dir, ix, iy, iz, iv_in, dL, dim, buff_size_in)
 
         ! arrays of cell widths
@@ -1087,6 +1103,10 @@ contains
     end subroutine s_apply_scalar_divergence_theorem
 
     !> Computes the scalar gradient fields via finite differences
+    !! @param var Variable to compute derivative of
+    !! @param grad_x First coordinate direction component of the derivative
+    !! @param grad_y Second coordinate direction component of the derivative
+    !! @param grad_z Third coordinate direction component of the derivative
     subroutine s_compute_fd_gradient(var, grad_x, grad_y, grad_z)
 
         type(scalar_field), intent(in)    :: var
@@ -1249,7 +1269,7 @@ contains
 
     end subroutine s_compute_fd_gradient
 
-    !> Compute the viscous stress tensor at a single grid cell using finite-difference velocity gradients
+    !> @brief Computes the viscous stress tensor at a single grid cell using finite-difference velocity gradients.
     subroutine s_compute_viscous_stress_tensor(viscous_stress_tensor, q_prim_vf, dynamic_viscosity, i, j, k)
 
         $:GPU_ROUTINE(parallelism='[seq]')
@@ -1308,14 +1328,14 @@ contains
             divergence = divergence + velocity_gradient_tensor(l, l)
         end do
 
-        ! Viscous stress tensor: tau_ij = mu * (du_i/dx_j + du_j/dx_i) - 2/3 * mu * div(u) * delta_ij
+        ! set up the shear stress tensor
         do l = 1, num_dims
             do q = 1, num_dims
                 viscous_stress_tensor(l, q) = mu_eff*(velocity_gradient_tensor(l, q) + velocity_gradient_tensor(q, l))
             end do
         end do
 
-        ! Subtract isotropic bulk viscosity term (Stokes hypothesis)
+        ! populate the viscous_stress_tensor
         do l = 1, num_dims
             viscous_stress_tensor(l, l) = viscous_stress_tensor(l, l) - 2._wp*divergence*mu_eff/3._wp
         end do
@@ -1329,7 +1349,7 @@ contains
 
     end subroutine s_compute_viscous_stress_tensor
 
-    !> Finalize the viscous module
+    !> @brief Deallocates the viscous Reynolds number arrays.
     impure subroutine s_finalize_viscous_module()
 
         @:DEALLOCATE(Res_viscous)

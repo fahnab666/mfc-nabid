@@ -10,6 +10,7 @@ module m_weno
     use m_derived_types
     use m_global_parameters
     use m_variables_conversion
+
     ! $:USE_GPU_MODULE()
 
     use m_mpi_proxy
@@ -83,7 +84,8 @@ module m_weno
 
 contains
 
-    !> Initialize the WENO module
+    !> The computation of parameters, the allocation of memory, the association of pointers and/or the execution of any other
+    !! procedures that are necessary to setup the module.
     impure subroutine s_initialize_weno_module
 
         if (weno_order == 1) return
@@ -166,7 +168,10 @@ contains
 
     end subroutine s_initialize_weno_module
 
-    !> Compute WENO polynomial coefficients, ideal weights, and smoothness indicators for a given direction
+    !> The purpose of this subroutine is to compute the grid dependent coefficients of the WENO polynomials, ideal weights and
+    !! smoothness indicators, provided the order, the coordinate direction and the location of the WENO reconstruction.
+    !! @param weno_dir Coordinate direction of the WENO reconstruction
+    !! @param is Index bounds in the s-direction
     subroutine s_compute_weno_coefficients(weno_dir, is)
 
         ! Compute WENO coefficients for a given coordinate direction. Shu (1997)
@@ -180,7 +185,8 @@ contains
         real(wp)                          :: y(1:4)          !< Intermediate var for poly & beta: diff(s_cb) across sub-stencil
         real(wp)                          :: h0              !< Reference spacing for uniform-grid detection
 
-        ! Determine cell count, boundary locations, and BCs for selected WENO direction
+        ! Determining the number of cells, the cell-boundary locations and the boundary conditions in the coordinate direction
+        ! selected for the WENO reconstruction
 
         if (weno_dir == 1) then
             s = m; s_cb => x_cb; bc_s = bc_x
@@ -195,21 +201,18 @@ contains
             if (weno_dir == ${WENO_DIR}$) then
                 if (weno_order == 3) then
                     do i = is%beg - 1 + weno_polyn, is%end - 1 - weno_polyn
-                        ! Polynomial reconstruction coefficients
                         poly_coef_cbR_${XYZ}$ (i + 1, 0, 0) = (s_cb(i) - s_cb(i + 1))/(s_cb(i) - s_cb(i + 2))
                         poly_coef_cbR_${XYZ}$ (i + 1, 1, 0) = (s_cb(i) - s_cb(i + 1))/(s_cb(i - 1) - s_cb(i + 1))
 
                         poly_coef_cbL_${XYZ}$ (i + 1, 0, 0) = -poly_coef_cbR_${XYZ}$ (i + 1, 0, 0)
                         poly_coef_cbL_${XYZ}$ (i + 1, 1, 0) = -poly_coef_cbR_${XYZ}$ (i + 1, 1, 0)
 
-                        ! Ideal (linear) weights
                         d_cbR_${XYZ}$ (0, i + 1) = (s_cb(i - 1) - s_cb(i + 1))/(s_cb(i - 1) - s_cb(i + 2))
                         d_cbL_${XYZ}$ (0, i + 1) = (s_cb(i - 1) - s_cb(i))/(s_cb(i - 1) - s_cb(i + 2))
 
                         d_cbR_${XYZ}$ (1, i + 1) = 1._wp - d_cbR_${XYZ}$ (0, i + 1)
                         d_cbL_${XYZ}$ (1, i + 1) = 1._wp - d_cbL_${XYZ}$ (0, i + 1)
 
-                        ! Smoothness indicator coefficients
                         beta_coef_${XYZ}$ (i + 1, 0, 0) = 4._wp*(s_cb(i) - s_cb(i + 1))**2._wp/(s_cb(i) - s_cb(i + 2))**2._wp
                         beta_coef_${XYZ}$ (i + 1, 1, 0) = 4._wp*(s_cb(i) - s_cb(i + 1))**2._wp/(s_cb(i - 1) - s_cb(i + 1))**2._wp
                     end do
@@ -232,7 +235,6 @@ contains
                     ! Computing WENO5 Coefficients
                 else if (weno_order == 5) then
                     do i = is%beg - 1 + weno_polyn, is%end - 1 - weno_polyn
-                        ! Polynomial reconstruction coefficients
                         poly_coef_cbR_${XYZ}$ (i + 1, 0, &
                                                & 0) = ((s_cb(i) - s_cb(i + 1))*(s_cb(i + 1) - s_cb(i + 2)))/((s_cb(i) - s_cb(i &
                                                & + 3))*(s_cb(i + 3) - s_cb(i + 1)))
@@ -271,7 +273,6 @@ contains
                                                & 0) = ((s_cb(i - 2) - s_cb(i)) + (s_cb(i - 1) - s_cb(i + 1)))/((s_cb(i - 2) &
                                                & - s_cb(i + 1))*(s_cb(i + 1) - s_cb(i - 1)))*((s_cb(i) - s_cb(i + 1)))
 
-                        ! Ideal (linear) weights
                         d_cbR_${XYZ}$ (0, &
                                        & i + 1) = ((s_cb(i - 2) - s_cb(i + 1))*(s_cb(i + 1) - s_cb(i - 1)))/((s_cb(i - 2) &
                                        & - s_cb(i + 3))*(s_cb(i + 3) - s_cb(i - 1)))
@@ -288,7 +289,6 @@ contains
                         d_cbR_${XYZ}$ (1, i + 1) = 1._wp - d_cbR_${XYZ}$ (0, i + 1) - d_cbR_${XYZ}$ (2, i + 1)
                         d_cbL_${XYZ}$ (1, i + 1) = 1._wp - d_cbL_${XYZ}$ (0, i + 1) - d_cbL_${XYZ}$ (2, i + 1)
 
-                        ! Smoothness indicator coefficients
                         beta_coef_${XYZ}$ (i + 1, 0, &
                                            & 0) = 4._wp*(s_cb(i) - s_cb(i + 1))**2._wp*(10._wp*(s_cb(i + 1) - s_cb(i))**2._wp &
                                            & + (s_cb(i + 1) - s_cb(i))*(s_cb(i + 2) - s_cb(i + 1)) + (s_cb(i + 2) - s_cb(i + 1)) &
@@ -1473,6 +1473,7 @@ contains
         integer :: i, j, k, l
         real(wp), dimension(-1:1) :: d  !< Curvature measures at the zone centers
         real(wp) :: d_MD, d_LC          !< Median (md) curvature and large curvature (LC) measures
+
         ! The left and right upper bounds (UL), medians, large curvatures, minima, and maxima of the WENO-reconstructed values of
         ! the cell- average variables.
         real(wp)            :: vL_UL, vR_UL

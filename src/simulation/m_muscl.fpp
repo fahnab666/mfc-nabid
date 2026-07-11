@@ -37,7 +37,6 @@ module m_muscl
 
 contains
 
-    !> Allocate and initialize MUSCL reconstruction working arrays
     subroutine s_initialize_muscl_module()
 
         ! Initializing in x-direction

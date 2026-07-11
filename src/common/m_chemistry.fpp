@@ -18,6 +18,12 @@ module m_chemistry
 
     implicit none
 
+    #:if USING_AMD
+        real(wp) :: molecular_weights_nonparameter(10) = (/2.016, 1.008, 15.999, 31.998, 17.007, 18.015, 33.006, 34.014, 39.95, &
+             & 28.014/)
+        $:GPU_DECLARE(create='[molecular_weights_nonparameter]')
+    #:endif
+
     type(int_bounds_info) :: isc1, isc2, isc3
     $:GPU_DECLARE(create='[isc1, isc2, isc3]')
     integer, dimension(3) :: offsets
@@ -25,7 +31,7 @@ module m_chemistry
 
 contains
 
-    !> Compute mixture viscosities for left and right states and invert them for use as reciprocal Reynolds numbers.
+    !> @brief Computes mixture viscosities for left and right states and inverts them for use as reciprocal Reynolds numbers.
     subroutine compute_viscosity_and_inversion(T_L, Ys_L, T_R, Ys_R, Re_L, Re_R)
 
         $:GPU_ROUTINE(function_name='compute_viscosity_and_inversion',parallelism='[seq]', cray_inline=True)
@@ -35,13 +41,12 @@ contains
 
         call get_mixture_viscosity_mixavg(T_L, Ys_L, Re_L)
         call get_mixture_viscosity_mixavg(T_R, Ys_R, Re_R)
-        ! Convert dynamic viscosity to inverse (MFC stores 1/mu for Reynolds number convention)
         Re_L = 1.0_wp/Re_L
         Re_R = 1.0_wp/Re_R
 
     end subroutine compute_viscosity_and_inversion
 
-    !> Initialize the temperature field from conservative variables by inverting the energy equation.
+    !> @brief Initializes the temperature field from conservative variables by inverting the energy equation.
     subroutine s_compute_q_T_sf(q_T_sf, q_cons_vf, bounds)
 
         ! Initialize the temperature field at the start of the simulation to reasonable values. Temperature is computed the regular
@@ -77,7 +82,7 @@ contains
 
     end subroutine s_compute_q_T_sf
 
-    !> Compute the temperature field from primitive variables using the ideal gas law and mixture molecular weight.
+    !> @brief Computes the temperature field from primitive variables using the ideal gas law and mixture molecular weight.
     subroutine s_compute_T_from_primitives(q_T_sf, q_prim_vf, bounds)
 
         type(scalar_field), intent(inout)                   :: q_T_sf
@@ -102,7 +107,7 @@ contains
 
     end subroutine s_compute_T_from_primitives
 
-    !> Add chemical reaction source terms to the species transport RHS using net production rates.
+    !> @brief Adds chemical reaction source terms to the species transport RHS using net production rates.
     subroutine s_compute_chemistry_reaction_flux(rhs_vf, q_cons_qp, q_T_sf, q_prim_qp, bounds)
 
         type(scalar_field), dimension(sys_size), intent(inout) :: rhs_vf
@@ -138,7 +143,12 @@ contains
 
                     $:GPU_LOOP(parallelism='[seq]')
                     do eqn = eqn_idx%species%beg, eqn_idx%species%end
-                        omega_m = molecular_weights(eqn - eqn_idx%species%beg + 1)*omega(eqn - eqn_idx%species%beg + 1)
+                        #:if USING_AMD
+                            omega_m = molecular_weights_nonparameter(eqn - eqn_idx%species%beg + 1)*omega(eqn &
+                                & - eqn_idx%species%beg + 1)
+                        #:else
+                            omega_m = molecular_weights(eqn - eqn_idx%species%beg + 1)*omega(eqn - eqn_idx%species%beg + 1)
+                        #:endif
                         rhs_vf(eqn)%sf(x, y, z) = rhs_vf(eqn)%sf(x, y, z) + omega_m
                     end do
                 end do
@@ -249,10 +259,17 @@ contains
                             ! Calculate species properties and gradients
                             $:GPU_LOOP(parallelism='[seq]')
                             do i = eqn_idx%species%beg, eqn_idx%species%end
-                                h_l(i - eqn_idx%species%beg + 1) = h_l(i - eqn_idx%species%beg + 1) &
-                                    & *gas_constant*T_L/molecular_weights(i - eqn_idx%species%beg + 1)
-                                h_r(i - eqn_idx%species%beg + 1) = h_r(i - eqn_idx%species%beg + 1) &
-                                    & *gas_constant*T_R/molecular_weights(i - eqn_idx%species%beg + 1)
+                                #:if USING_AMD
+                                    h_l(i - eqn_idx%species%beg + 1) = h_l(i - eqn_idx%species%beg + 1) &
+                                        & *gas_constant*T_L/molecular_weights_nonparameter(i - eqn_idx%species%beg + 1)
+                                    h_r(i - eqn_idx%species%beg + 1) = h_r(i - eqn_idx%species%beg + 1) &
+                                        & *gas_constant*T_R/molecular_weights_nonparameter(i - eqn_idx%species%beg + 1)
+                                #:else
+                                    h_l(i - eqn_idx%species%beg + 1) = h_l(i - eqn_idx%species%beg + 1) &
+                                        & *gas_constant*T_L/molecular_weights(i - eqn_idx%species%beg + 1)
+                                    h_r(i - eqn_idx%species%beg + 1) = h_r(i - eqn_idx%species%beg + 1) &
+                                        & *gas_constant*T_R/molecular_weights(i - eqn_idx%species%beg + 1)
+                                #:endif
                                 Xs_cell(i - eqn_idx%species%beg + 1) = 0.5_wp*(Xs_L(i - eqn_idx%species%beg + 1) + Xs_R(i &
                                         & - eqn_idx%species%beg + 1))
                                 h_k(i - eqn_idx%species%beg + 1) = 0.5_wp*(h_l(i - eqn_idx%species%beg + 1) + h_r(i &
@@ -277,9 +294,15 @@ contains
 
                             $:GPU_LOOP(parallelism='[seq]')
                             do eqn = eqn_idx%species%beg, eqn_idx%species%end
-                                Mass_Diffu_Flux(eqn - eqn_idx%species%beg + 1) = rho_cell*mass_diffusivities_mixavg_Cell(eqn &
-                                                & - eqn_idx%species%beg + 1)*molecular_weights(eqn - eqn_idx%species%beg + 1) &
-                                                & /MW_cell*dXk_dxi(eqn - eqn_idx%species%beg + 1)
+                                #:if USING_AMD
+                                    Mass_Diffu_Flux(eqn - eqn_idx%species%beg + 1) = rho_cell*mass_diffusivities_mixavg_Cell(eqn &
+                                                    & - eqn_idx%species%beg + 1)*molecular_weights_nonparameter(eqn &
+                                                    & - eqn_idx%species%beg + 1)/MW_cell*dXk_dxi(eqn - eqn_idx%species%beg + 1)
+                                #:else
+                                    Mass_Diffu_Flux(eqn - eqn_idx%species%beg + 1) = rho_cell*mass_diffusivities_mixavg_Cell(eqn &
+                                                    & - eqn_idx%species%beg + 1)*molecular_weights(eqn - eqn_idx%species%beg + 1) &
+                                                    & /MW_cell*dXk_dxi(eqn - eqn_idx%species%beg + 1)
+                                #:endif
                                 rho_Vic = rho_Vic + Mass_Diffu_Flux(eqn - eqn_idx%species%beg + 1)
                                 Mass_Diffu_Energy = Mass_Diffu_Energy + h_k(eqn - eqn_idx%species%beg + 1)*Mass_Diffu_Flux(eqn &
                                     & - eqn_idx%species%beg + 1)

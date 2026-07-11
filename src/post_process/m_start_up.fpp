@@ -8,6 +8,8 @@
 
 module m_start_up
 
+    ! Dependencies
+
     use, intrinsic :: iso_c_binding
 
     use m_derived_types
@@ -56,15 +58,21 @@ contains
     impure subroutine s_read_input_file
 
         character(LEN=name_len) :: file_loc
-        logical                 :: file_check
-        integer                 :: iostatus
-        character(len=1000)     :: line
+
+        !> Generic logical used for the purpose of asserting whether a file is or is not present in the designated location
+        logical :: file_check
+        integer :: iostatus
+        !! Integer to check iostat of file read
+
+        character(len=1000) :: line
 
         #:include 'generated_namelist.fpp'
 
+        ! Inquiring the status of the post_process.inp file
         file_loc = 'post_process.inp'
         inquire (FILE=trim(file_loc), EXIST=file_check)
 
+        ! Checking whether the input file is there. If it is, the input file is read. If not, the program is terminated.
         if (file_check) then
             open (1, FILE=trim(file_loc), form='formatted', STATUS='old', ACTION='read')
             read (1, NML=user_inputs, iostat=iostatus)
@@ -86,6 +94,7 @@ contains
                 p = int((p + 1)/3) - 1
             end if
 
+            ! Store m,n,p into global m,n,p
             m_glb = m
             n_glb = n
             p_glb = p
@@ -110,12 +119,15 @@ contains
         character(LEN=len_trim(case_dir)) :: file_loc
         logical                           :: dir_check
 
+        ! Checking the existence of the case folder
+
         case_dir = adjustl(case_dir)
 
         file_loc = trim(case_dir) // '/.'
 
         call my_inquire(file_loc, dir_check)
 
+        ! Constraint on the location of the case directory
         if (dir_check .neqv. .true.) then
             call s_mpi_abort('Unsupported choice for the value of ' // 'case_dir. Exiting.')
         end if
@@ -125,7 +137,7 @@ contains
 
     end subroutine s_check_input_file
 
-    !> Load grid and conservative data for a time step, fill ghost-cell buffers, and convert to primitive variables.
+    !> @brief Load grid and conservative data for a time step, fill ghost-cell buffers, and convert to primitive variables.
     impure subroutine s_perform_time_step(t_step)
 
         integer, intent(inout) :: t_step
@@ -153,6 +165,7 @@ contains
             end if
         end if
 
+        ! Populating the grid and conservative variables
         call s_read_data_files(t_step)
 
         if (chemistry) call s_compute_q_T_sf(q_T_sf, q_cons_vf, idwbuff)
@@ -166,7 +179,7 @@ contains
 
     end subroutine s_perform_time_step
 
-    !> Derive requested flow quantities from primitive variables and write them to the formatted database files.
+    !> @brief Derive requested flow quantities from primitive variables and write them to the formatted database files.
     impure subroutine s_save_data(t_step, varname, pres, c, H)
 
         integer, intent(inout)                 :: t_step
@@ -199,6 +212,7 @@ contains
             z_end = offset_z%end + p
         end if
 
+        ! Opening a new formatted database file
         call s_open_formatted_database_file(t_step)
 
         if (sim_data .and. proc_rank == 0) then
@@ -211,16 +225,20 @@ contains
             call s_write_energy_data_file(q_prim_vf, q_cons_vf)
         end if
 
+        ! Adding the grid to the formatted database file
         call s_write_grid_to_formatted_database_file(t_step)
 
+        ! Computing centered finite-difference coefficients in x-direction
         if (omega_wrt(2) .or. omega_wrt(3) .or. qm_wrt .or. liutex_wrt .or. schlieren_wrt) then
             call s_compute_finite_difference_coefficients(m, x_cc, fd%fd_coeff_x, buff_size, fd_number, fd_order, offset_x)
         end if
 
+        ! Computing centered finite-difference coefficients in y-direction
         if (omega_wrt(1) .or. omega_wrt(3) .or. qm_wrt .or. liutex_wrt .or. (n > 0 .and. schlieren_wrt)) then
             call s_compute_finite_difference_coefficients(n, y_cc, fd%fd_coeff_y, buff_size, fd_number, fd_order, offset_y)
         end if
 
+        ! Computing centered finite-difference coefficients in z-direction
         if (omega_wrt(1) .or. omega_wrt(2) .or. qm_wrt .or. liutex_wrt .or. (p > 0 .and. schlieren_wrt)) then
             call s_compute_finite_difference_coefficients(p, z_cc, fd%fd_coeff_z, buff_size, fd_number, fd_order, offset_z)
         end if
@@ -270,6 +288,7 @@ contains
             end if
         end do
 
+        ! Adding the species' concentrations to the formatted database file
         if (chemistry) then
             do i = 1, num_species
                 if (chem_wrt_Y(i) .or. prim_vars_wrt) then
@@ -294,6 +313,7 @@ contains
             end if
         end do
 
+        ! Adding the energy to the formatted database file
         if (E_wrt .or. cons_vars_wrt) then
             write (varname, '(A)') 'E'
             call s_write_field(varname, t_step, q_cons_vf(eqn_idx%E), x_beg, x_end, y_beg, y_end, z_beg, z_end)
@@ -309,6 +329,7 @@ contains
             end do
         end if
 
+        ! Adding Energy cascade FFT
         if (fft_wrt) then
             do l = 0, p
                 do k = 0, n
@@ -415,6 +436,7 @@ contains
             end do
         end if
 
+        ! Adding the magnetic field to the formatted database file
         if (mhd .and. prim_vars_wrt) then
             do i = eqn_idx%B%beg, eqn_idx%B%end
                 ! 1D: output By, Bz
@@ -438,6 +460,7 @@ contains
             end do
         end if
 
+        ! Adding the elastic shear stresses to the formatted database file
         if (elasticity) then
             do i = 1, eqn_idx%stress%end - eqn_idx%stress%beg + 1
                 if (prim_vars_wrt) then
@@ -467,6 +490,7 @@ contains
             call s_write_field(varname, t_step, q_cons_vf(eqn_idx%psi), x_beg, x_end, y_beg, y_end, z_beg, z_end)
         end if
 
+        ! Adding the pressure to the formatted database file
         if (pres_wrt .or. prim_vars_wrt) then
             write (varname, '(A)') 'pres'
             call s_write_field(varname, t_step, q_prim_vf(eqn_idx%E), x_beg, x_end, y_beg, y_end, z_beg, z_end)
@@ -506,6 +530,7 @@ contains
             call s_write_field(varname, t_step)
         end if
 
+        ! Adding the specific heat ratio to the formatted database file
         if (heat_ratio_wrt) then
             call s_derive_specific_heat_ratio(out%q_sf)
             write (varname, '(A)') 'heat_ratio'
@@ -518,12 +543,14 @@ contains
             call s_write_field(varname, t_step)
         end if
 
+        ! Adding the liquid stiffness to the formatted database file
         if (pres_inf_wrt) then
             call s_derive_liquid_stiffness(out%q_sf)
             write (varname, '(A)') 'pres_inf'
             call s_write_field(varname, t_step)
         end if
 
+        ! Adding the sound speed to the formatted database file
         if (c_wrt) then
             do k = -offset_z%beg, p + offset_z%end
                 do j = -offset_y%beg, n + offset_y%end
@@ -548,6 +575,7 @@ contains
             call s_write_field(varname, t_step)
         end if
 
+        ! Adding the vorticity to the formatted database file
         do i = 1, 3
             if (omega_wrt(i)) then
                 call s_derive_vorticity_component(i, q_prim_vf, out%q_sf)
@@ -563,19 +591,23 @@ contains
             call s_write_field(varname, t_step)
         end if
 
+        ! Adding Q_M to the formatted database file
         if (p > 0 .and. qm_wrt) then
             call s_derive_qm(q_prim_vf, out%q_sf)
             write (varname, '(A)') 'qm'
             call s_write_field(varname, t_step)
         end if
 
+        ! Adding Liutex magnitude to the formatted database file
         if (liutex_wrt) then
+            ! Compute Liutex vector and its magnitude
             call s_derive_liutex(q_prim_vf, liutex_mag, liutex_axis)
 
             out%q_sf = liutex_mag
             write (varname, '(A)') 'liutex_mag'
             call s_write_field(varname, t_step)
 
+            ! Liutex axis
             do i = 1, 3
                 out%q_sf = liutex_axis(:,:,:,i)
                 write (varname, '(A,I0)') 'liutex_axis', i
@@ -583,17 +615,20 @@ contains
             end do
         end if
 
+        ! Adding numerical Schlieren function to formatted database file
         if (schlieren_wrt) then
             call s_derive_numerical_schlieren_function(q_cons_vf, out%q_sf)
             write (varname, '(A)') 'schlieren'
             call s_write_field(varname, t_step)
         end if
 
+        ! Adding the color function to formatted database file
         if (cf_wrt) then
             write (varname, '(A,I0)') 'color_function'
             call s_write_field(varname, t_step, q_cons_vf(eqn_idx%c), x_beg, x_end, y_beg, y_end, z_beg, z_end)
         end if
 
+        ! Adding the volume fraction(s) to the formatted database file
         if (bubbles_euler) then
             do i = eqn_idx%adv%beg, eqn_idx%adv%end
                 write (varname, '(A,I0)') 'alpha', i - eqn_idx%E
@@ -601,6 +636,7 @@ contains
             end do
         end if
 
+        ! Adding the bubble variables  to the formatted database file
         if (bubbles_euler) then
             ! nR
             do i = 1, nb
@@ -634,7 +670,7 @@ contains
             end if
         end if
 
-        if (bubbles_lagrange) then
+        if (bubbles_lagrange .or. particles_lagrange) then
             ! Void fraction field
             out%q_sf(:,:,:) = 1._wp - q_cons_vf(beta_idx)%sf(-offset_x%beg:m + offset_x%end,-offset_y%beg:n + offset_y%end, &
                      & -offset_z%beg:p + offset_z%end)
@@ -652,6 +688,7 @@ contains
             call s_close_energy_data_file()
         end if
 
+        ! Closing the formatted database file
         call s_close_formatted_database_file()
 
     end subroutine s_save_data
@@ -720,7 +757,7 @@ contains
 
     end subroutine s_mpi_transpose_x2y
 
-    !> Transpose 3-D complex data from y-pencil to z-pencil layout via MPI_Alltoall.
+    !> @brief Transpose 3-D complex data from y-pencil to z-pencil layout via MPI_Alltoall.
     subroutine s_mpi_transpose_y2z
 
         complex(c_double_complex), allocatable :: sendbuf(:), recvbuf(:)
@@ -763,14 +800,18 @@ contains
 
     end subroutine s_mpi_transpose_y2z
 
-    !> Initialize all post-process sub-modules, set up I/O pointers, and prepare FFTW plans and MPI communicators.
+    !> @brief Initialize all post-process sub-modules, set up I/O pointers, and prepare FFTW plans and MPI communicators.
     impure subroutine s_initialize_modules
 
+        ! Computation of parameters, allocation procedures, and/or any other tasks needed to properly setup the modules
         integer :: size_n(1), inembed(1), onembed(1)
 
         call s_initialize_global_parameters_module()
         if (bubbles_euler .or. bubbles_lagrange) then
             call s_initialize_bubbles_model()
+        end if
+        if (particles_lagrange) then
+            call s_initialize_particles_model()
         end if
         if (num_procs > 1) then
             call s_initialize_mpi_proxy_module()
@@ -782,6 +823,7 @@ contains
         call s_initialize_derived_variables_module()
         call s_initialize_data_output_module()
 
+        ! Associate pointers for serial or parallel I/O
         if (parallel_io .neqv. .true.) then
             s_read_data_files => s_read_serial_data_files
         else
@@ -852,7 +894,7 @@ contains
 
     end subroutine s_initialize_modules
 
-    !> Perform a distributed forward 3-D FFT using pencil decomposition with FFTW and MPI transposes.
+    !> @brief Perform a distributed forward 3-D FFT using pencil decomposition with FFTW and MPI transposes.
     subroutine s_mpi_FFT_fwd
 
         integer :: j, k, l
@@ -919,13 +961,17 @@ contains
 
     end subroutine s_mpi_FFT_fwd
 
-    !> Set up the MPI environment, read and broadcast user inputs, and decompose the computational domain.
+    !> @brief Set up the MPI environment, read and broadcast user inputs, and decompose the computational domain.
     impure subroutine s_initialize_mpi_domain
 
         num_dims = 1 + min(1, n) + min(1, p)
 
+        ! Initialization of the MPI environment
         call s_mpi_initialize()
 
+        ! Processor with rank 0 assigns default user input values prior to reading those in from the input file. Next, the user
+        ! inputs are read in and their consistency is checked. The detection of any inconsistencies automatically leads to the
+        ! termination of the post-process.
         if (proc_rank == 0) then
             call s_assign_default_values_to_user_inputs()
             call s_read_input_file()
@@ -934,6 +980,8 @@ contains
             print '(" Post-processing a ", I0, "x", I0, "x", I0, " case on ", I0, " rank(s)")', m, n, p, num_procs
         end if
 
+        ! Broadcasting the user inputs to all of the processors and performing the parallel computational domain decomposition.
+        ! Neither procedure has to be carried out if the post-process is in fact not truly executed in parallel.
         call s_mpi_bcast_user_inputs()
         call s_initialize_parallel_io()
         call s_mpi_decompose_computational_domain()
@@ -941,10 +989,13 @@ contains
 
     end subroutine s_initialize_mpi_domain
 
-    !> Destroy FFTW plans, free MPI communicators, and finalize all post-process sub-modules.
+    !> @brief Destroy FFTW plans, free MPI communicators, and finalize all post-process sub-modules.
     impure subroutine s_finalize_modules
 
+        ! Disassociate pointers for serial and parallel I/O
         s_read_data_files => null()
+
+        ! if (sim_data .and. proc_rank == 0) then call s_close_intf_data_file() call s_close_energy_data_file() end if
 
         if (fft_wrt) then
             if (c_associated(fwd_plan_x)) call fftw_destroy_plan(fwd_plan_x)
@@ -968,6 +1019,7 @@ contains
         end if
 #endif
 
+        ! Deallocation procedures for the modules
         call s_finalize_data_output_module()
         call s_finalize_derived_variables_module()
         call s_finalize_data_input_module()
@@ -978,6 +1030,7 @@ contains
         end if
         call s_finalize_global_parameters_module()
 
+        ! Finalizing the MPI environment
         call s_mpi_finalize()
 
     end subroutine s_finalize_modules

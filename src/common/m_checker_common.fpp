@@ -133,7 +133,7 @@ contains
     end subroutine s_check_jwl_inputs
 
 #ifndef MFC_SIMULATION
-    !> Verify that the total number of grid cells meets the minimum required by the number of dimensions and MPI ranks.
+    !> @brief Verifies that the total number of grid cells meets the minimum required by the number of dimensions and MPI ranks.
     impure subroutine s_check_total_cells
 
         character(len=18) :: numStr  !< for int to string conversion
@@ -143,19 +143,19 @@ contains
         call s_int_to_str(2**(min(1, m) + min(1, n) + min(1, p))*num_procs, numStr)
 
         @:PROHIBIT(nGlobal < min_cells, &
-                   & "Total number of cells must be at least (2^[number of dimensions])*num_procs, " // "which is currently " &
-                   & // trim(numStr))
+                   & "Total number of cells must be at least (2^[number of dimensions])*num_procs, " &
+                   & // "which is currently "//trim(numStr))
 
     end subroutine s_check_total_cells
 #endif
 
-    !> Check that simulation parameters stay within AMD GPU compiler limits when case optimization is disabled.
+    !> @brief Checks that simulation parameters stay within AMD GPU compiler limits when case optimization is disabled.
     impure subroutine s_check_amd
 
         #:if not MFC_CASE_OPTIMIZATION
             @:PROHIBIT(num_fluids > 3, "num_fluids <= 3 for AMDFLang when Case optimization is off")
             @:PROHIBIT((bubbles_euler .or. bubbles_lagrange) .and. nb > 3, "nb <= 3 for AMDFLang when Case optimization is off")
-            @:PROHIBIT(chemistry .and. num_species > 10, "num_species > 10 for AMDFLang when Case optimization is off")
+            @:PROHIBIT(chemistry .and. num_species /= 10, "num_species = 10 for AMDFLang when Case optimization is off")
         #:endif
 
     end subroutine s_check_amd

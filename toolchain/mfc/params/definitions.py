@@ -119,6 +119,7 @@ HINTS = {
 # Tag → display name for docs. Dict order = priority when a param has multiple tags.
 TAG_DISPLAY_NAMES = {
     "bubbles": "Bubble model",
+    "particles": "Subgrid particle model",
     "mhd": "MHD",
     "chemistry": "Chemistry",
     "time": "Time-stepping",
@@ -614,6 +615,9 @@ def _load():
     for n in ["polytropic", "bubbles_euler", "polydisperse", "qbmm", "bubbles_lagrange"]:
         _r(n, LOG, {"bubbles"})
 
+    # Subgrid solid particles (Euler-Lagrange)
+    _r("particles_lagrange", LOG, {"particles"})
+
     # Viscosity
     _r("viscous", LOG, {"viscosity"})
 
@@ -932,6 +936,10 @@ def _load():
     ]:
         _r(f"bub_pp%{a}", REAL, {"bubbles"}, math=sym)
 
+    # particle_pp (subgrid solid-particle physical properties)
+    for a in ["rho0ref_particle", "cp_particle", "ksp_col", "nu_col", "E_col", "cor_col"]:
+        _r(f"particle_pp%{a}", REAL, {"particles"})
+
     # patch_ib (immersed boundaries) — registered as indexed family for O(1) lookup.
     # max_index=NIB enforces the namelist limit (num_ib_patches_max_namelist); particle beds can
     # grow patch_ib beyond this at runtime, but those entries are never in the namelist.
@@ -1106,6 +1114,26 @@ def _load():
     for a in ["epsilonb", "valmaxvoid", "charwidth"]:
         _r(f"lag_params%{a}", REAL, {"bubbles"})
 
+    # lag_params members shared with the subgrid solid-particle solver.
+    # mu_ref is a per-fluid array (dimension num_fluids_max) declared inside
+    # bubbles_lagrange_parameters, so it is registered as an indexed family like
+    # simplex_params — its Fortran declaration comes from the derived type, not
+    # from FORTRAN_ARRAY_DIMS (that table is only for top-level namelist arrays).
+    for a in ["nParticles_glb", "vel_model", "drag_model", "qs_drag_model", "stokes_drag", "added_mass_model", "interpolation_order"]:
+        _r(f"lag_params%{a}", INT, {"particles"})
+    for f in range(1, NF + 1):
+        _r(f"lag_params%mu_ref({f})", REAL, {"particles"})
+
+    # Force, collision, output, and Sutherland-viscosity members of bubbles_lagrange_parameters
+    # used by the Euler-Lagrange bubble and particle cases.
+    for a in ["write_void_evol", "pressure_force", "gravity_force", "collision_force", "subcycle_collisions", "qs_fluct_force"]:
+        _r(f"lag_params%{a}", LOG, {"particles"})
+    for a in ["charNz", "N_collision_subcycles"]:
+        _r(f"lag_params%{a}", INT, {"particles"})
+    _r("lag_params%input_path", STR, {"particles"}, str_len="pathlen_max")
+    for f in range(1, NF + 1):
+        _r(f"lag_params%suth({f})", REAL, {"particles"})
+
     # chem_params
     for a in ["diffusion", "reactions"]:
         _r(f"chem_params%{a}", LOG, {"chemistry"})
@@ -1188,6 +1216,7 @@ FORTRAN_ARRAY_DIMS: dict[str, str] = {
 TYPED_DECLS: dict[str, tuple] = {
     "fluid_pp": ("type(physical_parameters)", "num_fluids_max", False, "Per-fluid stiffened-gas EOS parameters, Reynolds numbers, and shear modulus"),
     "bub_pp": ("type(subgrid_bubble_physical_parameters)", None, False, "Subgrid bubble physical parameters"),
+    "particle_pp": ("type(subgrid_particle_physical_parameters)", None, False, "Subgrid solid-particle physical parameters"),
     "patch_icpp": ("type(ic_patch_parameters)", "num_patches_max", False, "IC patch parameters"),
     "patch_bc": ("type(bc_patch_parameters)", "num_bc_patches_max", False, "Boundary condition patch parameters"),
     "patch_ib": ("type(ib_patch_parameters)", "num_ib_patches_max_namelist", True, "Immersed boundary patch parameters"),
@@ -1219,6 +1248,7 @@ _nv(
     "m",
     "n",
     "p",
+    "fd_order",
     "cyl_coord",
     "bc_x",
     "bc_y",
@@ -1239,6 +1269,8 @@ _nv(
     "pref",
     "bubbles_euler",
     "bubbles_lagrange",
+    "particles_lagrange",
+    "particle_pp",
     "R0ref",
     "polytropic",
     "thermal",
@@ -1278,7 +1310,6 @@ _nv(
     "prim_vars_wrt",
     "alt_soundspeed",
     "mixture_err",
-    "fd_order",
     "ib_state_wrt",
 )
 _nv(

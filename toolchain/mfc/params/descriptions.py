@@ -90,6 +90,7 @@ DESCRIPTIONS = {
     # Physics models
     "bubbles_euler": "Enable Euler-Euler bubble model",
     "bubbles_lagrange": "Enable Lagrangian bubble tracking",
+    "particles_lagrange": "Enable Lagrangian solid particle solver",
     "bubble_model": "Bubble dynamics model",
     "polytropic": "Enable polytropic gas behavior for bubbles",
     "polydisperse": "Enable polydisperse bubble distribution",
@@ -479,6 +480,14 @@ PATTERNS = [
     (r"bub_pp%R_v", "Gas constant of host in vapor state"),
     (r"bub_pp%R_g", "Gas constant of gas (bubble)"),
     (r"bub_pp%(\w+)", "Bubble parameter: {0}"),
+    # particle_pp patterns
+    (r"particle_pp%rho0ref_particle", "Reference density of the solid particle"),
+    (r"particle_pp%cp_particle", "Specific heat (const. pressure) of the solid particle"),
+    (r"particle_pp%ksp_col", "Contact spring stiffness for particle collisions"),
+    (r"particle_pp%nu_col", "Poisson's ratio for particle collisions"),
+    (r"particle_pp%E_col", "Young's modulus for particle collisions"),
+    (r"particle_pp%cor_col", "Coefficient of restitution for particle collisions"),
+    (r"particle_pp%(\w+)", "Particle parameter: {0}"),
     # Output array patterns
     (r"schlieren_alpha\((\d+)\)", "Schlieren coefficient for fluid {0}"),
     (r"alpha_rho_wrt\((\d+)\)", "Write partial density for fluid {0}"),
@@ -533,6 +542,14 @@ PATTERNS = [
     (r"lag_params%epsilonb", "Standard deviation scaling for Gaussian smoothing"),
     (r"lag_params%charwidth", "Domain virtual depth for 2D simulations"),
     (r"lag_params%valmaxvoid", "Maximum permitted void fraction"),
+    (r"lag_params%nParticles_glb", "Global number of Lagrangian solid particles"),
+    (r"lag_params%vel_model", "Model for particle translational motion"),
+    (r"lag_params%drag_model", "Drag model for particle translational motion"),
+    (r"lag_params%qs_drag_model", "Quasi-steady drag model selection"),
+    (r"lag_params%stokes_drag", "Enable Stokes drag for particles"),
+    (r"lag_params%added_mass_model", "Added-mass model selection for particles"),
+    (r"lag_params%interpolation_order", "Interpolation order for particle-field coupling"),
+    (r"lag_params%mu_ref\((\d+)\)", "Reference dynamic viscosity for fluid {0}"),
     (r"lag_params%(\w+)", "Lagrangian tracking parameter: {0}"),
     # chem_params patterns - specific fields first
     (r"chem_params%diffusion", "Enable species diffusion for chemistry"),

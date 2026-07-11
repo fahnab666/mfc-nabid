@@ -19,7 +19,7 @@ module m_perturbation
 
 contains
 
-    !> Allocate the temporary primitive variable array used by elliptic smoothing.
+    !> @brief Allocates the temporary primitive variable array used by elliptic smoothing.
     impure subroutine s_initialize_perturbation_module()
 
         if (elliptic_smoothing) then
@@ -28,7 +28,7 @@ contains
 
     end subroutine s_initialize_perturbation_module
 
-    !> Randomly perturb partial density fields at the interface of a spherical volume fraction region.
+    !> @brief Randomly perturbs partial density fields at the interface of a spherical volume fraction region.
     impure subroutine s_perturb_sphere(q_prim_vf)
 
         type(scalar_field), dimension(sys_size), intent(inout) :: q_prim_vf
@@ -45,9 +45,10 @@ contains
 
                     perturb_alpha = q_prim_vf(eqn_idx%E + perturb_sph_fluid)%sf(i, j, k)
 
-                    ! Perturb partial density fields to match perturbed volume fraction fields when the volume fraction is not near
-                    ! 0 or 1
+                    ! Perturb partial density fields to match perturbed volume fraction fields IF ((perturb_alpha >= 25e-2_wp) .AND.
+                    ! (perturb_alpha <= 75e-2_wp)) THEN
                     if ((.not. f_approx_equal(perturb_alpha, 0._wp)) .and. (.not. f_approx_equal(perturb_alpha, 1._wp))) then
+                        ! Derive new partial densities
                         do l = 1, num_fluids
                             q_prim_vf(l)%sf(i, j, k) = q_prim_vf(eqn_idx%E + l)%sf(i, j, k)*fluid_rho(l)
                         end do
@@ -58,7 +59,7 @@ contains
 
     end subroutine s_perturb_sphere
 
-    !> Add random noise to the velocity and void fraction of the surrounding flow field.
+    !> @brief Adds random noise to the velocity and void fraction of the surrounding flow field.
     impure subroutine s_perturb_surrounding_flow(q_prim_vf)
 
         type(scalar_field), dimension(sys_size), intent(inout) :: q_prim_vf
@@ -67,6 +68,7 @@ contains
 
         call random_seed()
 
+        ! Perturb partial density or velocity of surrounding flow by some random small amount of noise
         do k = 0, p
             do j = 0, n
                 do i = 0, m
@@ -143,7 +145,7 @@ contains
 
     end subroutine s_elliptic_smoothing
 
-    !> Perturb velocity and volume fraction fields using multi-octave simplex noise.
+    !> @brief Perturbs velocity and volume fraction fields using multi-octave simplex noise.
     subroutine s_perturb_simplex(q_prim_vf)
 
         type(scalar_field), dimension(sys_size), intent(inout) :: q_prim_vf
@@ -230,8 +232,9 @@ contains
 
     end subroutine s_perturb_simplex
 
-    !> Compute velocity perturbations for a temporal mixing layer with a hyperbolic tangent mean streamwise velocity profile, using
-    !! an inverted version of the spectrum-based synthetic turbulence generation method proposed by Guo et al. (2023, JFM).
+    !> This subroutine computes velocity perturbations for a temporal mixing layer with a hyperbolic tangent mean streamwise
+    !! velocity profile, using an inverted version of the spectrum-based synthetic turbulence generation method proposed by Guo et
+    !! al. (2023, JFM).
     subroutine s_perturb_mixlayer(q_prim_vf)
 
         type(scalar_field), dimension(sys_size), intent(inout) :: q_prim_vf
@@ -240,6 +243,8 @@ contains
         real(wp), dimension(3)                                 :: velfluc, sig_tmp, sig, khat, xi
         real(wp)                                               :: dk, alpha, Eksum, q, uu0, phi
         integer                                                :: i, j, l, r, ierr
+
+        ! Initialize parameters
 
         dk = 1._wp/mixlayer_perturb_nk
 
@@ -308,7 +313,7 @@ contains
 
     end subroutine s_perturb_mixlayer
 
-    !> Generate deterministic pseudo-random wave vector, polarization, and phase for a perturbation mode.
+    !> @brief Generates deterministic pseudo-random wave vector, polarization, and phase for a perturbation mode.
     subroutine s_generate_random_perturbation(khat, xi, phi, ik, yloc)
 
         integer, intent(in)                 :: ik
