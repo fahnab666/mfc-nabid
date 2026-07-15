@@ -474,14 +474,67 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 
 - `fluid_pp(i)%%G` is required for `hypoelasticity`.
 
-- `fluid_pp(i)%%eos` selects the equation of state for the $i$-th fluid: [1] stiffened gas (default); [2] Jones-Wilkins-Lee (JWL) for detonation products, supported with `model_eqns = 2` and at most one JWL fluid. A JWL fluid requires `jwl_A`, `jwl_B`, `jwl_R1`, `jwl_R2`, `jwl_omega`, `jwl_rho0`, and either `jwl_Q` (specific detonation energy, J/kg) or `jwl_E0` (volumetric detonation energy, J/m³; MFC derives `jwl_E0 = jwl_rho0*jwl_Q`), plus `jwl_air_rho0` and either `jwl_air_e0` (specific internal energy) or `jwl_air_p0` (pressure) describing the co-existing ideal gas. The ideal gas Grüneisen coefficient \f$\Gamma_{\mathrm{air}} = 1/\gamma\f$ is taken from that gas fluid's own `gamma`; with a single JWL fluid and no separate ideal-gas fluid, the JWL fluid's own `gamma` is used. The optional `jwl_ej_rho_ref` sets the products-energy reference density (default `jwl_rho0`, so \f$e_j = E_0/\rho_0\f$). Products are mixed with the surrounding gas by a composition (heat-capacity) weighted closure that recovers pressure, temperature, and sound speed from \f$(\rho, e, Y)\f$ in closed form and degenerates exactly to the pure-JWL law at \f$Y=1\f$ and the ambient law at \f$Y=0\f$; it requires positive products and air `cv`. A stiffened-gas ambient (e.g. water) is supported by setting the non-JWL fluid's `pi_inf`; see `src/common/m_jwl.fpp` for the full closure derivation.
+- `fluid_pp(i)%%eos` selects the equation of state for the `i`-th fluid: `[1]` stiffened gas (default), or `[2]` Jones-Wilkins-Lee (JWL) for detonation products. JWL setup is described in [JWL equation of state](#sec-jwl-eos) and [JWL reaction sources](#sec-jwl-reaction-sources) below.
 
-- JWL reaction sources (simulation stage, require a JWL fluid): `prog_burn` enables a Rocflu-style kinematic program burn — a front expands from the detonation point (`pb_x_det`, `pb_y_det`, `pb_z_det`) starting at time `pb_t_det` with speed `pb_D_cj`, releasing the detonation energy `jwl_Q` over a reaction zone of width `pb_width`. `jwl_afterburn` enables products-air afterburn energy release with an advected progress variable (adds one equation): `jwl_ab_model` selects the rate law ([1] mixing-rate with time scale `jwl_ab_tau`; [2] Arrhenius, the default, with prefactor `jwl_ab_A`, activation temperature `jwl_ab_theta`, and pressure exponent `jwl_ab_n`), and `jwl_q_ab` is the specific afterburn energy (J/kg products, in addition to `jwl_Q` — use a detonation-only JWL fit to avoid double counting). Afterburn requires `riemann_solver = 2` and an ideal-gas ambient. `jwl_reactive` enables a JWL++ (Souers 2000) pressure-driven reactive burn (adds one equation): the reaction progress evolves as `dλ/dt = jwl_G * p^jwl_b_exp * (1 - λ)` and releases `jwl_Q` as the explosive reacts, so a detonation self-propagates from a high-pressure hot spot rather than a prescribed front (mutually exclusive with `prog_burn`; requires `riemann_solver = 2`). The optional `fluid_pp(i)%%jwl_delta_e` (J/kg, must be ≤ 0; default 0 = off) adds a reactant/product energy offset after Garno et al. (2020): the thermal term of the JWL pressure law uses \f$e_{\mathrm{eff}} = e + Y\,(1-\lambda)\,\Delta e\f$ (scaled by the JWL mass fraction \f$Y\f$ so pure ambient gas is untouched and the offset fades as products mix into air), so unreacted explosive (\f$\lambda = 0\f$) sits on a stiffer Hugoniot than the products and a resolved `jwl_reactive` detonation exhibits genuine ZND structure (a von Neumann pressure spike decaying to the Chapman-Jouguet state through a finite reaction zone) instead of a monotonic energy-source profile. With the default `jwl_delta_e = 0` the closure is unchanged regardless of \f$\lambda\f$.
+#### JWL equation of state {#sec-jwl-eos}
+
+The JWL equation of state models detonation products. It is supported only with `model_eqns = 2`, and at most one fluid may set `fluid_pp(i)%%eos = 2`. A JWL fluid is defined by these `fluid_pp(i)%%` parameters:
+
+| Parameter | Meaning | Requirement |
+| :--- | :--- | :--- |
+| `jwl_A`, `jwl_B`, `jwl_R1`, `jwl_R2`, `jwl_omega` | JWL products EOS coefficients | required |
+| `jwl_rho0` | products reference density `ρ₀` | required |
+| `jwl_Q` or `jwl_E0` | detonation energy: specific (J/kg) or volumetric (J/m³). Given `jwl_Q`, MFC sets `jwl_E0 = jwl_rho0 * jwl_Q` | one of the two |
+| `jwl_air_rho0` | density of the co-existing ideal gas | required |
+| `jwl_air_e0` or `jwl_air_p0` | ideal-gas specific internal energy or pressure | one of the two |
+| `jwl_ej_rho_ref` | products-energy reference density (default `jwl_rho0`, so `e_j = E₀ / ρ₀`) | optional |
+
+The ideal-gas Grüneisen coefficient is `γ - 1`, obtained from the ambient gas fluid's own stored `gamma` (which holds `1/(γ - 1)`, so its reciprocal recovers `γ - 1`). With a single JWL fluid and no separate ideal-gas fluid, the JWL fluid's own `gamma` is used.
+
+Products mix with the surrounding gas through a composition (heat-capacity) weighted closure. It recovers pressure, temperature, and sound speed from `(ρ, e, Y)` in closed form, and degenerates exactly to the pure-JWL law at `Y = 1` and to the ambient law at `Y = 0`; it requires positive products and air `cv`. A stiffened-gas ambient (e.g. water) is supported by setting the non-JWL fluid's `pi_inf`. See `src/common/m_jwl.fpp` for the full closure derivation.
+
+#### JWL reaction sources {#sec-jwl-reaction-sources}
+
+Reaction sources release the explosive's chemical energy during the simulation stage; every one requires a JWL fluid. Two burn models drive the detonation and are mutually exclusive: `prog_burn` (a prescribed front) and `jwl_reactive` (self-propagating). `jwl_afterburn` is independent and may be added to either model, or used on its own. The optional `jwl_delta_e` offset applies only with `jwl_reactive`.
+
+```text
+              JWL fluid defined  (eos = 2, model_eqns = 2)
+                              |
+                    How is the burn driven?
+        +---------------------+---------------------+
+        |                     |                     |
+    prog_burn            jwl_reactive             none
+    prescribed           self-propagating         inert products
+    kinematic front      (pressure)               expansion
+                              |
+                              +--> optional jwl_delta_e
+                                   (adds resolved ZND structure)
+
+  optional jwl_afterburn (products-air mixing energy)
+  may be added to any of the three branches above
+```
+
+| Model (toggle) | Driven by | Key parameters | Requirements |
+| :--- | :--- | :--- | :--- |
+| `prog_burn` | prescribed kinematic front | `pb_D_cj` (speed), `pb_width` (zone width), `pb_x_det`/`pb_y_det`/`pb_z_det` (origin), `pb_t_det` (start time) | releases `jwl_Q`; excludes `jwl_reactive`; not 3D cylindrical; needs `pb_D_cj * dt ≤ pb_width` |
+| `jwl_reactive` | local pressure (JWL++, Souers 2000) | `jwl_G`, `jwl_b_exp` | `riemann_solver = 2`; excludes `prog_burn`; adds one equation |
+| `jwl_afterburn` | products-air mixing | `jwl_q_ab`, `jwl_ab_model` (and its rate parameters) | `riemann_solver = 2`; ideal-gas ambient; adds one equation |
+
+- `prog_burn` expands a Rocflu-style front outward from the detonation point and releases `jwl_Q` across the reaction-zone width.
+- `jwl_reactive` advances a reaction progress by `dλ/dt = jwl_G * p^jwl_b_exp * (1 - λ)`, so a detonation self-propagates from a high-pressure hot spot, releasing `jwl_Q` as the explosive reacts.
+- `jwl_afterburn` releases `jwl_q_ab` (J/kg of products, in addition to `jwl_Q`; use a detonation-only `jwl_Q` fit to avoid double counting) through an advected progress variable. `jwl_ab_model` selects the rate law:
+
+| `jwl_ab_model` | Rate law | Rate parameters |
+| :--- | :--- | :--- |
+| `1` | mixing-rate | `jwl_ab_tau` (time scale) |
+| `2` (default) | Arrhenius | `jwl_ab_A` (prefactor), `jwl_ab_theta` (activation temperature), `jwl_ab_n` (pressure exponent) |
+
+**Optional energy offset.** `fluid_pp(i)%%jwl_delta_e` (J/kg, must be `≤ 0`; default `0`, disabled) applies a reactant/product energy offset after Garno et al. (2020) and requires `jwl_reactive`. The thermal term of the JWL pressure law uses `e_eff = e + Y(1 - λ)Δe`, scaled by the JWL mass fraction `Y` so pure ambient gas is untouched and the offset fades as products mix into air. Unreacted explosive (`λ = 0`) then sits on a stiffer Hugoniot than the products, so a resolved `jwl_reactive` detonation shows genuine ZND structure (a von Neumann pressure spike decaying to the Chapman-Jouguet state through a finite reaction zone) instead of a monotonic energy-source profile. With `jwl_delta_e = 0` the closure is unchanged regardless of `λ`.
 
 > **Stored-form parameters:** The values `gamma`, `pi_inf`, and `Re(1)`/`Re(2)` are **not** the raw physical quantities. MFC expects transformed stored forms:
-> - `gamma` = \f$1/(\gamma-1)\f$, not \f$\gamma\f$ itself
-> - `pi_inf` = \f$\gamma\,\pi_\infty / (\gamma - 1)\f$, not \f$\pi_\infty\f$ itself
-> - `Re(1)` = \f$1/\mu\f$ (inverse viscosity), not \f$\mu\f$ itself
+> - `gamma` = `1/(γ - 1)`, not `γ` itself
+> - `pi_inf` = `γ·π∞ / (γ - 1)`, not `π∞` itself
+> - `Re(1)` = `1/μ` (inverse viscosity), not `μ` itself
 >
 > Setting `gamma = 1.4` for air is a common mistake; the correct value is `1.0 / (1.4 - 1.0) = 2.5`.
 > See @ref sec-stored-forms and @ref sec-material-values in the Equations reference for the full table.
@@ -718,6 +771,7 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `pi_inf_wrt`            | Logical | Add the liquid stiffness function to the database |
 | `pres_inf_wrt`          | Logical | Add the liquid stiffness to the formatted database	 |
 | `c_wrt`                 | Logical | Add the sound speed to the database	 |
+| `jwl_wrt`               | Logical | Add the JWL temperature, products mass fraction, and reaction progress to the database |
 | `omega_wrt(i)`          | Logical | Add the $i$-direction vorticity to the database	 |
 | `schlieren_wrt`         | Logical | Add the numerical schlieren to the database|
 | `qm_wrt`                | Logical | Add the Q-criterion to the database|

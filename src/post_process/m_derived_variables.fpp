@@ -109,9 +109,7 @@ contains
         real(wp), dimension(-offset_x%beg:m + offset_x%end,-offset_y%beg:n + offset_y%end,-offset_z%beg:p + offset_z%end), &
              & intent(inout) :: q_sf
 
-        integer :: i, j, k
-
-        ! Fluid bulk modulus for alternate sound speed
+        integer  :: i, j, k
         real(wp) :: blkmod1, blkmod2
         real(wp) :: lambda_jwl  !< JWL reaction progress (1 unless jwl_reactive)
 

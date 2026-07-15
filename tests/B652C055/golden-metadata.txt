@@ -1,12 +1,12 @@
-This file was created on 2026-07-12 22:14:57.388591.
+This file was created on 2026-07-12 20:41:09.809470.
 
 mfc.sh:
 
-    Invocation: test -j 4 --generate --only 8527A26D 9D7B606B 879CA44F
+    Invocation: test --generate --only Weighted_Composition -j 8
     Lock:       mpi=Yes & gpu=No & debug=No & reldebug=No & gcov=No & unified=No & single=No & mixed=No & fastmath=No
     Git:        df3e0694e83abbc17503871c12941af6eb996170 on jwl-upstream-rebase (dirty)
 
-syscheck:
+simulation:
 
     CMake Configuration:
     
@@ -16,9 +16,9 @@ syscheck:
         Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
     
         PRE_PROCESS   : OFF
-        SIMULATION    : OFF
+        SIMULATION    : ON
         POST_PROCESS  : OFF
-        SYSCHECK      : ON
+        SYSCHECK      : OFF
         DOCUMENTATION : OFF
         ALL           : OFF
     
@@ -40,7 +40,7 @@ syscheck:
         OMPI_CXX : 
         OMPI_FC  : 
 
-simulation:
+pre_process:
 
     CMake Configuration:
     
@@ -49,8 +49,8 @@ simulation:
         C       : AppleClang v21.0.0.21000099 (/usr/bin/cc)
         Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
     
-        PRE_PROCESS   : OFF
-        SIMULATION    : ON
+        PRE_PROCESS   : ON
+        SIMULATION    : OFF
         POST_PROCESS  : OFF
         SYSCHECK      : OFF
         DOCUMENTATION : OFF
@@ -108,7 +108,7 @@ post_process:
         OMPI_CXX : 
         OMPI_FC  : 
 
-pre_process:
+syscheck:
 
     CMake Configuration:
     
@@ -117,10 +117,10 @@ pre_process:
         C       : AppleClang v21.0.0.21000099 (/usr/bin/cc)
         Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
     
-        PRE_PROCESS   : ON
+        PRE_PROCESS   : OFF
         SIMULATION    : OFF
         POST_PROCESS  : OFF
-        SYSCHECK      : OFF
+        SYSCHECK      : ON
         DOCUMENTATION : OFF
         ALL           : OFF
     

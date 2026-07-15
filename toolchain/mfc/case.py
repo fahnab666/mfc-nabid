@@ -27,6 +27,7 @@ QPVF_IDX_VARS = {
     "tau_e": "eqn_idx%stress%beg",
     "Y": "eqn_idx%species%beg",
     "cf_val": "eqn_idx%c",
+    "rxn_val": "eqn_idx%rxn",
     "Bx": "eqn_idx%B%beg",
     "By": "eqn_idx%B%end-1",
     "Bz": "eqn_idx%B%end",
@@ -391,7 +392,7 @@ gbl_id = patch_ib(i)%gbl_patch_id
 #:set num_dims              = {num_dims}
 #:set num_vels              = {num_vels}
 #:set nterms                = {nterms}
-#:set num_fluids            = {int(self.params["num_fluids"])}
+#:set num_fluids            = {int(self.params.get("num_fluids", 1))}
 #:set wenojs                = {wenojs}
 #:set mapped_weno           = {mapped_weno}
 #:set wenoz                 = {wenoz}

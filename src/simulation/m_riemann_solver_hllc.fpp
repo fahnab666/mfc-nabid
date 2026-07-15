@@ -1111,17 +1111,17 @@ contains
                     $:END_GPU_PARALLEL_LOOP()
                 else
                     ! 5-equation model (model_eqns=2): mixture total energy, volume fraction advection
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[Re_max, i, q, T_L, T_R, vel_L_rms, vel_R_rms, pres_L, pres_R, &
-                                        & rho_L, gamma_L, pi_inf_L, qv_L, rho_R, gamma_R, pi_inf_R, qv_R, alpha_L_sum, &
-                                        & alpha_R_sum, E_L, E_R, MW_L, MW_R, R_gas_L, R_gas_R, Cp_L, Cp_R, Cv_L, Cv_R, Gamm_L, &
-                                        & Gamm_R, Y_L, Y_R, H_L, H_R, qv_avg, rho_avg, gamma_avg, H_avg, c_L, c_R, c_avg, s_P, &
-                                        & s_M, xi_P, xi_M, xi_L, xi_R, xi_L_m1, xi_R_m1, Ms_L, Ms_R, pres_SL, pres_SR, vel_L, &
-                                        & vel_R, Re_L, Re_R, alpha_L, alpha_R, alpha_rho_L, alpha_rho_R, alpha_lim_L, &
-                                        & alpha_lim_R, s_L, s_R, s_S, vel_avg_rms, pcorr, zcoef, vel_L_tmp, vel_R_tmp, Ys_L, &
-                                        & Ys_R, Xs_L, Xs_R, Gamma_iL, Gamma_iR, Cp_iL, Cp_iR, tau_e_L, tau_e_R, xi_field_L, &
-                                        & xi_field_R, Yi_avg, Phi_avg, h_iL, h_iR, h_avg_2, G_L, G_R, c_sum_Yi_Phi, flux_ene_e, &
-                                        & e_jwl_L, e_jwl_R, Y_jwl_L, Y_jwl_R, lambda_jwl_L, lambda_jwl_R]', copyin='[is1, is2, &
-                                        & is3]', firstprivate='[Re_size_loc1, Re_size_loc2]')
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[i, q, T_L, T_R, vel_L_rms, vel_R_rms, pres_L, pres_R, rho_L, &
+                                        & gamma_L, pi_inf_L, qv_L, rho_R, gamma_R, pi_inf_R, qv_R, alpha_L_sum, alpha_R_sum, E_L, &
+                                        & E_R, MW_L, MW_R, R_gas_L, R_gas_R, Cp_L, Cp_R, Cv_L, Cv_R, Gamm_L, Gamm_R, Y_L, Y_R, &
+                                        & H_L, H_R, qv_avg, rho_avg, gamma_avg, H_avg, c_L, c_R, c_avg, s_P, s_M, xi_P, xi_M, &
+                                        & xi_L, xi_R, xi_L_m1, xi_R_m1, Ms_L, Ms_R, pres_SL, pres_SR, vel_L, vel_R, Re_L, Re_R, &
+                                        & alpha_L, alpha_R, alpha_rho_L, alpha_rho_R, alpha_lim_L, alpha_lim_R, s_L, s_R, s_S, &
+                                        & vel_avg_rms, pcorr, zcoef, vel_L_tmp, vel_R_tmp, Ys_L, Ys_R, Xs_L, Xs_R, Gamma_iL, &
+                                        & Gamma_iR, Cp_iL, Cp_iR, tau_e_L, tau_e_R, xi_field_L, xi_field_R, Yi_avg, Phi_avg, &
+                                        & h_iL, h_iR, h_avg_2, G_L, G_R, c_sum_Yi_Phi, flux_ene_e, e_jwl_L, e_jwl_R, Y_jwl_L, &
+                                        & Y_jwl_R, lambda_jwl_L, lambda_jwl_R]', copyin='[is1, is2, is3]', &
+                                        & firstprivate='[Re_size_loc1, Re_size_loc2]')
                     do l = ${Z_BND}$%beg, ${Z_BND}$%end
                         do k = ${Y_BND}$%beg, ${Y_BND}$%end
                             do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -1250,7 +1250,7 @@ contains
                                             lambda_jwl_L = min(max(qL_prim_rsx_vf(${SF('')}$, eqn_idx%rxn), 0._wp), 1._wp)
                                             lambda_jwl_R = min(max(qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%rxn), 0._wp), 1._wp)
                                         end if
-                                        @:JWL_RECONSTRUCT_ENERGY()
+                                        @:JWL_RECONSTRUCT_ENERGY_C()
                                         H_L = (E_L + pres_L)/rho_L
                                         H_R = (E_R + pres_R)/rho_R
                                     #:endif
@@ -1294,10 +1294,8 @@ contains
                                 @:compute_average_state()
 
                                 #:if not MFC_CASE_OPTIMIZATION or jwl_active
-                                    if (jwl_idx > 0) then
-                                        call s_compute_jwl_speed_of_sound(pres_L, rho_L, Y_jwl_L, c_L, lambda_jwl_L)
-                                        call s_compute_jwl_speed_of_sound(pres_R, rho_R, Y_jwl_R, c_R, lambda_jwl_R)
-                                    else
+                                    ! JWL c_L/c_R were produced with the face energy above.
+                                    if (jwl_idx <= 0) then
                                     #:endif
                                     call s_compute_speed_of_sound(pres_L, rho_L, gamma_L, pi_inf_L, H_L, alpha_L, vel_L_rms, &
                                                                   & 0._wp, c_L, qv_L)

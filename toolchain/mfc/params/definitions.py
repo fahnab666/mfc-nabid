@@ -686,6 +686,7 @@ def _load():
         "qm_wrt",
         "liutex_wrt",
         "cf_wrt",
+        "jwl_wrt",
         "sim_data",
         "output_partial_domain",
     ]:
@@ -843,6 +844,7 @@ def _load():
             _r(f"{px}a({j})", REAL)
         _r(f"{px}pres", A_REAL, math=r"\f$p\f$")
         _r(f"{px}cf_val", A_REAL)
+        _r(f"{px}rxn_val", A_REAL)
         # MHD fields
         for a, sym in [("Bx", r"\f$B_x\f$"), ("By", r"\f$B_y\f$"), ("Bz", r"\f$B_z\f$")]:
             _r(f"{px}{a}", A_REAL, {"mhd"}, math=sym)
@@ -1485,6 +1487,7 @@ _nv(
     "E_wrt",
     "pres_wrt",
     "c_wrt",
+    "jwl_wrt",
     "gamma_wrt",
     "heat_ratio_wrt",
     "pi_inf_wrt",
