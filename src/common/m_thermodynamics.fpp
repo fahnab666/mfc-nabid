@@ -159,7 +159,7 @@ contains
     !! aborts, because GPU device code cannot. Later adapters (Mie-Gruneisen, JWL) tighten the admissible domain here.
     pure function f_validate_state(sound_speed_sq) result(is_admissible)
 
-        $:GPU_ROUTINE(parallelism='[seq]')
+        $:GPU_ROUTINE(function_name='f_validate_state', parallelism='[seq]', cray_inline=True)
 
         real(wp), intent(in) :: sound_speed_sq
         logical              :: is_admissible
@@ -174,7 +174,7 @@ contains
     !! speed, so the one derivative lives in one place.
     pure function f_bulk_modulus(gamma, pres, pi_inf) result(blkmod)
 
-        $:GPU_ROUTINE(parallelism='[seq]')
+        $:GPU_ROUTINE(function_name='f_bulk_modulus', parallelism='[seq]', cray_inline=True)
 
         real(wp), intent(in) :: gamma, pres, pi_inf
         real(wp)             :: blkmod
