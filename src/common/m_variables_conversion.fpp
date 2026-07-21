@@ -290,7 +290,10 @@ contains
             do i = 1, nf
                 rho_K = rho_K + alpha_rho_K(i)
                 if (eos_fl(i) == eos_jwl) then
-                    rho_i = alpha_rho_K(i)/max(alpha_K(i), sgm_eps)
+                    ! Both floors matter: a vanished phase (alpha_rho exactly 0, e.g. after the
+                    ! mpp_lim clamp) would otherwise give rho_i = 0 and Inf*0 = NaN inside the
+                    ! reference curve; its contributions below are still weighted to zero.
+                    rho_i = max(alpha_rho_K(i), sgm_eps)/max(alpha_K(i), sgm_eps)
                     call s_mg_jwl_reference(jwl_As(i), jwl_Bs(i), jwl_R1s(i), jwl_R2s(i), jwl_omegas(i), jwl_rho0s(i), rho_i, &
                                             & gamma_mg, p_ref, dp_ref, e_ref, de_ref)
                     gamma_K = gamma_K + alpha_K(i)/gamma_mg
@@ -348,7 +351,9 @@ contains
         end do
         mg_mixture = any(eos_fl(1:num_fluids) == eos_jwl)
         $:GPU_UPDATE(device='[gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc]')
-        $:GPU_UPDATE(device='[eos_fl, jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, mg_mixture]')
+        ! mixture_closure joins this update so the device copy read by s_mg_mixture_variables is
+        ! refreshed from this translation unit (amdflang can otherwise see a stale cross-TU value).
+        $:GPU_UPDATE(device='[eos_fl, jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, mg_mixture, mixture_closure]')
 
 #ifdef MFC_SIMULATION
         if (viscous) then
