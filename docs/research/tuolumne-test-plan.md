@@ -44,9 +44,10 @@ compiler; watch build 1 and 3 logs for INLINEALWAYS diagnostics.
 
 1. Full golden suite, CPU, Cray ftn: `./mfc.sh test -j 32`. Expect 618/618. Any diff on a
    pre-existing test is a bug in the stack, not noise; do not regenerate goldens.
-2. Full golden suite, GPU: `./mfc.sh test -j 8 --gpu` (check `test --help` for the current
-   GPU flag form on this MFC revision). The three JWL tests (976FEEC6 and the two example
-   tests) run the mg_mixture path on device for the first time.
+2. Full golden suite, GPU (inside a Flux allocation):
+   `./mfc.sh test -j 4 --gpu mp -g 0 1 2 3`. The three JWL tests (976FEEC6 and the two
+   example tests) run the mg_mixture path on device for the first time; to smoke them
+   first: `./mfc.sh test --gpu mp -g 0 -o 976FEEC6 8F3DAFFE 5B8C364F`.
 3. CPU versus GPU agreement on the two JWL examples: run
    `examples/1D_jwl_shocktube` and `examples/1D_jwl_products_expansion` in both modes and
    diff the final D data to tolerance. This is the direct check that the JWL accumulator,
@@ -73,9 +74,9 @@ compiler; watch build 1 and 3 logs for INLINEALWAYS diagnostics.
    builds. This is the first GPU timing of the stack anywhere. The stiffened hot path
    should be identical to master; the only new device code behind `if (mg_mixture)` is
    never taken in the bench cases.
-3. Weak scaling: HLLC bench case at 1, 2, 4, 8 nodes (4 APUs per node) with fixed memory
-   per rank, submitted through Flux:
-   `./mfc.sh run benchmarks/5eq_rk3_weno3_hllc/case.py -e batch -N <nodes> -n 4 ...`.
+3. Weak scaling: HLLC bench case at 1, 2, 4, and 8 ranks (up to 2 nodes x 4 APUs) with
+   fixed memory per rank, submitted through Flux:
+   `./mfc.sh run benchmarks/5eq_rk3_weno3_hllc/case.py -e batch -c tuo -N <nodes> -n <ranks_per_node> -w 00:15:00 -a <bank> -t pre_process simulation --output-summary <artifact>.yaml`.
    Compare parallel efficiency base versus combined. The stack changes no MPI code, so
    any efficiency delta indicates a problem.
 4. JWL-specific grind: time the JWL shocktube at production resolution on one APU and
@@ -208,3 +209,75 @@ fits at the end of this session on one rank.
 CPU versus GPU agreement diffs, bench_diff tables, and the Phase 4 report are all offline
 post-processing of session artifacts. Any red result stops the line for that lane; report
 it with the log rather than working around it.
+
+## Appendix A: artifact convention
+
+One directory per session under `$HOME/eos_ladder_runs/`, named
+`s<session>_<tree>_<mode>/`, e.g. `s2_combined_gpu/`. Every run writes an
+`--output-summary` yaml into it, and every session directory gets a copy of the tree's
+`build/lock.yaml` and the `git rev-parse HEAD` it ran. A result without its lock and SHA
+is not evidence; the lock file is what caught an invalid benchmark locally.
+
+## Appendix B: session command blocks
+
+Login node, once per tree (base at 0857ace, combined at feature/eos-combined):
+
+    source ./mfc.sh load -c tuo -m c
+    ./mfc.sh build -j 16                          # CPU Release
+    ./mfc.sh build -j 16 --debug                  # compile gate
+    ./mfc.sh build -j 16 --mixed                  # compile gate (fix 362793d2)
+    ./mfc.sh build -j 16 --single                 # compile gate
+    source ./mfc.sh load -c tuo -m g
+    ./mfc.sh build -j 16 --gpu mp                 # Cray ftn offload
+    (amdflang build per toolchain/modules AMD entries, if configured for tuo)
+
+Session 0, CPU suite (1 node, interactive allocation):
+
+    flux alloc -N 1 -t 60m
+    source ./mfc.sh load -c tuo -m c
+    ./mfc.sh test -j 32 2>&1 | tee $ART/s0_suite.log     # expect 618 passed, 0 failed
+
+Session 1, GPU correctness (1 node):
+
+    flux alloc -N 1 -t 60m
+    source ./mfc.sh load -c tuo -m g
+    ./mfc.sh test --gpu mp -g 0 -o 976FEEC6 8F3DAFFE 5B8C364F   # JWL on device first
+    ./mfc.sh test -j 4 --gpu mp -g 0 1 2 3                       # then the full GPU set
+    ./mfc.sh run examples/1D_jwl_shocktube/case.py -t pre_process simulation
+    ./mfc.sh run examples/1D_jwl_products_expansion/case.py -t pre_process simulation
+    (repeat the shocktube with the amdflang binary, then with mpp_lim = T in the case)
+
+Session 2, single-APU bench (1 node, run per tree, interleave if tight):
+
+    ./mfc.sh bench -m 1 -j 8 -o $ART/s2_<tree>_gpu.yaml
+    # offline: ./mfc.sh bench_diff s2_base_gpu.yaml s2_combined_gpu.yaml
+
+Session 3, scaling (2 nodes): submit all eight runs (1, 2, 4, 8 ranks x both trees) as
+batch jobs at session start so they pack the hour:
+
+    ./mfc.sh run benchmarks/5eq_rk3_weno3_hllc/case.py -e batch -c tuo \
+        -N <nodes> -n <ranks_per_node> -w 00:12:00 -a <bank> \
+        -t pre_process simulation --output-summary $ART/s3_<tree>_r<ranks>.yaml
+
+## Appendix C: pass and fail criteria
+
+| Check | Pass | Action on fail |
+|---|---|---|
+| Compile matrix (6 configs x 2 trees) | all build | capture the full build log; the config name is the finding |
+| CPU suite | 618 passed, 0 failed | do not regenerate goldens; diff is the bug report |
+| GPU suite | same pass set as CPU | isolate the first failing UUID with `-o <uuid>` |
+| CPU vs GPU JWL examples | final D data agree to golden tolerance | dump both, bisect field by field |
+| amdflang JWL shocktube | finite nonzero pressure everywhere | suspect the mixture_closure device copy first (commit 09fa0a17) |
+| mpp_lim products run | completes, finite output | suspect the vanished-phase floor (commit 09fa0a17) |
+| GPU bench pair | every case within 5 percent, no one-sided trend | rerun the outlier alternating, as done for hypo_hll and HLLC locally |
+| Scaling | efficiency delta base vs combined under 2 percent at 8 ranks | check GPU_UPDATE placement around MPI in the diff |
+
+## Appendix D: failure triage kit
+
+Capture before leaving any failed session: the run directory, `build/lock.yaml`, the git
+SHA, `module list` output, and for GPU failures `rocm-smi` and the value of `HSA_XNACK`.
+On Cray, rebuild the failing target with `--debug` and rerun once; the bounds checker
+turns most silent wrong answers into a named line number. If a GPU result is wrong but
+CPU is right on the same binary tree, the first suspects in this stack are, in order:
+device copies of `mixture_closure`, `eos_fl`, and the `jwl_*` arrays (all updated at
+m_variables_conversion line ~350), then the `@:accumulate_mixture` dispatch sites.
