@@ -91,3 +91,13 @@
         end if
     end if
 #:enddef compute_low_Mach_correction
+
+#:def accumulate_mixture(nf, arho, alpha, rho, gamma, pi_inf, qv)
+    ! The mg_mixture dispatch lives here at the call site so s_accumulate_mixture_properties stays a leaf the
+    ! compiler inlines into the flux kernels; embedding the branch in the callee costs several percent of grind time.
+    if (mg_mixture) then
+        call s_mg_mixture_variables(${nf}$, ${arho}$, ${alpha}$, ${rho}$, ${gamma}$, ${pi_inf}$, ${qv}$)
+    else
+        call s_accumulate_mixture_properties(${nf}$, ${arho}$, ${alpha}$, ${rho}$, ${gamma}$, ${pi_inf}$, ${qv}$)
+    end if
+#:enddef accumulate_mixture

@@ -289,7 +289,11 @@ contains
             $:GPU_LOOP(parallelism='[seq]')
             do i = 1, nf
                 rho_K = rho_K + alpha_rho_K(i)
-                if (eos_fl(i) == eos_jwl) then
+                ! Each Mie-Gruneisen family is one case arm: it evaluates its reference curve
+                ! (Gamma, p_ref, dp_ref, e_ref, de_ref) at the phasic density and folds it into
+                ! the same three accumulator slots. A new family only adds a case here.
+                select case (eos_fl(i))
+                case (eos_jwl)
                     ! Both floors matter: a vanished phase (alpha_rho exactly 0, e.g. after the
                     ! mpp_lim clamp) would otherwise give rho_i = 0 and Inf*0 = NaN inside the
                     ! reference curve; its contributions below are still weighted to zero.
@@ -299,11 +303,13 @@ contains
                     gamma_K = gamma_K + alpha_K(i)/gamma_mg
                     pi_inf_K = pi_inf_K + alpha_K(i)*((rho_i*dp_ref - p_ref)/gamma_mg - p_ref)
                     qv_K = qv_K + alpha_rho_K(i)*(e_ref + rho_i*de_ref - dp_ref/gamma_mg)
-                else
+                case default
+                    ! Stiffened gas keeps its legacy slot arithmetic verbatim so all-stiffened
+                    ! cells stay bit-identical to the master accumulators.
                     gamma_K = gamma_K + alpha_K(i)*gammas(i)
                     pi_inf_K = pi_inf_K + alpha_K(i)*pi_infs(i)
                     qv_K = qv_K + alpha_rho_K(i)*qvs(i)
-                end if
+                end select
             end do
         end select
 
