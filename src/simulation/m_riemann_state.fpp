@@ -1012,7 +1012,9 @@ contains
 
     !> Accumulate the mixture density, specific heat ratio function, liquid stiffness function, and internal energy reference of one
     !! Riemann state from its partial densities and volume fractions. The number of fluids is an explicit argument because the
-    !! 5-equation bubble model accumulates over num_fluids - 1 fluids.
+    !! 5-equation bubble model accumulates over num_fluids - 1 fluids. The mg_mixture dispatch lives at the call sites, not here:
+    !! embedding the cross-module s_mg_mixture_variables call in this routine stops it being inlined into the flux kernels and costs
+    !! several percent of HLLC grind time even when the branch is never taken.
     subroutine s_accumulate_mixture_properties(nf, alpha_rho_K, alpha_K, rho_K, gamma_K, pi_inf_K, qv_K)
 
         $:GPU_ROUTINE(function_name='s_accumulate_mixture_properties', parallelism='[seq]', cray_inline=True)
@@ -1021,11 +1023,6 @@ contains
         real(wp), dimension(nf), intent(in) :: alpha_rho_K, alpha_K
         real(wp), intent(out)               :: rho_K, gamma_K, pi_inf_K, qv_K
         integer                             :: i   !< Loop iterator over fluids
-
-        if (mg_mixture) then
-            call s_mg_mixture_variables(nf, alpha_rho_K, alpha_K, rho_K, gamma_K, pi_inf_K, qv_K)
-            return
-        end if
 
         rho_K = 0._wp
         gamma_K = 0._wp

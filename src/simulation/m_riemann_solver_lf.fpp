@@ -194,8 +194,18 @@ contains
                                 alpha_R = alpha_R/max(alpha_R_sum, sgm_eps)
                             end if
 
-                            call s_accumulate_mixture_properties(num_fluids, alpha_rho_L, alpha_L, rho_L, gamma_L, pi_inf_L, qv_L)
-                            call s_accumulate_mixture_properties(num_fluids, alpha_rho_R, alpha_R, rho_R, gamma_R, pi_inf_R, qv_R)
+                            if (mg_mixture) then
+                                call s_mg_mixture_variables(num_fluids, alpha_rho_L, alpha_L, rho_L, gamma_L, pi_inf_L, qv_L)
+                            else
+                                call s_accumulate_mixture_properties(num_fluids, alpha_rho_L, alpha_L, rho_L, gamma_L, pi_inf_L, &
+                                                                     & qv_L)
+                            end if
+                            if (mg_mixture) then
+                                call s_mg_mixture_variables(num_fluids, alpha_rho_R, alpha_R, rho_R, gamma_R, pi_inf_R, qv_R)
+                            else
+                                call s_accumulate_mixture_properties(num_fluids, alpha_rho_R, alpha_R, rho_R, gamma_R, pi_inf_R, &
+                                                                     & qv_R)
+                            end if
 
                             if (viscous) then
                                 call s_compute_interface_reynolds(alpha_L, Re_L, Re_size_loc1, Re_size_loc2)

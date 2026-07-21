@@ -222,10 +222,18 @@ contains
                                     alpha_R(i) = qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%adv%beg + i - 1)
                                 end do
 
-                                call s_accumulate_mixture_properties(num_fluids, alpha_rho_L, alpha_L, rho_L, gamma_L, pi_inf_L, &
-                                                                     & qv_L)
-                                call s_accumulate_mixture_properties(num_fluids, alpha_rho_R, alpha_R, rho_R, gamma_R, pi_inf_R, &
-                                                                     & qv_R)
+                                if (mg_mixture) then
+                                    call s_mg_mixture_variables(num_fluids, alpha_rho_L, alpha_L, rho_L, gamma_L, pi_inf_L, qv_L)
+                                else
+                                    call s_accumulate_mixture_properties(num_fluids, alpha_rho_L, alpha_L, rho_L, gamma_L, &
+                                                                         & pi_inf_L, qv_L)
+                                end if
+                                if (mg_mixture) then
+                                    call s_mg_mixture_variables(num_fluids, alpha_rho_R, alpha_R, rho_R, gamma_R, pi_inf_R, qv_R)
+                                else
+                                    call s_accumulate_mixture_properties(num_fluids, alpha_rho_R, alpha_R, rho_R, gamma_R, &
+                                                                         & pi_inf_R, qv_R)
+                                end if
 
                                 if (viscous) then
                                     call s_compute_interface_reynolds(alpha_L, Re_L, Re_size_loc1, Re_size_loc2)
@@ -547,10 +555,18 @@ contains
                                     alpha_R(i) = qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%E + i)
                                 end do
 
-                                call s_accumulate_mixture_properties(num_fluids, alpha_rho_L, alpha_L, rho_L, gamma_L, pi_inf_L, &
-                                                                     & qv_L)
-                                call s_accumulate_mixture_properties(num_fluids, alpha_rho_R, alpha_R, rho_R, gamma_R, pi_inf_R, &
-                                                                     & qv_R)
+                                if (mg_mixture) then
+                                    call s_mg_mixture_variables(num_fluids, alpha_rho_L, alpha_L, rho_L, gamma_L, pi_inf_L, qv_L)
+                                else
+                                    call s_accumulate_mixture_properties(num_fluids, alpha_rho_L, alpha_L, rho_L, gamma_L, &
+                                                                         & pi_inf_L, qv_L)
+                                end if
+                                if (mg_mixture) then
+                                    call s_mg_mixture_variables(num_fluids, alpha_rho_R, alpha_R, rho_R, gamma_R, pi_inf_R, qv_R)
+                                else
+                                    call s_accumulate_mixture_properties(num_fluids, alpha_rho_R, alpha_R, rho_R, gamma_R, &
+                                                                         & pi_inf_R, qv_R)
+                                end if
 
                                 pres_L = qL_prim_rsx_vf(${SF('')}$, eqn_idx%E)
                                 pres_R = qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%E)
@@ -751,15 +767,35 @@ contains
 
                                 ! Retain this in the refactor
                                 if (mpp_lim .and. (num_fluids > 2)) then
-                                    call s_accumulate_mixture_properties(num_fluids, alpha_rho_L, alpha_L, rho_L, gamma_L, &
-                                                                         & pi_inf_L, qv_L)
-                                    call s_accumulate_mixture_properties(num_fluids, alpha_rho_R, alpha_R, rho_R, gamma_R, &
-                                                                         & pi_inf_R, qv_R)
+                                    if (mg_mixture) then
+                                        call s_mg_mixture_variables(num_fluids, alpha_rho_L, alpha_L, rho_L, gamma_L, pi_inf_L, &
+                                                                    & qv_L)
+                                    else
+                                        call s_accumulate_mixture_properties(num_fluids, alpha_rho_L, alpha_L, rho_L, gamma_L, &
+                                                                             & pi_inf_L, qv_L)
+                                    end if
+                                    if (mg_mixture) then
+                                        call s_mg_mixture_variables(num_fluids, alpha_rho_R, alpha_R, rho_R, gamma_R, pi_inf_R, &
+                                                                    & qv_R)
+                                    else
+                                        call s_accumulate_mixture_properties(num_fluids, alpha_rho_R, alpha_R, rho_R, gamma_R, &
+                                                                             & pi_inf_R, qv_R)
+                                    end if
                                 else if (num_fluids > 2) then
-                                    call s_accumulate_mixture_properties(num_fluids - 1, alpha_rho_L, alpha_L, rho_L, gamma_L, &
-                                                                         & pi_inf_L, qv_L)
-                                    call s_accumulate_mixture_properties(num_fluids - 1, alpha_rho_R, alpha_R, rho_R, gamma_R, &
-                                                                         & pi_inf_R, qv_R)
+                                    if (mg_mixture) then
+                                        call s_mg_mixture_variables(num_fluids - 1, alpha_rho_L, alpha_L, rho_L, gamma_L, &
+                                                                    & pi_inf_L, qv_L)
+                                    else
+                                        call s_accumulate_mixture_properties(num_fluids - 1, alpha_rho_L, alpha_L, rho_L, &
+                                                                             & gamma_L, pi_inf_L, qv_L)
+                                    end if
+                                    if (mg_mixture) then
+                                        call s_mg_mixture_variables(num_fluids - 1, alpha_rho_R, alpha_R, rho_R, gamma_R, &
+                                                                    & pi_inf_R, qv_R)
+                                    else
+                                        call s_accumulate_mixture_properties(num_fluids - 1, alpha_rho_R, alpha_R, rho_R, &
+                                                                             & gamma_R, pi_inf_R, qv_R)
+                                    end if
                                 else
                                     rho_L = qL_prim_rsx_vf(${SF('')}$, 1)
                                     gamma_L = gammas(1)
@@ -1162,10 +1198,20 @@ contains
                                     alpha_lim_R(i) = qR_prim_rsx_vf(${SF(' + 1')}$, eqn_idx%E + i)
                                 end do
 
-                                call s_accumulate_mixture_properties(num_fluids, alpha_rho_L, alpha_lim_L, rho_L, gamma_L, &
-                                                                     & pi_inf_L, qv_L)
-                                call s_accumulate_mixture_properties(num_fluids, alpha_rho_R, alpha_lim_R, rho_R, gamma_R, &
-                                                                     & pi_inf_R, qv_R)
+                                if (mg_mixture) then
+                                    call s_mg_mixture_variables(num_fluids, alpha_rho_L, alpha_lim_L, rho_L, gamma_L, pi_inf_L, &
+                                                                & qv_L)
+                                else
+                                    call s_accumulate_mixture_properties(num_fluids, alpha_rho_L, alpha_lim_L, rho_L, gamma_L, &
+                                                                         & pi_inf_L, qv_L)
+                                end if
+                                if (mg_mixture) then
+                                    call s_mg_mixture_variables(num_fluids, alpha_rho_R, alpha_lim_R, rho_R, gamma_R, pi_inf_R, &
+                                                                & qv_R)
+                                else
+                                    call s_accumulate_mixture_properties(num_fluids, alpha_rho_R, alpha_lim_R, rho_R, gamma_R, &
+                                                                         & pi_inf_R, qv_R)
+                                end if
 
                                 if (viscous) then
                                     call s_compute_interface_reynolds(alpha_L, Re_L, Re_size_loc1, Re_size_loc2)
