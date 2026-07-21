@@ -1479,6 +1479,49 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                 )
             )
 
+    def alter_jwl(dimInfo):
+        # JWL products + ideal air through the generalized Mie-Gruneisen mixture
+        # accumulators, with pure-phase and mixed-cell patches. Synthetic O(1)
+        # coefficients; every patch state is admissible (e > 0, c^2 > 0) against the
+        # principal isentrope p_s(rho=1) ~ 2.97.
+        if len(dimInfo[0]) != 1:
+            return
+
+        eps = 1e-06
+        stack.push(
+            "JWL EOS",
+            {
+                "num_fluids": 2,
+                "riemann_solver": 2,
+                "fluid_pp(1)%eos": 4,
+                "fluid_pp(1)%jwl_A": 50.0,
+                "fluid_pp(1)%jwl_B": 8.0,
+                "fluid_pp(1)%jwl_R1": 4.5,
+                "fluid_pp(1)%jwl_R2": 1.2,
+                "fluid_pp(1)%jwl_omega": 0.3,
+                "fluid_pp(1)%jwl_rho0": 1.0,
+                "fluid_pp(2)%gamma": 1.0e00 / (1.4 - 1.0e00),
+                "fluid_pp(2)%pi_inf": 0.0,
+                "patch_icpp(1)%pres": 10.0,
+                "patch_icpp(1)%alpha(1)": 1 - eps,
+                "patch_icpp(1)%alpha_rho(1)": 1.0 * (1 - eps),
+                "patch_icpp(1)%alpha(2)": eps,
+                "patch_icpp(1)%alpha_rho(2)": 0.5 * eps,
+                "patch_icpp(2)%pres": 5.0,
+                "patch_icpp(2)%alpha(1)": 0.5,
+                "patch_icpp(2)%alpha_rho(1)": 0.5,
+                "patch_icpp(2)%alpha(2)": 0.5,
+                "patch_icpp(2)%alpha_rho(2)": 0.25,
+                "patch_icpp(3)%pres": 1.0,
+                "patch_icpp(3)%alpha(1)": eps,
+                "patch_icpp(3)%alpha_rho(1)": 1.0 * eps,
+                "patch_icpp(3)%alpha(2)": 1 - eps,
+                "patch_icpp(3)%alpha_rho(2)": 0.5 * (1 - eps),
+            },
+        )
+        cases.append(define_case_d(stack, "", {}))
+        stack.pop()
+
     def alter_phasechange(dimInfo):
         ndims = len(dimInfo[0])
 
@@ -1921,6 +1964,7 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             alter_acoustic_src(dimInfo)
             alter_bubbles(dimInfo)
             alter_hypoelasticity(dimInfo)
+            alter_jwl(dimInfo)
             alter_phasechange(dimInfo)
             alter_viscosity(dimInfo)
             alter_elliptic_smoothing()
