@@ -93,6 +93,46 @@ compiler; watch build 1 and 3 logs for INLINEALWAYS diagnostics.
 2. PR2/PR3: build matrix results only; they have no hot-path exposure.
 3. PR4a/PR5: the CPU versus GPU agreement runs and the JWL cost factor.
 
+## Phase 5: maintainability, mergeability, and scalability audits
+
+These need no GPU time; run them anywhere.
+
+Maintainability
+1. `./mfc.sh precheck` must stay green on every commit of the stack (already enforced
+   locally by the hook; re-run once on Tuolumne to catch platform-dependent lint).
+2. Extension-point drill: add a dummy EOS family end to end (enum value, one `case` arm
+   in `s_mg_mixture_variables`, validator rejection) and count the touched files. The
+   target is three; more means a dispatch site has leaked outside the sanctioned points
+   (`select case (eos_fl(i))` and the `@:accumulate_mixture` macro). Revert the drill
+   commit afterwards.
+3. Grep audit that no solver file computes EOS algebra outside `m_thermodynamics` and
+   `m_eos_mie_gruneisen`, and that `mg_mixture` dispatch appears only via the macro and
+   the two conversion sites.
+4. Doc freshness: `lint_docs` runs inside precheck; confirm `case.md`, `contributing.md`,
+   and this plan still reference existing symbols after any rebase.
+
+Mergeability
+1. Rebase the ladder onto current upstream master (`MFlowCode/MFC`) in a scratch clone
+   and record the conflict surface per PR. The ladder is only submittable if PR1 rebases
+   clean; later rungs may conflict with each other by design (they stack).
+2. Per-rung independence check: build and run the golden suite at each rung boundary
+   (PR1 tip, PR1+2, PR1+2+3, full stack) so every PR is individually green and the
+   maintainer can merge them one at a time. The rung tips exist as local branches;
+   re-verify after any rebase.
+3. Diff budget per rung: report net LOC and files touched per PR against the request in
+   each PR body. Anything that grew during the fix cycle gets rechecked against scope.
+4. Golden-file discipline: the stack must add goldens only for new JWL tests and change
+   zero pre-existing goldens; `git diff master --stat tests/` is the one-line check.
+
+Scalability (beyond the Phase 3 node scaling)
+1. Feature scaling: the extension-point drill above is the code-scalability test; the
+   Phase 3 JWL cell-cost factor is the physics-cost test.
+2. Fluid-count scaling: run the JWL mixture test at num_fluids = 2 and 3 (JWL + two
+   ambients) and confirm grind scales linearly with the accumulator loop, no worse.
+3. Problem-size scaling on one APU: the JWL shocktube at 4x and 16x resolution;
+   grind per cell should be flat, showing the JWL path is compute-bound like the rest
+   of the solver rather than memory-pathological.
+
 ## Improvement plan by PR
 
 PR1 (thermodynamics interface)
@@ -131,10 +171,40 @@ PR5 (material files)
 2. Extend `EOS_FAMILIES` with `mie_gruneisen` when PR3's family goes live, and later a
    `table` family whose data loads through the same provenance-gated mechanism.
 
-## Execution order on Tuolumne
+## Execution plan for 1-hour sessions, 2 nodes, 4 APUs per node
 
-Day 1: Phase 0 and builds 1 to 6 (compile matrix), Phase 2 items 1 and 6.
-Day 2: Phase 2 items 2 to 5 (GPU correctness), Phase 3 items 1 and 2.
-Day 3: Phase 3 items 3 to 5 (scaling), assemble the Phase 4 report.
-Any red result stops the line for that lane; report it with the log rather than working
-around it.
+All runs go through the APU nodes: CPU-mode runs use the Zen 4 cores of the same MI300A
+nodes, GPU-mode runs use the accelerators. Only compilation and post-processing happen on
+the login nodes. Prebuild everything before each session so the hour starts computing.
+
+On the login node before any session (no allocation needed):
+1. Phase 0 setup, then all six builds of the matrix on both trees. The `--mixed` and
+   `--debug` configurations are compile-only gates and are finished the moment they build.
+2. Toolchain pytest.
+3. Prebuild the GPU binaries (`-m g`, `--gpu mp`, Cray ftn and amdflang) so no session
+   burns time compiling.
+
+Session 0 (1 node, CPU mode): the CPU golden suite (618 tests) under Cray ftn with high
+`-j` across the node's cores; it takes about ten minutes locally at `-j 8`, so one hour
+on a Tuolumne node covers it with room for the Phase 5 rung-boundary suite repeats.
+
+Session 1 (1 node is enough, correctness): GPU golden subset including the three JWL
+tests; both JWL examples on one APU; dump final D data. If time remains, the amdflang
+binary repeat of the JWL shocktube (stale-selector check) and the `mpp_lim` run. All are
+small 1D cases; this fits in well under an hour.
+
+Session 2 (1 node, single-APU performance): GPU bench pair, base then combined, one APU,
+identical locks. The seven cases at `--mem 1` are sized for a single device; interleave
+base and combined per case if the hour looks tight so partial results are still paired.
+Compare offline with `bench_diff` after the session.
+
+Session 3 (2 nodes, scaling): HLLC bench case at 1, 2, 4, and 8 ranks (up to the full
+2 nodes x 4 APUs) with fixed memory per rank, base and combined. Eight short runs; submit
+them as one Flux script so scheduling gaps do not eat the hour. This replaces the
+multi-day weak-scaling ladder; 8 APUs across 2 nodes already answers "does it scale" at
+the granularity the PR discussion needs, and the JWL cell-cost timing (Phase 3 item 4)
+fits at the end of this session on one rank.
+
+CPU versus GPU agreement diffs, bench_diff tables, and the Phase 4 report are all offline
+post-processing of session artifacts. Any red result stops the line for that lane; report
+it with the log rather than working around it.
