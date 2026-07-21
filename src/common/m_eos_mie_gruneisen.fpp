@@ -15,7 +15,8 @@ module m_eos_mie_gruneisen
     implicit none
 
     private
-    public :: s_mg_stiffened_reference, f_mg_pressure, f_mg_internal_energy, f_mg_dp_drho, f_mg_dp_de, f_mg_sound_speed_sq
+    public :: s_mg_stiffened_reference, s_mg_jwl_reference, f_mg_pressure, f_mg_internal_energy, f_mg_dp_drho, f_mg_dp_de, &
+        & f_mg_sound_speed_sq
 
 contains
 
@@ -35,6 +36,29 @@ contains
         de_ref = -pi_inf/rho**2
 
     end subroutine s_mg_stiffened_reference
+
+    !> JWL principal isentrope as a Mie-Gruneisen reference curve (Arienti et al. 2004, Eq. 39): with V = rho0/rho, p_ref =
+    !! A*exp(-R1*V) + B*exp(-R2*V), e_ref its isentrope energy, Gamma = omega, and the density derivatives, sharing the two
+    !! exponentials. Coefficients are user-supplied case parameters; no material data lives here.
+    pure subroutine s_mg_jwl_reference(jwl_A, jwl_B, jwl_R1, jwl_R2, jwl_omega, jwl_rho0, rho, gamma_mg, p_ref, dp_ref, e_ref, &
+                                       & de_ref)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        real(wp), intent(in)  :: jwl_A, jwl_B, jwl_R1, jwl_R2, jwl_omega, jwl_rho0, rho
+        real(wp), intent(out) :: gamma_mg, p_ref, dp_ref, e_ref, de_ref
+        real(wp)              :: V, E1, E2
+
+        V = jwl_rho0/rho
+        E1 = jwl_A*exp(-jwl_R1*V)
+        E2 = jwl_B*exp(-jwl_R2*V)
+        gamma_mg = jwl_omega
+        p_ref = E1 + E2
+        dp_ref = (V/rho)*(jwl_R1*E1 + jwl_R2*E2)
+        e_ref = E1/(jwl_rho0*jwl_R1) + E2/(jwl_rho0*jwl_R2)
+        de_ref = p_ref/rho**2
+
+    end subroutine s_mg_jwl_reference
 
     !> p = p_ref + Gamma*rho*(e - e_ref).
     pure function f_mg_pressure(gamma_mg, rho, e_int, p_ref, e_ref) result(pres)

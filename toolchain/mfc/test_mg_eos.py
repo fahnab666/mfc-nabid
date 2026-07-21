@@ -119,6 +119,75 @@ def test_isentrope_self_consistency():
         assert rel(de_ref, p_ref / rho**2) < 1.0e-13
 
 
+def mixture_accumulators(alphas, alpha_rhos, fluids):
+    """MFC's generalized gamma/pi_inf/qv mixture accumulators (the exact five-equation
+    pressure-equilibrium closure), mirroring the MG branch in m_variables_conversion.
+    A fluid is ('sg', gamma_s, pi_inf, qv) or ('jwl', A, B, R1, R2, omega, rho0)."""
+    gamma = pi_inf = qv = 0.0
+    for a, ar, f in zip(alphas, alpha_rhos, fluids):
+        if f[0] == "sg":
+            _, gs, pi, qvi = f
+            gamma += a / (gs - 1.0)
+            pi_inf += a * gs * pi / (gs - 1.0)
+            qv += ar * qvi
+        else:
+            rho_i = ar / a
+            g, p_ref, dp_ref, e_ref, de_ref = jwl_reference(rho_i, *f[1:])
+            gamma += a / g
+            pi_inf += a * ((rho_i * dp_ref - p_ref) / g - p_ref)
+            qv += ar * (e_ref + rho_i * de_ref - dp_ref / g)
+    return gamma, pi_inf, qv
+
+
+def test_accumulators_reduce_to_stiffened():
+    """All-stiffened cells must reproduce MFC's classic accumulators term by term; this
+    is the identity that keeps every existing golden bit-identical."""
+    fluids = [("sg", 1.4, 0.0, 0.0), ("sg", 4.4, 6.0e8, -1167.0)]
+    alphas, alpha_rhos = [0.3, 0.7], [0.3 * 1.2, 0.7 * 1000.0]
+    gamma, pi_inf, qv = mixture_accumulators(alphas, alpha_rhos, fluids)
+    gamma_mfc = sum(a / (f[1] - 1.0) for a, f in zip(alphas, fluids))
+    pi_inf_mfc = sum(a * f[1] * f[2] / (f[1] - 1.0) for a, f in zip(alphas, fluids))
+    qv_mfc = sum(ar * f[3] for ar, f in zip(alpha_rhos, fluids))
+    assert rel(gamma, gamma_mfc) < 1.0e-14
+    assert rel(pi_inf, pi_inf_mfc) < 1.0e-14
+    assert rel(qv, qv_mfc) < 1.0e-14
+
+
+def test_mixture_pressure_recovery():
+    """For a JWL-plus-air mixed cell with a common pressure, the accumulator formula
+    p = (rho e - pi_inf - qv)/gamma must recover that pressure exactly: each MG fluid
+    has e_i linear in p at fixed rho_i, so the closure is closed form."""
+    A, B, R1, R2, omega, rho0 = JWL_PARAMS
+    fluids = [("jwl",) + JWL_PARAMS, ("sg", 1.4, 0.0, 0.0)]
+    for alpha_j in (1.0e-6, 0.25, 0.5, 0.9, 1.0 - 1.0e-6):
+        alphas = [alpha_j, 1.0 - alpha_j]
+        rhos = [1200.0, 1.2]
+        alpha_rhos = [a * r for a, r in zip(alphas, rhos)]
+        for pres in (1.0e5, 5.0e7, 2.0e9):
+            g, p_ref, _, e_ref, _ = jwl_reference(rhos[0], A, B, R1, R2, omega, rho0)
+            e_j = mg_internal_energy(g, rhos[0], pres, p_ref, e_ref)
+            e_a = mg_internal_energy(0.4, rhos[1], pres, 0.0, 0.0)
+            rho_e = alpha_rhos[0] * e_j + alpha_rhos[1] * e_a
+            gamma, pi_inf, qv = mixture_accumulators(alphas, alpha_rhos, fluids)
+            assert rel((rho_e - pi_inf - qv) / gamma, pres) < 1.0e-9
+            assert rel(gamma * pres + pi_inf + qv, rho_e) < 1.0e-9
+
+
+def test_single_fluid_sound_speed_slots():
+    """A pure JWL cell run through the accumulator slots must reproduce the analytic
+    frozen sound speed by both solver paths: c^2 = (h - qv/rho)/gamma and
+    rho c^2 = ((gamma+1)p + pi_inf)/gamma (f_bulk_modulus)."""
+    A, B, R1, R2, omega, rho0 = JWL_PARAMS
+    for rho, e in JWL_STATES:
+        g, p_ref, dp_ref, e_ref, de_ref = jwl_reference(rho, A, B, R1, R2, omega, rho0)
+        pres = mg_pressure(g, rho, e, p_ref, e_ref)
+        c2 = mg_sound_speed_sq(g, rho, pres, p_ref, dp_ref, de_ref)
+        gamma, pi_inf, qv = mixture_accumulators([1.0], [rho], [("jwl",) + JWL_PARAMS])
+        h = e + pres / rho
+        assert rel((h - qv / rho) / gamma, c2) < 1.0e-12
+        assert rel(((gamma + 1.0) * pres + pi_inf) / gamma, rho * c2) < 1.0e-12
+
+
 def test_admissibility_scan():
     """c^2 > 0 over the synthetic envelope for both reference curves."""
     A, B, R1, R2, omega, rho0 = JWL_PARAMS
