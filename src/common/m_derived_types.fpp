@@ -386,6 +386,12 @@ module m_derived_types
         real(wp)               :: cv             !< heat capacity
         real(wp)               :: qv             !< reference energy per unit mass for SGEOS, q (see Le Metayer (2004))
         real(wp)               :: qvp            !< reference entropy per unit mass for SGEOS, q' (see Le Metayer (2004))
+        real(wp)               :: jwl_A          !< JWL isentrope coefficient A (Pa)
+        real(wp)               :: jwl_B          !< JWL isentrope coefficient B (Pa)
+        real(wp)               :: jwl_R1         !< JWL isentrope exponent R1
+        real(wp)               :: jwl_R2         !< JWL isentrope exponent R2
+        real(wp)               :: jwl_omega      !< JWL Gruneisen coefficient omega
+        real(wp)               :: jwl_rho0       !< JWL reference (initial charge) density
         real(wp)               :: G
         logical                :: non_newtonian  !< Enable Herschel-Bulkley non-Newtonian viscosity
         real(wp)               :: K              !< HB consistency index

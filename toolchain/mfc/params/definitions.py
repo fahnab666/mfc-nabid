@@ -114,6 +114,12 @@ HINTS = {
         "qv": "Heat of formation",
         "qvp": "Heat of formation derivative",
         "eos": "Equation of state selector",
+        "jwl_A": "JWL isentrope coefficient A (Pa)",
+        "jwl_B": "JWL isentrope coefficient B (Pa)",
+        "jwl_R1": "JWL isentrope exponent R1",
+        "jwl_R2": "JWL isentrope exponent R2",
+        "jwl_omega": "JWL Gruneisen coefficient omega",
+        "jwl_rho0": "JWL reference (initial charge) density",
     },
 }
 
@@ -397,6 +403,13 @@ _EOS_VALUE_LABELS = {1: "stiffened-gas", 2: "ideal-gas mixture", 3: "Mie-Gruenei
 _EOS_NAMES = {"stiffened_gas": 1, "ideal_gas_mixture": 2, "mie_gruneisen": 3, "jwl": 4, "table": 5}
 for _f in range(1, NF + 1):
     CONSTRAINTS[f"fluid_pp({_f})%eos"] = {"choices": [1, 2, 3, 4, 5], "value_labels": _EOS_VALUE_LABELS, "names": _EOS_NAMES}
+
+# Mixed-cell EOS closure selector (values must match the mixture_closure_* constants
+# hand-written in src/common/m_constants.fpp). Only pressure_equilibrium is implemented;
+# the reserved values are rejected in the checkers until their own PRs land.
+_CLOSURE_VALUE_LABELS = {1: "exact pressure equilibrium", 2: "composition-weighted blend", 3: "modified composition-weighted", 4: "Kuhl mixture EOS"}
+_CLOSURE_NAMES = {"pressure_equilibrium": 1, "composition_weighted": 2, "modified_composition_weighted": 3, "kuhl": 4}
+CONSTRAINTS["mixture_closure"] = {"choices": [1, 2, 3, 4], "value_labels": _CLOSURE_VALUE_LABELS, "names": _CLOSURE_NAMES}
 
 # Parameter dependencies (requires, recommends)
 DEPENDENCIES = {
@@ -742,6 +755,7 @@ def _load():
         "igr_iter_solver",
         "nv_uvm_igr_temps_on_gpu",
         "flux_lim",
+        "mixture_closure",
     ]:
         _r(n, INT)
     _r("pref", REAL, math=r"\f$p_\text{ref}\f$")
@@ -889,6 +903,15 @@ def _load():
         for a, sym in [("gamma", r"\f$\gamma_k\f$"), ("pi_inf", r"\f$\pi_{\infty,k}\f$"), ("cv", r"\f$c_{v,k}\f$"), ("qv", r"\f$q_{v,k}\f$"), ("qvp", r"\f$q'_{v,k}\f$")]:
             _r(f"{px}{a}", REAL, math=sym)
         _r(f"{px}eos", INT, math=r"\f$\mathrm{EOS}_k\f$")
+        for a, sym in [
+            ("jwl_A", r"\f$A_k\f$"),
+            ("jwl_B", r"\f$B_k\f$"),
+            ("jwl_R1", r"\f$R_{1,k}\f$"),
+            ("jwl_R2", r"\f$R_{2,k}\f$"),
+            ("jwl_omega", r"\f$\omega_k\f$"),
+            ("jwl_rho0", r"\f$\rho_{0,k}\f$"),
+        ]:
+            _r(f"{px}{a}", REAL, math=sym)
         _r(f"{px}G", REAL, {"elasticity"}, math=r"\f$G_k\f$")
         _r(f"{px}Re(1)", REAL, {"viscosity"}, math=r"\f$\mathrm{Re}_k\f$ (shear)")
         _r(f"{px}Re(2)", REAL, {"viscosity"}, math=r"\f$\mathrm{Re}_k\f$ (bulk)")
@@ -1226,6 +1249,7 @@ _nv(
     "cfl_const_dt",
     "n_start",
     "model_eqns",
+    "mixture_closure",
     "mpp_lim",
     "relax",
     "relax_model",

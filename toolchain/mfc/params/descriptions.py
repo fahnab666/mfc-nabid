@@ -56,6 +56,7 @@ DESCRIPTIONS = {
     "num_patches": "Number of initial condition patches",
     "mpp_lim": "Enable mixture pressure positivity limiter",
     "mixture_err": "Enable mixture error checking",
+    "mixture_closure": "Mixed-cell EOS closure rule",
     "alt_soundspeed": "Use alternative sound speed formulation",
     # WENO reconstruction
     "weno_order": "Order of WENO reconstruction",

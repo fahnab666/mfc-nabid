@@ -483,6 +483,7 @@ See @ref equations "Equations" for the mathematical models these parameters cont
 | `adv_n`   	               | Logical | Solving directly for the number density (in the method of classes) and compute void fraction from the number density |
 | `mpp_lim`	                 | Logical | Mixture physical parameters limits |
 | `mixture_err`              | Logical | Mixture properties correction |
+| `mixture_closure`          | Integer | Mixed-cell EOS closure rule: [1] exact pressure equilibrium (default); [2] composition-weighted, [3] modified composition-weighted, [4] Kuhl (reserved for future PRs) |
 | `time_stepper`             | Integer | Runge--Kutta order [1-3] |
 | `adap_dt`                  | Logical | Strang splitting scheme with adaptive time stepping |
 | `recon_type`               | Integer | Reconstruction Type: [1] WENO; [2] MUSCL |
@@ -567,6 +568,8 @@ The effect and use of the source term are assessed by \cite Schmidmayer20.
 - `mpp_lim` activates correction of solutions to avoid a negative void fraction of each component in each grid cell, such that \f$\alpha_i>\varepsilon\f$ is satisfied at each time step.
 
 - `mixture_err` activates correction of solutions to avoid imaginary speed of sound at each grid cell.
+
+- `mixture_closure` selects how a mixed cell's pressure closes over the per-fluid equations of state. The default, `pressure_equilibrium`, is the exact closed-form rule for the 5-equation model, where each fluid's phasic density is known; it reduces to the standard stiffened-gas mixture rule when every fluid is stiffened gas. The remaining values (`composition_weighted`, `modified_composition_weighted`, `kuhl`) are reserved and rejected at validation until their implementations land.
 
 - `time_stepper` specifies the order of the Runge-Kutta (RK) time integration scheme that is used for temporal integration in simulation, from the 1st to 5th order by corresponding integer.
 Note that `time_stepper = 3` specifies the total variation diminishing (TVD), third order RK scheme (\cite Gottlieb98).

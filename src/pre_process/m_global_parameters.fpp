@@ -393,6 +393,12 @@ contains
             fluid_pp(i)%qv = 0._wp
             fluid_pp(i)%qvp = 0._wp
             fluid_pp(i)%eos = merge(eos_ideal_gas_mixture, eos_stiffened_gas, chemistry)
+            fluid_pp(i)%jwl_A = dflt_real
+            fluid_pp(i)%jwl_B = dflt_real
+            fluid_pp(i)%jwl_R1 = dflt_real
+            fluid_pp(i)%jwl_R2 = dflt_real
+            fluid_pp(i)%jwl_omega = dflt_real
+            fluid_pp(i)%jwl_rho0 = dflt_real
             fluid_pp(i)%G = 0._wp
             fluid_pp(i)%non_newtonian = .false.
             fluid_pp(i)%K = dflt_real
