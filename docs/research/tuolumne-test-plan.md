@@ -281,3 +281,49 @@ turns most silent wrong answers into a named line number. If a GPU result is wro
 CPU is right on the same binary tree, the first suspects in this stack are, in order:
 device copies of `mixture_closure`, `eos_fl`, and the `jwl_*` arrays (all updated at
 m_variables_conversion line ~350), then the `@:accumulate_mixture` dispatch sites.
+
+## Appendix E: final audit findings and platform watchpoints
+
+A four-dimension adversarially verified audit of the final branch state (macro rewrite,
+select case dispatch, GPU data coverage, checker gates) produced the following. The two
+code defects and the checker gap are fixed on the branch; the watchpoints are Tuolumne
+work items and are folded into the session checklists below.
+
+Fixed on the branch before HPC testing
+1. `acoustic_source` was not prohibited for JWL fluids; the source builds Tait
+   coefficients from the stiffened `gammas`/`pi_infs` arrays, which a JWL fluid leaves
+   at the -1e6 default, injecting NaN sources past every checker. Now prohibited in
+   `src/simulation/m_checker.fpp` and `case_validator.py`.
+2. The probe (`probe_wrt`) sound speed passed the shortcut enthalpy
+   `((gamma+1)p + pi_inf)/rho` while `s_compute_speed_of_sound` subtracts `qv/rho`;
+   exact for qv = 0, wrong for JWL where the qv slot carries the reference-energy
+   accumulator. The shortcut now includes `+ qv` at all three probe sites in
+   `m_data_output.fpp`, which is bit-identical for every qv = 0 case.
+3. `relativity` with JWL was rejected only by the Python validator; now also a Fortran
+   `@:PROHIBIT`, so hand-edited input files cannot bypass it.
+
+Watchpoints for the Tuolumne sessions (verified as well founded, not defects)
+1. Cray ftn GPU builds get no INLINEALWAYS: `cray_inline` emits its directive only on
+   Cray CPU builds (`parallel_macros.fpp`); under OpenACC/OpenMP offload,
+   `s_mg_mixture_variables` (now a nested select case plus a call to
+   `s_mg_jwl_reference`) is a plain `routine seq`, and inlining into the flux kernels is
+   at the compiler's discretion. Session 2 must therefore compare the JWL burn-case grind
+   on Cray GPU explicitly, not assume the gfortran CPU parity carries over. Add to
+   session 2: one JWL shocktube timing per tree.
+2. amdflang cross-TU declare-target: `mg_mixture` is declared in
+   `m_global_parameters_common`, updated to device in `m_variables_conversion` (~line
+   362), and read inside flux kernels compiled in the Riemann solver TUs via the
+   `@:accumulate_mixture` macro. If the device copy is stale under amdflang OpenMP
+   offload, JWL cells silently run the stiffened accumulator (wrong answers, no crash),
+   which the CPU golden suite cannot catch. Session 1 must include the CPU versus GPU
+   diff of a JWL example ON THE AMDFLANG BINARY specifically; agreement there closes
+   this watchpoint. If it fails, the fix pattern is the local re-update used for
+   `Re_size` in `m_riemann_state`.
+3. Cray codegen of nested select case inside a device `routine seq` has historic
+   fragility; the single-fluid JWL shocktube versus the gfortran golden (session 1) is
+   the sufficient probe, and a `--debug` Cray rebuild is the first triage step.
+
+Audit dimensions that came back clean: all 14 `@:accumulate_mixture` expansions match the
+original call sites including the `num_fluids - 1` and `alpha_lim` variants; the
+`select case (eos_fl(i))` refactor is semantically identical to the prior if/else for
+every enum value on all three targets; no raw acc/omp pragmas entered with the refactor.
