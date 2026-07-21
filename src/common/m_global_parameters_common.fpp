@@ -76,7 +76,7 @@ module m_global_parameters_common
     $:GPU_DECLARE(create='[cfl_target]')
     $:GPU_DECLARE(create='[int_comp, ic_eps, ic_beta]')
     $:GPU_DECLARE(create='[muscl_eps]')
-    $:GPU_DECLARE(create='[mpp_lim, model_eqns, mixture_err, alt_soundspeed]')
+    $:GPU_DECLARE(create='[mpp_lim, model_eqns, mixture_err, mixture_closure, alt_soundspeed]')
     $:GPU_DECLARE(create='[avg_state, mp_weno, weno_eps, teno_CT, hypoelasticity]')
     $:GPU_DECLARE(create='[hyperelasticity, elasticity, low_Mach]')
     $:GPU_DECLARE(create='[cont_damage, hyper_cleaning]')
@@ -131,6 +131,16 @@ module m_global_parameters_common
     real(wp), allocatable, public, dimension(:) :: gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps
     $:GPU_DECLARE(create='[gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps]')
 #endif
+    !> @}
+
+    !> @name Per-fluid EOS selector mirror and JWL isentrope coefficients, populated with the property tables above (identical
+    !! across all three targets); mg_mixture is true when any fluid selects a Mie-Gruneisen family EOS, gating the generalized
+    !! mixture accumulators
+    !> @{
+    integer, allocatable, public, dimension(:)  :: eos_fl
+    real(wp), allocatable, public, dimension(:) :: jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s
+    logical, public                             :: mg_mixture
+    $:GPU_DECLARE(create='[eos_fl, jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, mg_mixture]')
     !> @}
 
 contains

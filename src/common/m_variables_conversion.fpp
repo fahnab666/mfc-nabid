@@ -14,10 +14,11 @@ module m_variables_conversion
     use m_helper_basic
     use m_helper
     use m_constants, only: riemann_solver_hll, riemann_solver_hlld, model_eqns_gamma_law, model_eqns_5eq, model_eqns_6eq, &
-        & model_eqns_4eq
+        & model_eqns_4eq, eos_jwl, mixture_closure_pressure_equilibrium
     use m_thermochem, only: num_species, get_temperature, get_pressure, gas_constant, get_mixture_molecular_weight, &
         & get_mixture_energy_mass
 
+    use m_eos_mie_gruneisen, only: s_mg_jwl_reference
     use m_thermodynamics, only: s_compute_pressure, s_compute_internal_energy, f_compute_temperature
 #ifndef MFC_PRE_PROCESS
     use m_thermodynamics, only: s_compute_speed_of_sound
@@ -33,6 +34,7 @@ module m_variables_conversion
               s_convert_mixture_to_mixture_variables, &
               s_convert_species_to_mixture_variables, &
               s_convert_species_to_mixture_variables_acc, &
+              s_mg_mixture_variables, &
               s_convert_conservative_to_primitive_variables, &
               s_convert_primitive_to_conservative_variables, &
               s_convert_primitive_to_flux_variables, &
@@ -134,6 +136,8 @@ contains
             gamma = gammas(1)
             pi_inf = pi_infs(1)
             qv = qvs(1)
+        else if (mg_mixture) then
+            call s_mg_mixture_variables(num_fluids, alpha_rho_K, alpha_K, rho, gamma, pi_inf, qv)
         else
             rho = 0._wp; gamma = 0._wp; pi_inf = 0._wp; qv = 0._wp
             do i = 1, num_fluids
@@ -219,13 +223,17 @@ contains
                 end do
                 alpha_K = alpha_K/max(alpha_K_sum, sgm_eps)
             end if
-            rho_K = 0._wp; gamma_K = 0._wp; pi_inf_K = 0._wp; qv_K = 0._wp
-            do i = 1, num_fluids
-                rho_K = rho_K + alpha_rho_K(i)
-                gamma_K = gamma_K + alpha_K(i)*gammas(i)
-                pi_inf_K = pi_inf_K + alpha_K(i)*pi_infs(i)
-                qv_K = qv_K + alpha_rho_K(i)*qvs(i)
-            end do
+            if (mg_mixture) then
+                call s_mg_mixture_variables(num_fluids, alpha_rho_K, alpha_K, rho_K, gamma_K, pi_inf_K, qv_K)
+            else
+                rho_K = 0._wp; gamma_K = 0._wp; pi_inf_K = 0._wp; qv_K = 0._wp
+                do i = 1, num_fluids
+                    rho_K = rho_K + alpha_rho_K(i)
+                    gamma_K = gamma_K + alpha_K(i)*gammas(i)
+                    pi_inf_K = pi_inf_K + alpha_K(i)*pi_infs(i)
+                    qv_K = qv_K + alpha_rho_K(i)*qvs(i)
+                end do
+            end if
         end if
 
         if (present(G_K)) then
@@ -254,6 +262,50 @@ contains
 
     end subroutine s_convert_species_to_mixture_variables_acc
 
+    !> Mixture variables for cells containing a Mie-Gruneisen family fluid, dispatched over the mixed-cell closure rule
+    !! (mixture_closure). The accumulator slots are defined so the pressure, energy, and sound-speed paths stay exact: gamma carries
+    !! sum alpha_i/Gamma_i, pi_inf and qv together carry sum alpha_i*(rho_i*e_ref_i - p_ref_i/Gamma_i), with qv holding the
+    !! sound-speed bracket sum alpha_rho_i*(e_ref_i + rho_i*e_ref_i' - p_ref_i'/Gamma_i). Stiffened-gas fluids reduce to the classic
+    !! accumulators term by term. A later closure adds one case with this same signature.
+    subroutine s_mg_mixture_variables(nf, alpha_rho_K, alpha_K, rho_K, gamma_K, pi_inf_K, qv_K)
+
+        $:GPU_ROUTINE(function_name='s_mg_mixture_variables', parallelism='[seq]', cray_inline=True)
+
+        integer, intent(in)                 :: nf  !< Number of fluids to accumulate over
+        real(wp), dimension(nf), intent(in) :: alpha_rho_K, alpha_K
+        real(wp), intent(out)               :: rho_K, gamma_K, pi_inf_K, qv_K
+        real(wp)                            :: rho_i, gamma_mg, p_ref, dp_ref, e_ref, de_ref
+        integer                             :: i   !< Loop iterator over fluids
+
+        rho_K = 0._wp
+        gamma_K = 0._wp
+        pi_inf_K = 0._wp
+        qv_K = 0._wp
+
+        select case (mixture_closure)
+        case (mixture_closure_pressure_equilibrium)
+            ! Exact five-equation rule: the phasic densities are known, every MG fluid has e_i linear in p at fixed rho_i, so a
+            ! single cell pressure closes the mixed cell with no blend
+            $:GPU_LOOP(parallelism='[seq]')
+            do i = 1, nf
+                rho_K = rho_K + alpha_rho_K(i)
+                if (eos_fl(i) == eos_jwl) then
+                    rho_i = alpha_rho_K(i)/max(alpha_K(i), sgm_eps)
+                    call s_mg_jwl_reference(jwl_As(i), jwl_Bs(i), jwl_R1s(i), jwl_R2s(i), jwl_omegas(i), jwl_rho0s(i), rho_i, &
+                                            & gamma_mg, p_ref, dp_ref, e_ref, de_ref)
+                    gamma_K = gamma_K + alpha_K(i)/gamma_mg
+                    pi_inf_K = pi_inf_K + alpha_K(i)*((rho_i*dp_ref - p_ref)/gamma_mg - p_ref)
+                    qv_K = qv_K + alpha_rho_K(i)*(e_ref + rho_i*de_ref - dp_ref/gamma_mg)
+                else
+                    gamma_K = gamma_K + alpha_K(i)*gammas(i)
+                    pi_inf_K = pi_inf_K + alpha_K(i)*pi_infs(i)
+                    qv_K = qv_K + alpha_rho_K(i)*qvs(i)
+                end if
+            end do
+        end select
+
+    end subroutine s_mg_mixture_variables
+
     !> Initialize the variables conversion module.
     impure subroutine s_initialize_variables_conversion_module
 
@@ -269,6 +321,13 @@ contains
         @:ALLOCATE(qvs    (1:num_fluids))
         @:ALLOCATE(qvps    (1:num_fluids))
         @:ALLOCATE(Gs_vc     (1:num_fluids))
+        @:ALLOCATE(eos_fl(1:num_fluids))
+        @:ALLOCATE(jwl_As(1:num_fluids))
+        @:ALLOCATE(jwl_Bs(1:num_fluids))
+        @:ALLOCATE(jwl_R1s(1:num_fluids))
+        @:ALLOCATE(jwl_R2s(1:num_fluids))
+        @:ALLOCATE(jwl_omegas(1:num_fluids))
+        @:ALLOCATE(jwl_rho0s(1:num_fluids))
 
         do i = 1, num_fluids
             gammas(i) = fluid_pp(i)%gamma
@@ -279,8 +338,17 @@ contains
             cvs(i) = fluid_pp(i)%cv
             qvs(i) = fluid_pp(i)%qv
             qvps(i) = fluid_pp(i)%qvp
+            eos_fl(i) = fluid_pp(i)%eos
+            jwl_As(i) = fluid_pp(i)%jwl_A
+            jwl_Bs(i) = fluid_pp(i)%jwl_B
+            jwl_R1s(i) = fluid_pp(i)%jwl_R1
+            jwl_R2s(i) = fluid_pp(i)%jwl_R2
+            jwl_omegas(i) = fluid_pp(i)%jwl_omega
+            jwl_rho0s(i) = fluid_pp(i)%jwl_rho0
         end do
+        mg_mixture = any(eos_fl(1:num_fluids) == eos_jwl)
         $:GPU_UPDATE(device='[gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc]')
+        $:GPU_UPDATE(device='[eos_fl, jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, mg_mixture]')
 
 #ifdef MFC_SIMULATION
         if (viscous) then
@@ -1151,6 +1219,7 @@ contains
 
 #ifdef MFC_SIMULATION
         @:DEALLOCATE(gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc)
+        @:DEALLOCATE(eos_fl, jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s)
         if (bubbles_euler) then
             @:DEALLOCATE(bubrs_vc)
         end if
@@ -1159,6 +1228,7 @@ contains
         end if
 #else
         @:DEALLOCATE(gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc)
+        @:DEALLOCATE(eos_fl, jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s)
         if (bubbles_euler) then
             @:DEALLOCATE(bubrs_vc)
         end if

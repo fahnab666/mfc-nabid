@@ -13,6 +13,7 @@ module m_riemann_state
     use m_global_parameters
     use m_constants, only: riemann_solver_hll, riemann_solver_hlld, verysmall
     use m_hb_function
+    use m_variables_conversion, only: s_mg_mixture_variables
 
     implicit none
 
@@ -1020,6 +1021,11 @@ contains
         real(wp), dimension(nf), intent(in) :: alpha_rho_K, alpha_K
         real(wp), intent(out)               :: rho_K, gamma_K, pi_inf_K, qv_K
         integer                             :: i   !< Loop iterator over fluids
+
+        if (mg_mixture) then
+            call s_mg_mixture_variables(nf, alpha_rho_K, alpha_K, rho_K, gamma_K, pi_inf_K, qv_K)
+            return
+        end if
 
         rho_K = 0._wp
         gamma_K = 0._wp
