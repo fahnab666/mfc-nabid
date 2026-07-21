@@ -1,0 +1,17 @@
+# Synthetic (non-calibrated) JWL products used by the generic expansion example.
+# Real material files live outside the repository and are found by explicit path,
+# case directory, or $MFC_MATERIALS_DIR.
+material:
+  name: synthetic_products
+  eos:
+    family: jwl
+    parameters:
+      A: 5.0e11
+      B: 8.0e9
+      R1: 4.5
+      R2: 1.2
+      omega: 0.3
+      rho0: 1600.0
+  provenance:
+    citation: synthetic coefficients chosen for a well-posed regression example
+    release_status: synthetic
