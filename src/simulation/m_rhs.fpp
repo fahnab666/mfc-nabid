@@ -871,10 +871,10 @@ contains
             do q_loop = 0, p
                 do l_loop = 0, n
                     do k_loop = 0, m
-                        blkmod1(k_loop, l_loop, q_loop) = f_bulk_modulus(gammas(1), q_prim_vf%vf(eqn_idx%E)%sf(k_loop, l_loop, &
-                                & q_loop), pi_infs(1))
-                        blkmod2(k_loop, l_loop, q_loop) = f_bulk_modulus(gammas(2), q_prim_vf%vf(eqn_idx%E)%sf(k_loop, l_loop, &
-                                & q_loop), pi_infs(2))
+                        blkmod1(k_loop, l_loop, q_loop) = f_bulk_modulus(gammas(1), real(q_prim_vf%vf(eqn_idx%E)%sf(k_loop, &
+                                & l_loop, q_loop), wp), pi_infs(1))
+                        blkmod2(k_loop, l_loop, q_loop) = f_bulk_modulus(gammas(2), real(q_prim_vf%vf(eqn_idx%E)%sf(k_loop, &
+                                & l_loop, q_loop), wp), pi_infs(2))
                         alpha1(k_loop, l_loop, q_loop) = q_cons_vf%vf(eqn_idx%adv%beg)%sf(k_loop, l_loop, q_loop)
 
                         if (bubbles_euler) then

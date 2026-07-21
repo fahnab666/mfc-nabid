@@ -103,11 +103,11 @@ contains
             do j = -offset_y%beg, n + offset_y%end
                 do i = -offset_x%beg, m + offset_x%end
                     if (alt_soundspeed .neqv. .true.) then
-                        q_sf(i, j, k) = f_bulk_modulus(gamma_sf(i, j, k), q_prim_vf(eqn_idx%E)%sf(i, j, k), pi_inf_sf(i, j, &
-                             & k))/rho_sf(i, j, k)
+                        q_sf(i, j, k) = f_bulk_modulus(gamma_sf(i, j, k), real(q_prim_vf(eqn_idx%E)%sf(i, j, k), wp), &
+                             & pi_inf_sf(i, j, k))/rho_sf(i, j, k)
                     else
-                        blkmod1 = f_bulk_modulus(gammas(1), q_prim_vf(eqn_idx%E)%sf(i, j, k), pi_infs(1))
-                        blkmod2 = f_bulk_modulus(gammas(2), q_prim_vf(eqn_idx%E)%sf(i, j, k), pi_infs(2))
+                        blkmod1 = f_bulk_modulus(gammas(1), real(q_prim_vf(eqn_idx%E)%sf(i, j, k), wp), pi_infs(1))
+                        blkmod2 = f_bulk_modulus(gammas(2), real(q_prim_vf(eqn_idx%E)%sf(i, j, k), wp), pi_infs(2))
                         q_sf(i, j, k) = (1._wp/(rho_sf(i, j, k)*(q_prim_vf(eqn_idx%adv%beg)%sf(i, j, &
                              & k)/blkmod1 + (1._wp - q_prim_vf(eqn_idx%adv%beg)%sf(i, j, k))/blkmod2)))
                     end if

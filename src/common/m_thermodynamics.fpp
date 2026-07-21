@@ -164,7 +164,10 @@ contains
         real(wp), intent(in) :: sound_speed_sq
         logical              :: is_admissible
 
-        is_admissible = (sound_speed_sq >= 0._wp)
+        ! Written as the negation of the historical (c < 0) rejection test so a NaN
+        ! argument takes the same branch it always has (NaN compares false, so it is
+        ! not flagged here and propagates through the sqrt unmasked, as on master).
+        is_admissible = .not. (sound_speed_sq < 0._wp)
 
     end function f_validate_state
 
