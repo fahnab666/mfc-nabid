@@ -46,9 +46,21 @@ PHYSICS_DOCS = {
         "title": "Equation of State Selection",
         "category": "Thermodynamic Constraints",
         "explanation": (
-            "The per-fluid eos selector exposes only the backends with a thermodynamics adapter: "
-            "'stiffened_gas' (default) and 'ideal_gas_mixture' (chemistry, Pyrometheus). A single run "
-            "uses one family for every fluid; unimplemented values and intra-cell EOS mixing are rejected."
+            "The per-fluid eos selector exposes only the implemented backends: 'stiffened_gas' "
+            "(default), 'ideal_gas_mixture' (chemistry, Pyrometheus), and 'jwl' (Mie-Gruneisen family, "
+            "5-equation model only). Unimplemented values and reserved mixture_closure rules are rejected."
+        ),
+        "references": ["Wilfong26"],
+    },
+    "check_jwl": {
+        "title": "JWL Equation of State",
+        "category": "Thermodynamic Constraints",
+        "math": r"p = p_s(\rho) + \omega \rho (e - e_s(\rho)), \quad p_s = A e^{-R_1 V} + B e^{-R_2 V}, \quad R_1 > R_2 > 0",
+        "explanation": (
+            "A JWL fluid is the Jones-Wilkins-Lee principal isentrope used as a Mie-Gruneisen reference "
+            "curve, with user-supplied coefficients. It requires the 5-equation model, whose known phasic "
+            "densities close mixed cells in closed form (pressure equilibrium); features whose EOS algebra "
+            "is stiffened-gas specific are rejected."
         ),
         "references": ["Wilfong26"],
     },
@@ -748,18 +760,69 @@ class CaseValidator:
         if num_fluids is None:
             return
 
-        eos_stiffened_gas, eos_ideal_gas_mixture = 1, 2
+        eos_stiffened_gas, eos_ideal_gas_mixture, eos_jwl = 1, 2, 4
 
         for i in range(1, num_fluids + 1):
             eos = self.get(f"fluid_pp({i})%eos")
             if eos is None:
                 continue
             self.prohibit(
-                eos not in (eos_stiffened_gas, eos_ideal_gas_mixture),
-                f"fluid_pp({i})%eos selects an equation of state that is not yet implemented; " "only 'stiffened_gas' and 'ideal_gas_mixture' are available",
+                eos not in (eos_stiffened_gas, eos_ideal_gas_mixture, eos_jwl),
+                f"fluid_pp({i})%eos selects an equation of state that is not yet implemented; " "only 'stiffened_gas', 'ideal_gas_mixture', and 'jwl' are available",
             )
             self.prohibit(chemistry and eos != eos_ideal_gas_mixture, f"fluid_pp({i})%eos must be 'ideal_gas_mixture' when chemistry is enabled")
             self.prohibit(not chemistry and eos == eos_ideal_gas_mixture, f"fluid_pp({i})%eos = 'ideal_gas_mixture' requires a chemistry build")
+
+        mixture_closure = self.get("mixture_closure")
+        if mixture_closure is not None:
+            self.prohibit(
+                mixture_closure != 1,
+                "mixture_closure selects a reserved closure ('composition_weighted', 'modified_composition_weighted', and 'kuhl' land in later PRs); only 'pressure_equilibrium' is implemented",
+            )
+
+    def check_jwl(self):
+        """Checks constraints on JWL fluids: 5-equation model, well-posed user-supplied
+        isentrope, and rejection of stiffened-gas-specific features"""
+        num_fluids = self.get("num_fluids")
+        if num_fluids is None:
+            return
+        jwl_fluids = [i for i in range(1, num_fluids + 1) if self.get(f"fluid_pp({i})%eos") == 4]
+        if not jwl_fluids:
+            return
+
+        self.prohibit(self.get("model_eqns") != 2, "fluid_pp(:)%eos = 'jwl' requires model_eqns = 2 (5-equation model)")
+        for flag, label in [
+            ("bubbles_euler", "bubbles"),
+            ("bubbles_lagrange", "bubbles"),
+            ("relax", "phase change (relax)"),
+            ("hypoelasticity", "elasticity"),
+            ("hyperelasticity", "elasticity"),
+            ("mhd", "mhd"),
+            ("surface_tension", "surface_tension"),
+            ("igr", "igr"),
+            ("ib", "immersed boundaries"),
+            ("alt_soundspeed", "alt_soundspeed"),
+        ]:
+            self.prohibit(self.get(flag, "F") == "T", f"fluid_pp(:)%eos = 'jwl' is not supported with {label}")
+        self.prohibit(self.get("wave_speeds") == 2, "fluid_pp(:)%eos = 'jwl' requires wave_speeds = 1 (direct estimates)")
+        self.prohibit(self.get("low_Mach", 0) not in (None, 0), "fluid_pp(:)%eos = 'jwl' is not supported with the low_Mach corrections")
+        for d in ("x", "y", "z"):
+            for side in ("beg", "end"):
+                bc = self.get(f"bc_{d}%{side}")
+                self.prohibit(bc is not None and -12 <= bc <= -5, "fluid_pp(:)%eos = 'jwl' is not supported with characteristic (CBC) boundaries")
+
+        for i in jwl_fluids:
+            A, B = self.get(f"fluid_pp({i})%jwl_A"), self.get(f"fluid_pp({i})%jwl_B")
+            R1, R2 = self.get(f"fluid_pp({i})%jwl_R1"), self.get(f"fluid_pp({i})%jwl_R2")
+            omega, rho0 = self.get(f"fluid_pp({i})%jwl_omega"), self.get(f"fluid_pp({i})%jwl_rho0")
+            self.prohibit(A is None or A <= 0, f"fluid_pp({i})%jwl_A must be set and positive for a JWL fluid")
+            self.prohibit(B is None or B <= 0, f"fluid_pp({i})%jwl_B must be set and positive for a JWL fluid")
+            self.prohibit(R1 is None or R2 is None or R2 <= 0 or R1 <= R2, f"fluid_pp({i}) requires R1 > R2 > 0")
+            self.prohibit(omega is None or omega <= 0, f"fluid_pp({i})%jwl_omega must be set and positive for a JWL fluid")
+            self.prohibit(rho0 is None or rho0 <= 0, f"fluid_pp({i})%jwl_rho0 must be set and positive for a JWL fluid")
+            self.prohibit(
+                bool(self.get(f"fluid_pp({i})%qv")) or bool(self.get(f"fluid_pp({i})%qvp")), f"fluid_pp({i})%qv and qvp are unused by a JWL fluid; its reference energy is the principal isentrope"
+            )
 
     def check_surface_tension(self):
         """Checks constraints on surface tension"""
@@ -2309,6 +2372,7 @@ class CaseValidator:
         self.check_ibm()
         self.check_stiffened_eos()
         self.check_eos()
+        self.check_jwl()
         self.check_eos_parameter_sanity()
         self.check_surface_tension()
         self.check_mhd()

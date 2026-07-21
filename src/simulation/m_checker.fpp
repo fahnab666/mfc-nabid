@@ -12,7 +12,8 @@ module m_checker
     use m_mpi_proxy
     use m_helper
     use m_helper_basic
-    use m_constants, only: recon_type_weno, recon_type_muscl, muscl_order_first_order
+    use m_constants, only: recon_type_weno, recon_type_muscl, muscl_order_first_order, eos_jwl, BC_CHAR_SLIP_WALL, &
+        & BC_CHAR_SUP_OUTFLOW
 
     implicit none
 
@@ -36,6 +37,7 @@ contains
         end if
 
         call s_check_inputs_time_stepping
+        if (any(fluid_pp(1:num_fluids)%eos == eos_jwl)) call s_check_inputs_jwl
 
         @:PROHIBIT(chemistry .and. chem_params%reaction_substeps < 0, &
                    & "chem_params%reaction_substeps must be >= 0 (0 = reaction source in the flow RHS; > 0 = operator-split sub-stepping)")
@@ -62,6 +64,21 @@ contains
         end if
 
     end subroutine s_check_inputs
+
+    !> Simulation-only JWL gates: flux and boundary options whose EOS algebra is stiffened-gas specific.
+    impure subroutine s_check_inputs_jwl
+
+        @:PROHIBIT(wave_speeds == 2, "fluid_pp(:)%eos = 'jwl' requires wave_speeds = 1 (direct estimates)")
+        @:PROHIBIT(low_Mach /= 0, "fluid_pp(:)%eos = 'jwl' is not supported with the low_Mach corrections")
+        @:PROHIBIT(alt_soundspeed, "fluid_pp(:)%eos = 'jwl' is not supported with alt_soundspeed")
+        #:for X in ['x', 'y', 'z']
+            @:PROHIBIT(bc_${X}$%beg <= BC_CHAR_SLIP_WALL .and. bc_${X}$%beg >= BC_CHAR_SUP_OUTFLOW, &
+                       & "fluid_pp(:)%eos = 'jwl' is not supported with characteristic (CBC) boundaries")
+            @:PROHIBIT(bc_${X}$%end <= BC_CHAR_SLIP_WALL .and. bc_${X}$%end >= BC_CHAR_SUP_OUTFLOW, &
+                       & "fluid_pp(:)%eos = 'jwl' is not supported with characteristic (CBC) boundaries")
+        #:endfor
+
+    end subroutine s_check_inputs_jwl
 
     !> Checks constraints on compiler options
     impure subroutine s_check_inputs_compilers

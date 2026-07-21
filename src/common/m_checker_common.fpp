@@ -12,6 +12,7 @@ module m_checker_common
     use m_mpi_proxy
     use m_helper_basic
     use m_helper
+    use m_constants, only: eos_jwl
 
     implicit none
 
@@ -42,12 +43,46 @@ contains
         do i = 1, num_fluids
             @:PROHIBIT(chemistry .and. fluid_pp(i)%eos /= eos_ideal_gas_mixture, &
                        & "fluid_pp(:)%eos must be 'ideal_gas_mixture' for every fluid when chemistry is enabled")
-            @:PROHIBIT(.not. chemistry .and. fluid_pp(i)%eos /= eos_stiffened_gas, &
-                       & "fluid_pp(:)%eos selector is not supported; only 'stiffened_gas' is available " &
+            @:PROHIBIT(.not. chemistry .and. fluid_pp(i)%eos /= eos_stiffened_gas .and. fluid_pp(i)%eos /= eos_jwl, &
+                       & "fluid_pp(:)%eos selector is not supported; only 'stiffened_gas' and 'jwl' are available " &
                        & // "(or 'ideal_gas_mixture' with a chemistry build)")
         end do
 
+        @:PROHIBIT(mixture_closure /= mixture_closure_pressure_equilibrium, &
+                   & "mixture_closure selects a reserved closure; only 'pressure_equilibrium' is implemented")
+
+        if (any(fluid_pp(1:num_fluids)%eos == eos_jwl)) call s_check_jwl_inputs
+
     end subroutine s_check_eos
+
+    !> JWL runs solve the 5-equation model through the generalized Mie-Gruneisen mixture accumulators; restrict to that path and
+    !! require a well-posed user-supplied isentrope. Features whose EOS algebra bypasses the accumulators are rejected.
+    impure subroutine s_check_jwl_inputs
+
+        integer :: i
+
+        @:PROHIBIT(model_eqns /= model_eqns_5eq, "fluid_pp(:)%eos = 'jwl' requires model_eqns = 2 (5-equation model)")
+        @:PROHIBIT(bubbles_euler .or. bubbles_lagrange, "fluid_pp(:)%eos = 'jwl' is not supported with bubbles")
+        @:PROHIBIT(relax, "fluid_pp(:)%eos = 'jwl' is not supported with phase change (relax)")
+        @:PROHIBIT(hypoelasticity .or. hyperelasticity, "fluid_pp(:)%eos = 'jwl' is not supported with elasticity")
+        @:PROHIBIT(mhd, "fluid_pp(:)%eos = 'jwl' is not supported with mhd")
+        @:PROHIBIT(surface_tension, "fluid_pp(:)%eos = 'jwl' is not supported with surface_tension")
+        @:PROHIBIT(igr, "fluid_pp(:)%eos = 'jwl' is not supported with igr")
+        @:PROHIBIT(ib, "fluid_pp(:)%eos = 'jwl' is not supported with immersed boundaries")
+
+        do i = 1, num_fluids
+            if (fluid_pp(i)%eos /= eos_jwl) cycle
+            @:PROHIBIT(.not. fluid_pp(i)%jwl_A > 0._wp, "fluid_pp(i)%jwl_A must be set and positive for a JWL fluid")
+            @:PROHIBIT(.not. fluid_pp(i)%jwl_B > 0._wp, "fluid_pp(i)%jwl_B must be set and positive for a JWL fluid")
+            @:PROHIBIT(.not. (fluid_pp(i)%jwl_R2 > 0._wp .and. fluid_pp(i)%jwl_R1 > fluid_pp(i)%jwl_R2), &
+                       & "a JWL fluid requires R1 > R2 > 0")
+            @:PROHIBIT(.not. fluid_pp(i)%jwl_omega > 0._wp, "fluid_pp(i)%jwl_omega must be set and positive for a JWL fluid")
+            @:PROHIBIT(.not. fluid_pp(i)%jwl_rho0 > 0._wp, "fluid_pp(i)%jwl_rho0 must be set and positive for a JWL fluid")
+            @:PROHIBIT(abs(fluid_pp(i)%qv) > 0._wp .or. abs(fluid_pp(i)%qvp) > 0._wp, &
+                       & "fluid_pp(i)%qv and qvp are unused by a JWL fluid; its reference energy is the principal isentrope")
+        end do
+
+    end subroutine s_check_jwl_inputs
 
 #ifndef MFC_SIMULATION
     !> Verify that the total number of grid cells meets the minimum required by the number of dimensions and MPI ranks.

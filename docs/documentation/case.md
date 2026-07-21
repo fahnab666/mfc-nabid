@@ -450,7 +450,7 @@ The parameters define material's property of compressible fluids that are used i
 
 - `fluid_pp(i)%%gamma` and `fluid_pp(i)%%pi_inf` define \f$\Gamma\f$ and \f$\Pi\f$ as parameters of $i$-th fluid that are used in stiffened gas equation of state.
 
-- `fluid_pp(i)%%eos` selects the equation of state of the $i$-th fluid. Only `stiffened_gas` (the default) and `ideal_gas_mixture` (requires a chemistry build, backed by Pyrometheus) are currently supported; the enumeration reserves `mie_gruneisen`, `jwl`, and `table` for future backends. Every fluid in a run must use the same family.
+- `fluid_pp(i)%%eos` selects the equation of state of the $i$-th fluid. `stiffened_gas` (the default), `ideal_gas_mixture` (requires a chemistry build, backed by Pyrometheus), and `jwl` are currently supported; the enumeration reserves `mie_gruneisen` and `table` for future backends. A `jwl` fluid is the Jones-Wilkins-Lee principal isentrope used as a Mie-Gruneisen reference curve: it requires `model_eqns` = 2 and the six user-supplied coefficients `fluid_pp(i)%%jwl_A`, `jwl_B` (Pa), `jwl_R1`, `jwl_R2` (with $R_1 > R_2 > 0$), `jwl_omega` (the Gruneisen coefficient), and `jwl_rho0` (the reference charge density). Mixed JWL and stiffened-gas cells close with the exact pressure-equilibrium rule (see `mixture_closure`). No material catalog ships with MFC; coefficients are case inputs.
 
 - `fluid_pp(i)%%Re(1)` and `fluid_pp(i)%%Re(2)` define the shear and volume viscosities of $i$-th fluid, respectively.
 
