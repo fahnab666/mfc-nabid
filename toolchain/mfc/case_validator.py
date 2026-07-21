@@ -802,6 +802,8 @@ class CaseValidator:
             ("igr", "igr"),
             ("ib", "immersed boundaries"),
             ("alt_soundspeed", "alt_soundspeed"),
+            ("acoustic_source", "acoustic sources"),
+            ("relativity", "relativity"),
         ]:
             self.prohibit(self.get(flag, "F") == "T", f"fluid_pp(:)%eos = 'jwl' is not supported with {label}")
         self.prohibit(self.get("wave_speeds") == 2, "fluid_pp(:)%eos = 'jwl' requires wave_speeds = 1 (direct estimates)")

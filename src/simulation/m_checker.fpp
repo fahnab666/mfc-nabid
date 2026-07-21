@@ -71,6 +71,10 @@ contains
         @:PROHIBIT(wave_speeds == 2, "fluid_pp(:)%eos = 'jwl' requires wave_speeds = 1 (direct estimates)")
         @:PROHIBIT(low_Mach /= 0, "fluid_pp(:)%eos = 'jwl' is not supported with the low_Mach corrections")
         @:PROHIBIT(alt_soundspeed, "fluid_pp(:)%eos = 'jwl' is not supported with alt_soundspeed")
+        ! The acoustic source builds its Tait coefficients from the stiffened gammas/pi_infs arrays,
+        ! which a JWL fluid does not populate.
+        @:PROHIBIT(acoustic_source, "fluid_pp(:)%eos = 'jwl' is not supported with acoustic sources")
+        @:PROHIBIT(relativity, "fluid_pp(:)%eos = 'jwl' is not supported with relativity")
         #:for X in ['x', 'y', 'z']
             @:PROHIBIT(bc_${X}$%beg <= BC_CHAR_SLIP_WALL .and. bc_${X}$%beg >= BC_CHAR_SUP_OUTFLOW, &
                        & "fluid_pp(:)%eos = 'jwl' is not supported with characteristic (CBC) boundaries")

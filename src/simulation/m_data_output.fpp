@@ -1292,8 +1292,8 @@ contains
                     end if
 
                     ! Compute mixture sound Speed
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, ((gamma + 1._wp)*pres + pi_inf)/rho, alpha, 0._wp, &
-                                                  & 0._wp, c, qv)
+                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, ((gamma + 1._wp)*pres + pi_inf + qv)/rho, alpha, &
+                                                  & 0._wp, 0._wp, c, qv)
 
                     accel = accel_mag(j - 2, k, l)
                 end if
@@ -1374,7 +1374,7 @@ contains
                             Rdot(:) = nRdot(:)/nbub
                         end if
                         ! Compute mixture sound speed
-                        call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, ((gamma + 1._wp)*pres + pi_inf)/rho, alpha, &
+                        call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, ((gamma + 1._wp)*pres + pi_inf + qv)/rho, alpha, &
                                                       & 0._wp, 0._wp, c, qv)
                     end if
                 end if
@@ -1433,8 +1433,8 @@ contains
                             end if
 
                             ! Compute mixture sound speed
-                            call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, ((gamma + 1._wp)*pres + pi_inf)/rho, alpha, &
-                                                          & 0._wp, 0._wp, c, qv)
+                            call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, ((gamma + 1._wp)*pres + pi_inf + qv)/rho, &
+                                                          & alpha, 0._wp, 0._wp, c, qv)
 
                             accel = accel_mag(j - 2, k - 2, l - 2)
                         end if
