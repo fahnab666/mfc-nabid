@@ -14,7 +14,7 @@ module m_variables_conversion
     use m_helper_basic
     use m_helper
     use m_constants, only: riemann_solver_hll, riemann_solver_hlld, model_eqns_gamma_law, model_eqns_5eq, model_eqns_6eq, &
-        & model_eqns_4eq, eos_jwl, mixture_closure_pressure_equilibrium
+        & model_eqns_4eq, eos_jwl, eos_stiffened_gas, eos_ideal_gas_mixture, mixture_closure_pressure_equilibrium
     use m_thermochem, only: num_species, get_temperature, get_pressure, gas_constant, get_mixture_molecular_weight, &
         & get_mixture_energy_mass
 
@@ -291,10 +291,10 @@ contains
                 rho_K = rho_K + alpha_rho_K(i)
                 ! Each Mie-Gruneisen family is one case arm: it evaluates its reference curve
                 ! (Gamma, p_ref, dp_ref, e_ref, de_ref) at the phasic density and folds it into
-                ! the same three accumulator slots. Adding a family also means extending the
-                ! mg_mixture gate in s_initialize_variables_conversion_module (it keys on eos_jwl
-                ! alone, so a new family left out of it silently falls through to the stiffened
-                ! accumulators) and the checker EOS allowlists; the case arm is not the sole edit.
+                ! the same three accumulator slots. A new family adds a case arm here plus its
+                ! checker allowlist entry; the mg_mixture gate keys on "not a legacy-slot family"
+                ! so it needs no edit, and a family missing its arm contributes nothing, failing
+                ! loudly (zero mixture gamma) rather than falling through to stiffened arithmetic.
                 select case (eos_fl(i))
                 case (eos_jwl)
                     ! A vanished phase (alpha driven below sgm_eps by reconstruction overshoot, even
@@ -311,7 +311,7 @@ contains
                         pi_inf_K = pi_inf_K + alpha_K(i)*((rho_i*dp_ref - p_ref)/gamma_mg - p_ref)
                         qv_K = qv_K + alpha_rho_K(i)*(e_ref + rho_i*de_ref - dp_ref/gamma_mg)
                     end if
-                case default
+                case (eos_stiffened_gas, eos_ideal_gas_mixture)
                     ! Stiffened gas keeps its legacy slot arithmetic verbatim so all-stiffened
                     ! cells stay bit-identical to the master accumulators.
                     gamma_K = gamma_K + alpha_K(i)*gammas(i)
@@ -363,7 +363,10 @@ contains
             jwl_omegas(i) = fluid_pp(i)%jwl_omega
             jwl_rho0s(i) = fluid_pp(i)%jwl_rho0
         end do
-        mg_mixture = any(eos_fl(1:num_fluids) == eos_jwl)
+        ! Any fluid outside the two legacy-slot families routes mixture accumulation through
+        ! the generalized Mie-Gruneisen path, so a newly added MG family activates it without
+        ! this gate needing to know the family.
+        mg_mixture = any(eos_fl(1:num_fluids) /= eos_stiffened_gas .and. eos_fl(1:num_fluids) /= eos_ideal_gas_mixture)
         $:GPU_UPDATE(device='[gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc]')
         ! mixture_closure joins this update so the device copy read by s_mg_mixture_variables is
         ! refreshed from this translation unit (amdflang can otherwise see a stale cross-TU value).
