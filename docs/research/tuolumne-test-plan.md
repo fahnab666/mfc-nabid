@@ -6,7 +6,7 @@ MFC already knows the machine: slug `tuo` in `toolchain/modules` (cpe/25.03 + ro
 Branch under test: `feature/eos-combined` (PR1 interface + PR2 selector + PR3 MG module +
 PR4a JWL + PR5 material files, plus the review-fix and performance commits).
 
-Everything below has already passed locally on macOS gfortran CPU: 618/618 golden tests
+Everything below has already passed locally on macOS gfortran CPU: 620/620 golden tests
 bit-identical, both JWL examples stable, 7/7 bench cases at grind parity with master.
 Tuolumne closes the four lanes a laptop cannot: Cray ftn, AMD flang, GPU offload on MI300A,
 and multi-node MPI scaling. These are exactly the maintainer's open questions.
@@ -42,7 +42,7 @@ compiler; watch build 1 and 3 logs for INLINEALWAYS diagnostics.
 
 ## Phase 2: correctness
 
-1. Full golden suite, CPU, Cray ftn: `./mfc.sh test -j 32`. Expect 618/618. Any diff on a
+1. Full golden suite, CPU, Cray ftn: `./mfc.sh test -j 32`. Expect 620/620. Any diff on a
    pre-existing test is a bug in the stack, not noise; do not regenerate goldens.
 2. Full golden suite, GPU (inside a Flux allocation):
    `./mfc.sh test -j 4 --gpu mp -g 0 1 2 3`. The three JWL tests (976FEEC6 and the two
@@ -185,7 +185,7 @@ On the login node before any session (no allocation needed):
 3. Prebuild the GPU binaries (`-m g`, `--gpu mp`, Cray ftn and amdflang) so no session
    burns time compiling.
 
-Session 0 (1 node, CPU mode): the CPU golden suite (618 tests) under Cray ftn with high
+Session 0 (1 node, CPU mode): the CPU golden suite (620 tests) under Cray ftn with high
 `-j` across the node's cores; it takes about ten minutes locally at `-j 8`, so one hour
 on a Tuolumne node covers it with room for the Phase 5 rung-boundary suite repeats.
 
@@ -235,7 +235,7 @@ Session 0, CPU suite (1 node, interactive allocation):
 
     flux alloc -N 1 -t 60m
     source ./mfc.sh load -c tuo -m c
-    ./mfc.sh test -j 32 2>&1 | tee $ART/s0_suite.log     # expect 618 passed, 0 failed
+    ./mfc.sh test -j 32 2>&1 | tee $ART/s0_suite.log     # expect 620 passed, 0 failed
 
 Session 1, GPU correctness (1 node):
 
@@ -251,6 +251,21 @@ Session 2, single-APU bench (1 node, run per tree, interleave if tight):
 
     ./mfc.sh bench -m 1 -j 8 -o $ART/s2_<tree>_gpu.yaml
     # offline: ./mfc.sh bench_diff s2_base_gpu.yaml s2_combined_gpu.yaml
+    # bench_diff uses the case-set intersection, so the combined tree's extra
+    # 5eq_jwl_weno3_hllc case (JWL accumulator path; no master counterpart) is
+    # reported standalone: record its grind as the JWL-path baseline.
+
+For any case whose delta exceeds the noise floor, do not trust two sequential
+sweeps (clock drift lands entirely on whichever tree ran second). Re-measure
+with interleaved pairs so drift cancels within each pair, and read the median
+pairwise delta:
+
+    for i in 1 2 3 4 5; do
+      (cd $BASE && ./mfc.sh run benchmarks/<case>/case.py -t pre_process simulation \
+          -- --gbpp 1) | grep Performance:
+      (cd $COMBINED && ./mfc.sh run benchmarks/<case>/case.py -t pre_process simulation \
+          -- --gbpp 1) | grep Performance:
+    done
 
 Session 3, scaling (2 nodes): submit all eight runs (1, 2, 4, 8 ranks x both trees) as
 batch jobs at session start so they pack the hour:
@@ -264,7 +279,7 @@ batch jobs at session start so they pack the hour:
 | Check | Pass | Action on fail |
 |---|---|---|
 | Compile matrix (6 configs x 2 trees) | all build | capture the full build log; the config name is the finding |
-| CPU suite | 618 passed, 0 failed | do not regenerate goldens; diff is the bug report |
+| CPU suite | 620 passed, 0 failed | do not regenerate goldens; diff is the bug report |
 | GPU suite | same pass set as CPU | isolate the first failing UUID with `-o <uuid>` |
 | CPU vs GPU JWL examples | final D data agree to golden tolerance | dump both, bisect field by field |
 | amdflang JWL shocktube | finite nonzero pressure everywhere | suspect the mixture_closure device copy first (commit 09fa0a17) |
