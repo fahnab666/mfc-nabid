@@ -92,6 +92,7 @@ contains
         type(riemann_states_vec3) :: cm  !< Conservative momentum variables
         integer :: i, j, k, l  !< Generic loop iterators
         integer :: Re_size_loc1, Re_size_loc2  !< host copies of Re_size; amdflang reads the declare-target original stale cross-TU
+        logical :: mg_mixture_loc
         integer, dimension(3) :: idx_right_phys  !< Physical (j,k,l) indices for right state.
         ! Populating the buffers of the left and right Riemann problem states variables, based on the choice of boundary conditions
 
@@ -101,6 +102,7 @@ contains
         ! Reshaping inputted data based on dimensional splitting direction
         call s_initialize_riemann_solver(flux_src_vf, norm_dir)
         Re_size_loc1 = Re_size(1); Re_size_loc2 = Re_size(2)
+        mg_mixture_loc = mg_mixture  !< host copy; amdflang reads the declare-target original stale cross-TU
         #:for NORM_DIR, XYZ, STENCIL_VAR, COORDS, X_BND, Y_BND, Z_BND in &
                     [(1, 'x', 'j', '{STENCIL_IDX}, k, l', 'is1', 'is2', 'is3'), &
                      (2, 'y', 'k', 'j, {STENCIL_IDX}, l', 'is2', 'is1', 'is3'), &
@@ -116,7 +118,7 @@ contains
                                     & c_avg, pres_L, pres_R, rho_L, rho_R, gamma_L, gamma_R, pi_inf_L, pi_inf_R, qv_L, qv_R, c_L, &
                                     & c_R, E_L, E_R, H_L, H_R, ptilde_L, ptilde_R, s_M, s_P, xi_M, xi_P, Cp_avg, Cv_avg, T_avg, &
                                     & eps, c_sum_Yi_Phi, Cp_L, Cp_R, Cv_L, Cv_R, R_gas_L, R_gas_R, MW_L, MW_R, T_L, T_R, Y_L, &
-                                    & Y_R]', firstprivate='[Re_size_loc1, Re_size_loc2]')
+                                    & Y_R]', firstprivate='[Re_size_loc1, Re_size_loc2, mg_mixture_loc]')
                 do l = ${Z_BND}$%beg, ${Z_BND}$%end
                     do k = ${Y_BND}$%beg, ${Y_BND}$%end
                         do j = ${X_BND}$%beg, ${X_BND}$%end
@@ -498,7 +500,7 @@ contains
 
         if (viscous) then
             $:GPU_PARALLEL_LOOP(collapse=3, private='[i, j, k, l, idx_right_phys, vel_grad_L, vel_grad_R, alpha_L, alpha_R, &
-                                & vel_L, vel_R, Re_L, Re_R]', copyin='[norm_dir]', firstprivate='[Re_size_loc1, Re_size_loc2]')
+                                & vel_L, vel_R, Re_L, Re_R]', copyin='[norm_dir]', firstprivate='[Re_size_loc1, Re_size_loc2, mg_mixture_loc]')
             do l = isz%beg, isz%end
                 do k = isy%beg, isy%end
                     do j = isx%beg, isx%end

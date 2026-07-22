@@ -98,6 +98,7 @@ contains
         type(riemann_states_vec3) :: cm        !< Conservative momentum variables
         integer :: i, j, k, l                  !< Generic loop iterators
         integer :: Re_size_loc1, Re_size_loc2  !< host copies of Re_size; amdflang reads the declare-target original stale cross-TU
+        logical :: mg_mixture_loc
         ! Populating the buffers of the left and right Riemann problem states variables, based on the choice of boundary conditions
 
         call s_populate_riemann_states_variables_buffers(qL_prim_rsx_vf, dqL_prim_dx_vf, dqL_prim_dy_vf, dqL_prim_dz_vf, &
@@ -106,6 +107,7 @@ contains
         ! Reshaping inputted data based on dimensional splitting direction
         call s_initialize_riemann_solver(flux_src_vf, norm_dir)
         Re_size_loc1 = Re_size(1); Re_size_loc2 = Re_size(2)
+        mg_mixture_loc = mg_mixture  !< host copy; amdflang reads the declare-target original stale cross-TU
         #:for NORM_DIR, XYZ, STENCIL_VAR, COORDS, X_BND, Y_BND, Z_BND in &
                     [(1, 'x', 'j', '{STENCIL_IDX}, k, l', 'is1', 'is2', 'is3'), &
                      (2, 'y', 'k', 'j, {STENCIL_IDX}, l', 'is2', 'is1', 'is3'), &
@@ -122,7 +124,7 @@ contains
                                     & gamma_L, gamma_R, pi_inf_L, pi_inf_R, qv_L, qv_R, qv_avg, c_L, c_R, G_L, G_R, damage_L, &
                                     & damage_R, rho_avg, H_avg, c_avg, gamma_avg, ptilde_L, ptilde_R, vel_L_rms, vel_R_rms, &
                                     & vel_avg_rms, Ms_L, Ms_R, pres_SL, pres_SR, alpha_L_sum, alpha_R_sum, flux_tau_L, &
-                                    & flux_tau_R]', copyin='[norm_dir]', firstprivate='[Re_size_loc1, Re_size_loc2]')
+                                    & flux_tau_R]', copyin='[norm_dir]', firstprivate='[Re_size_loc1, Re_size_loc2, mg_mixture_loc]')
                 do l = ${Z_BND}$%beg, ${Z_BND}$%end
                     do k = ${Y_BND}$%beg, ${Y_BND}$%end
                         do j = ${X_BND}$%beg, ${X_BND}$%end
