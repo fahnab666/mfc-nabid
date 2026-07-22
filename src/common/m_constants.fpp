@@ -115,8 +115,9 @@ module m_constants
     integer, parameter :: BC_DIRICHLET = -17
 
     ! Equation-of-state selector (fluid_pp(:)%eos). Values must match _EOS_NAMES in
-    ! toolchain/mfc/params/definitions.py. Only stiffened_gas and ideal_gas_mixture
-    ! are currently backed by a thermodynamics adapter.
+    ! toolchain/mfc/params/definitions.py. stiffened_gas, ideal_gas_mixture, and jwl (via the
+    ! Mie-Grueneisen backend) are backed by an adapter; mie_gruneisen and table are reserved
+    ! and rejected in the checkers.
     integer, parameter :: eos_stiffened_gas = 1
     integer, parameter :: eos_ideal_gas_mixture = 2
     integer, parameter :: eos_mie_gruneisen = 3

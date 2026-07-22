@@ -395,18 +395,19 @@ CONSTRAINTS = {
 
 # Per-fluid equation-of-state selector. The enumeration is stable (its integer
 # values must match the eos_* constants hand-written in src/common/m_constants.fpp);
-# only stiffened_gas and ideal_gas_mixture are currently backed by a thermodynamics
-# adapter, so the remaining values are rejected explicitly in the checkers. The
-# constants are NOT auto-generated from here: generate_constants_fpp skips compound
-# keys, so these entries only drive readable-name resolution and validation.
+# stiffened_gas, ideal_gas_mixture, and jwl are backed by an adapter, while
+# mie_gruneisen and table are rejected explicitly in the checkers. The constants are
+# NOT auto-generated from here: generate_constants_fpp skips compound keys, so these
+# entries only drive readable-name resolution and validation.
 _EOS_VALUE_LABELS = {1: "stiffened-gas", 2: "ideal-gas mixture", 3: "Mie-Grueneisen", 4: "JWL", 5: "tabulated"}
 _EOS_NAMES = {"stiffened_gas": 1, "ideal_gas_mixture": 2, "mie_gruneisen": 3, "jwl": 4, "table": 5}
 for _f in range(1, NF + 1):
     CONSTRAINTS[f"fluid_pp({_f})%eos"] = {"choices": [1, 2, 3, 4, 5], "value_labels": _EOS_VALUE_LABELS, "names": _EOS_NAMES}
 
-# Mixed-cell EOS closure selector (values must match the mixture_closure_* constants
-# hand-written in src/common/m_constants.fpp). Only pressure_equilibrium is implemented;
-# the reserved values are rejected in the checkers until their own PRs land.
+# Mixed-cell EOS closure selector. mixture_closure is a simple key, so its
+# mixture_closure_* constants are auto-generated into generated_constants.fpp (unlike the
+# compound fluid_pp(N)%eos, whose constants are hand-written). Only pressure_equilibrium is
+# implemented; the reserved values are rejected in the checkers until their own PRs land.
 _CLOSURE_VALUE_LABELS = {1: "exact pressure equilibrium", 2: "composition-weighted blend", 3: "modified composition-weighted", 4: "Kuhl mixture EOS"}
 _CLOSURE_NAMES = {"pressure_equilibrium": 1, "composition_weighted": 2, "modified_composition_weighted": 3, "kuhl": 4}
 CONSTRAINTS["mixture_closure"] = {"choices": [1, 2, 3, 4], "value_labels": _CLOSURE_VALUE_LABELS, "names": _CLOSURE_NAMES}
