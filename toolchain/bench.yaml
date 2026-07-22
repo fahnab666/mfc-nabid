@@ -28,6 +28,17 @@
   path: benchmarks/5eq_rk3_weno3_lf/case.py
   args: []
 
+# Benchmark jwl_eos_weno_order_3_riemann_solver_2
+# Additional Benchmarked Features
+# - fluid_pp(1)%eos : jwl (generalized Mie-Gruneisen mixture accumulators)
+# - model_equations : 2
+# - time_stepper : 3
+# - weno_order : 3
+# - riemann_solver : 2
+- slug: 5eq_jwl_weno3_hllc
+  path: benchmarks/5eq_jwl_weno3_hllc/case.py
+  args: []
+
 # Benchmark viscosity_weno_Re_flux_T_weno_order_5_bubbles_T_bubble_mode_3_acoustic_T
 # Additional Benchmarked Features
 # - viscosity enabled
