@@ -291,7 +291,10 @@ contains
                 rho_K = rho_K + alpha_rho_K(i)
                 ! Each Mie-Gruneisen family is one case arm: it evaluates its reference curve
                 ! (Gamma, p_ref, dp_ref, e_ref, de_ref) at the phasic density and folds it into
-                ! the same three accumulator slots. A new family only adds a case here.
+                ! the same three accumulator slots. Adding a family also means extending the
+                ! mg_mixture gate in s_initialize_variables_conversion_module (it keys on eos_jwl
+                ! alone, so a new family left out of it silently falls through to the stiffened
+                ! accumulators) and the checker EOS allowlists; the case arm is not the sole edit.
                 select case (eos_fl(i))
                 case (eos_jwl)
                     ! A vanished phase (alpha driven below sgm_eps by reconstruction overshoot, even
