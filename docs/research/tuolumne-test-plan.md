@@ -24,6 +24,21 @@ directory.
    `./mfc.sh` commands concurrently in one tree; it corrupts the build staging.
 3. Record `build/lock.yaml` for every configuration before trusting any timing.
    A stale debug flag in the lock invalidated one local benchmark this week.
+4. Launcher smoke test, before booking any session: `./mfc.sh test` and `./mfc.sh
+   bench` re-invoke `./mfc.sh run` internally WITHOUT a `--computer` flag, so the
+   nested runs render `default.mako`, whose launcher search (jsrun, srun, mpirun,
+   mpiexec) finds nothing on a Flux machine. Inside a small `flux alloc`, run one
+   single test and one bench case and confirm the launcher line in the log. If they
+   fail, fix before Session 0: provide an `mpirun` shim wrapping `flux run` on PATH
+   via the tuo module load, or patch `default.mako` with a `flux run` branch, or add a
+   `--computer` passthrough to test/bench. Direct `./mfc.sh run -c tuo` already emits
+   `flux run` and is unaffected.
+5. amdflang lane feasibility: `toolchain/modules` has no AMD compiler entry for `tuo`
+   (only cpe + rocm, i.e. Cray ftn). Before the sessions, add a `tuo-amd` entry
+   modeled on the Frontier `famd` slug (PrgEnv-amd plus the rocm matching the cpe
+   release) and compile-smoke it on the login node. If PrgEnv-amd is unavailable on
+   Tuolumne, record that build 4 and the amdflang checks are covered elsewhere
+   (Frontier or upstream CI) instead of leaving watchpoint 2 silently unclosed.
 
 ## Phase 1: build matrix (correct compilation is itself a test)
 
@@ -49,9 +64,12 @@ compiler; watch build 1 and 3 logs for INLINEALWAYS diagnostics.
 1. Full golden suite, CPU, Cray ftn: `./mfc.sh test -j 32`. Expect 620/620. Any diff on a
    pre-existing test is a bug in the stack, not noise; do not regenerate goldens.
 2. Full golden suite, GPU (inside a Flux allocation):
-   `./mfc.sh test -j 4 --gpu mp -g 0 1 2 3`. The three JWL tests (976FEEC6 and the two
-   example tests) run the mg_mixture path on device for the first time; to smoke them
-   first: `./mfc.sh test --gpu mp -g 0 -o 976FEEC6 8F3DAFFE 5B8C364F`.
+   `./mfc.sh test -j 4 --gpu mp -g 0 1 2 3`. The five JWL tests run the mg_mixture
+   path on device for the first time: 976FEEC6 (HLLC), 2F3BCDF0 (HLL), 75E949C3 (LF),
+   and the two example tests 8F3DAFFE and 5B8C364F. The HLL and LF pair cover separate
+   `@:accumulate_mixture` expansions in different solver translation units, which is
+   exactly the per-dispatch-site risk of watchpoint 2; smoke all five first:
+   `./mfc.sh test --gpu mp -g 0 -o 976FEEC6 2F3BCDF0 75E949C3 8F3DAFFE 5B8C364F`.
 3. CPU versus GPU agreement on the two JWL examples: run
    `examples/1D_jwl_shocktube` and `examples/1D_jwl_products_expansion` in both modes and
    diff the final D data to tolerance. This is the direct check that the JWL accumulator,
@@ -62,8 +80,20 @@ compiler; watch build 1 and 3 logs for INLINEALWAYS diagnostics.
    state on exactly this compiler.
 5. Vanished-phase robustness: run the products-expansion example with `mpp_lim = T`
    added to the case. Before 09fa0a17 this could NaN at the material interface. Expect a
-   clean run with finite output.
-6. Toolchain unit tests on the login node:
+   clean run with finite output. Add a stress case that provably FIRES the gate, not
+   just tolerates it: a steep JWL/air interface driven until alpha crosses sgm_eps
+   (instrument with a one-off print or run under `--debug`), confirming both that the
+   run stays finite and that the gated cells' pressure error stays within the two-part
+   bias bound stated in the ladder plan (O(sgm_eps) on gamma/pi_inf, partial-mass
+   bounded on qv).
+6. External-truth verification (laptop-runnable, before or parallel to Tuolumne, rides
+   in the PR4 body): exact-Riemann comparison for the JWL shocktube against the Shyue
+   2001 multifluid JWL configuration, an analytic principal-isentrope expansion
+   overlay, and a JWL/air interface advection test asserting pressure and velocity
+   uniformity to tolerance, with convergence order reported. Goldens and mirrored
+   manufactured tests only lock in current behavior; this item is what shows the
+   behavior is right.
+7. Toolchain unit tests on the login node:
    `python -m pytest mfc/test_mg_eos.py mfc/test_materials.py -q` from `toolchain/`.
 
 ## Phase 3: performance (the maintainer's question, answered on his hardware class)
@@ -75,18 +105,25 @@ compiler; watch build 1 and 3 logs for INLINEALWAYS diagnostics.
    fixed locally (commit 07fc90ac), and this run confirms the fix holds under Cray ftn,
    whose inliner differs from gfortran.
 2. GPU bench, both trees, single MI300A: same bench pair under `-m g` with `--gpu mp`
-   builds. This is the first GPU timing of the stack anywhere. The stiffened hot path
-   should be identical to master; the only new device code behind `if (mg_mixture)` is
-   never taken in the bench cases.
+   builds. This is the first GPU timing of the stack anywhere. The seven stock cases
+   never take the `if (mg_mixture)` branch, so their stiffened hot path should match
+   master; the combined tree's extra `5eq_jwl_weno3_hllc` case does take it and is the
+   GPU JWL-path baseline.
 3. Weak scaling: HLLC bench case at 1, 2, 4, and 8 ranks (up to 2 nodes x 4 APUs) with
-   fixed memory per rank, submitted through Flux:
-   `./mfc.sh run benchmarks/5eq_rk3_weno3_hllc/case.py -e batch -c tuo -N <nodes> -n <ranks_per_node> -w 00:15:00 -a <bank> -t pre_process simulation --output-summary <artifact>.yaml`.
-   Compare parallel efficiency base versus combined. The stack changes no MPI code, so
-   any efficiency delta indicates a problem.
-4. JWL-specific grind: time the JWL shocktube at production resolution on one APU and
-   report the grind-time ratio of a JWL cell versus a stiffened cell (expect a modest
-   constant factor from the two `exp()` evaluations per cell per stage; record it so the
-   PR body can state the cost of enabling the feature honestly).
+   fixed memory per rank. Design constraints that make the numbers meaningful: state
+   `-- --gbpp 1` explicitly (the case silently defaults to 16 GB per rank otherwise)
+   and lengthen runs past device warmup with `-- --steps 200`, since the stock GPU
+   sizing runs only 20 steps and first-touch plus MPI startup jitter at 8 ranks
+   exceeds any tight threshold. Run at least 3 interleaved base/combined pairs per
+   rank count and read the median pairwise delta, the same drift-cancellation
+   procedure as Appendix B. The stack changes no MPI code, so a one-sided trend across
+   repeats indicates a problem; a single-run difference does not.
+4. JWL-specific cost, controlled: run the identical `5eq_jwl_weno3_hllc` geometry and
+   initial condition twice on one APU, once as shipped (fluid 1 JWL) and once with
+   fluid 1 replaced by a stiffened surrogate (same patches, same numerics), interleaved
+   for drift cancellation. The whole-case grind delta is "the cost of enabling one JWL
+   fluid" and goes in the PR4 body. Cross-case comparisons (JWL case versus the stock
+   droplet case) mix flow-structure effects into the delta and are indicative only.
 5. Record everything in yaml artifacts and keep the lock files; the PR1 reopen argument
    is strongest as a table of same-lock grind numbers on the reviewers' own hardware class.
 
@@ -120,10 +157,12 @@ Mergeability
 1. Rebase the ladder onto current upstream master (`MFlowCode/MFC`) in a scratch clone
    and record the conflict surface per PR. The ladder is only submittable if PR1 rebases
    clean; later rungs may conflict with each other by design (they stack).
-2. Per-rung independence check: build and run the golden suite at each rung boundary
-   (PR1 tip, PR1+2, PR1+2+3, full stack) so every PR is individually green and the
-   maintainer can merge them one at a time. The rung tips exist as local branches;
-   re-verify after any rebase.
+2. Per-rung independence check: per-rung suite verification happens at reconstruction
+   time, on each rebuilt tip, per the ladder plan's reconstruction procedure step 4.
+   The old local rung branches are stale (they predate the hardening commits) and are
+   NOT test articles; do not spend node hours on them. If an interim stacked check is
+   wanted before reconstruction, cut fresh scratch rungs from the combined diff using
+   the ladder plan's fix-assignment table.
 3. Diff budget per rung: report net LOC and files touched per PR against the request in
    each PR body. Anything that grew during the fix cycle gets rechecked against scope.
 4. Golden-file discipline: the stack must add goldens only for new JWL tests and change
@@ -193,7 +232,7 @@ Session 0 (1 node, CPU mode): the CPU golden suite (620 tests) under Cray ftn wi
 `-j` across the node's cores; it takes about ten minutes locally at `-j 8`, so one hour
 on a Tuolumne node covers it with room for the Phase 5 rung-boundary suite repeats.
 
-Session 1 (1 node is enough, correctness): GPU golden subset including the three JWL
+Session 1 (1 node is enough, correctness): GPU golden subset including all five JWL
 tests; both JWL examples on one APU; dump final D data. If time remains, the amdflang
 binary repeat of the JWL shocktube (stale-selector check) and the `mpp_lim` run. All are
 small 1D cases; this fits in well under an hour.
@@ -204,11 +243,13 @@ base and combined per case if the hour looks tight so partial results are still 
 Compare offline with `bench_diff` after the session.
 
 Session 3 (2 nodes, scaling): HLLC bench case at 1, 2, 4, and 8 ranks (up to the full
-2 nodes x 4 APUs) with fixed memory per rank, base and combined. Eight short runs; submit
-them as one Flux script so scheduling gaps do not eat the hour. This replaces the
-multi-day weak-scaling ladder; 8 APUs across 2 nodes already answers "does it scale" at
-the granularity the PR discussion needs, and the JWL cell-cost timing (Phase 3 item 4)
-fits at the end of this session on one rank.
+2 nodes x 4 APUs) with fixed memory per rank, base and combined, at least 3 interleaved
+pairs per rank count (Phase 3 item 3). The execution model is a HELD allocation, not
+batch submission: `-e batch` would submit independent exclusive Flux jobs whose queue
+waits are outside the session's control. Hold `flux alloc -N 2 -t 60m` and run the
+cases sequentially in interactive engine with `-c tuo` (which emits `flux run` inside
+the allocation), giving deterministic packing. The JWL controlled cost A/B (Phase 3
+item 4) fits at the end of this session on one rank.
 
 CPU versus GPU agreement diffs, bench_diff tables, and the Phase 4 report are all offline
 post-processing of session artifacts. Any red result stops the line for that lane; report
@@ -220,7 +261,10 @@ One directory per session under `$HOME/eos_ladder_runs/`, named
 `s<session>_<tree>_<mode>/`, e.g. `s2_combined_gpu/`. Every run writes an
 `--output-summary` yaml into it, and every session directory gets a copy of the tree's
 `build/lock.yaml` and the `git rev-parse HEAD` it ran. A result without its lock and SHA
-is not evidence; the lock file is what caught an invalid benchmark locally.
+is not evidence; the lock file is what caught an invalid benchmark locally. The lock
+must show the INTENDED configuration for the run to count: bare `./mfc.sh test`/`bench`
+inherit whatever configuration built last (the lock persists it), so every session
+command below pins the config explicitly instead of trusting the lock state.
 
 ## Appendix B: session command blocks
 
@@ -239,13 +283,15 @@ Session 0, CPU suite (1 node, interactive allocation):
 
     flux alloc -N 1 -t 60m
     source ./mfc.sh load -c tuo -m c
-    ./mfc.sh test -j 32 2>&1 | tee $ART/s0_suite.log     # expect 620 passed, 0 failed
+    ./mfc.sh test -j 32 --no-gpu 2>&1 | tee $ART/s0_suite.log   # expect 620 passed, 0 failed
+    # --no-gpu pins the config; the login-node prebuild ends on --gpu mp, so a bare
+    # invocation would inherit the GPU lock and rebuild inside the allocation
 
 Session 1, GPU correctness (1 node):
 
     flux alloc -N 1 -t 60m
     source ./mfc.sh load -c tuo -m g
-    ./mfc.sh test --gpu mp -g 0 -o 976FEEC6 8F3DAFFE 5B8C364F   # JWL on device first
+    ./mfc.sh test --gpu mp -g 0 -o 976FEEC6 2F3BCDF0 75E949C3 8F3DAFFE 5B8C364F   # all 5 JWL on device first
     ./mfc.sh test -j 4 --gpu mp -g 0 1 2 3                       # then the full GPU set
     ./mfc.sh run examples/1D_jwl_shocktube/case.py -t pre_process simulation
     ./mfc.sh run examples/1D_jwl_products_expansion/case.py -t pre_process simulation
@@ -253,11 +299,12 @@ Session 1, GPU correctness (1 node):
 
 Session 2, single-APU bench (1 node, run per tree, interleave if tight):
 
-    ./mfc.sh bench -m 1 -j 8 -o $ART/s2_<tree>_gpu.yaml
+    ./mfc.sh bench -m 1 -j 8 --gpu mp -o $ART/s2_<tree>_gpu.yaml   # pin the GPU config
     # offline: ./mfc.sh bench_diff s2_base_gpu.yaml s2_combined_gpu.yaml
-    # bench_diff uses the case-set intersection, so the combined tree's extra
-    # 5eq_jwl_weno3_hllc case (JWL accumulator path; no master counterpart) is
-    # reported standalone: record its grind as the JWL-path baseline.
+    # bench_diff takes the case-set intersection and only WARNS about the combined
+    # tree's extra 5eq_jwl_weno3_hllc case; it prints no timing row for it. Read its
+    # grind directly from s2_combined_gpu.yaml (cases -> 5eq_jwl_weno3_hllc ->
+    # output_summary -> simulation -> grind) and record that as the JWL-path baseline.
 
 For any case whose delta exceeds the noise floor, do not trust two sequential
 sweeps (clock drift lands entirely on whichever tree ran second). Re-measure
@@ -271,12 +318,17 @@ pairwise delta:
           -- --gbpp 1) | grep Performance:
     done
 
-Session 3, scaling (2 nodes): submit all eight runs (1, 2, 4, 8 ranks x both trees) as
-batch jobs at session start so they pack the hour:
+Session 3, scaling (2 nodes): hold the allocation and run interactively so packing is
+deterministic; do NOT use `-e batch`, which submits independent exclusive jobs to the
+open queue:
 
-    ./mfc.sh run benchmarks/5eq_rk3_weno3_hllc/case.py -e batch -c tuo \
-        -N <nodes> -n <ranks_per_node> -w 00:12:00 -a <bank> \
-        -t pre_process simulation --output-summary $ART/s3_<tree>_r<ranks>.yaml
+    flux alloc -N 2 -t 60m
+    source ./mfc.sh load -c tuo -m g
+    for r in 1 2 4 8; do for tree in base combined; do   # 3 interleaved pairs per r
+      (cd $TREE_DIR/$tree && ./mfc.sh run benchmarks/5eq_rk3_weno3_hllc/case.py -c tuo \
+          -n $r -t pre_process simulation \
+          --output-summary $ART/s3_${tree}_r${r}_p${pair}.yaml -- --gbpp 1 --steps 200)
+    done; done
 
 ## Appendix C: pass and fail criteria
 
@@ -289,7 +341,7 @@ batch jobs at session start so they pack the hour:
 | amdflang JWL shocktube | finite nonzero pressure everywhere | suspect the mixture_closure device copy first (commit 09fa0a17) |
 | mpp_lim products run | completes, finite output | suspect the vanished-phase floor (commit 09fa0a17) |
 | GPU bench pair | every case within 5 percent, no one-sided trend | rerun the outlier alternating, as done for hypo_hll and HLLC locally |
-| Scaling | efficiency delta base vs combined under 2 percent at 8 ranks | check GPU_UPDATE placement around MPI in the diff |
+| Scaling | median pairwise efficiency delta small and no one-sided trend across repeats at each rank count | check GPU_UPDATE placement around MPI in the diff |
 
 ## Appendix D: failure triage kit
 

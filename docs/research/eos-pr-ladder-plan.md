@@ -70,17 +70,21 @@ late to protect the rung that needs it.
 | HLL/LF mixture goldens (`721d26ed`), example goldens, suite case | PR4 | JWL test coverage |
 | `5eq_jwl_weno3_hllc` bench case and `bench.yaml` entry (`c0eeeff0`) | PR4 | CI would fail benching a JWL case before PR4 merges |
 | `materials.py`, `test_materials.py` | PR5 | material-file scope |
+| `s_check_eos` loop bound over the bubbles_euler extra fluid slot (known gap, unfixed) | PR2 | push to #1664 during review; it belongs to the selector's validation contract |
 | Comment and documentation corrections (`de3d52d0`, `96c02284`) | with their subject's rung | |
 | Tuolumne plan, this document | fork only | not upstream material |
 
-PR0, the probe qv correction, is deliberately split out and submitted first as a tiny
-standalone fix. The simulation probe output path builds the sound-speed enthalpy
-without the qv term while the main path (`s_compute_enthalpy`) and the post-process
-energy loop both include it; the correction changes probe output for any case with
-nonzero qv, stiffened cases included, and no golden covers probes with qv. Hiding a
-behavior change inside PR1, whose entire claim is "no changed answers", would hand a
-reviewer a reason to distrust the ladder. As its own two-line PR with the two
-authoritative call sites quoted, it is instead an easy merge.
+PR0, the probe qv correction, is deliberately split out as a tiny standalone bugfix.
+The simulation probe output path builds the sound-speed enthalpy without the qv term
+while the main path (`s_compute_enthalpy`) and the post-process energy loop both
+include it; the correction changes probe output for any case with nonzero qv, stiffened
+cases included, and no golden covers probes with qv. PR0 is independent of PR1, which
+never touches `m_data_output.fpp`, so the in-flight #1663 and #1664 do not wait on it.
+Its hard deadline is before PR4 is submitted: once the qv slot carries the JWL
+reference-energy accumulator, the uncorrected probe shortcut stops being a dormant
+qv-case defect and becomes wrong for every JWL probe. File it now, while it is a
+two-line diff with the two authoritative call sites quoted, and reference it from the
+#1663 body so a reviewer who notices the probe discrepancy finds the fix already filed.
 
 Reconstruction procedure, applied per rung as its predecessor merges:
 
@@ -90,8 +94,10 @@ Reconstruction procedure, applied per rung as its predecessor merges:
    history; the history interleaves rungs and its intermediate states are not
    individually verified.
 3. Regenerate the rung's new goldens on the rebuilt tip and confirm they match the
-   combined-branch values; test UUIDs are stable (CRC32 of the trace string) so the
-   identifiers carry over.
+   combined-branch values. Test UUIDs are a hash of the trace label text (CRC32 of the
+   SHA1 of the trace; the parameter modifications do not enter it), so identifiers
+   carry over only if the test-definition hunk is ported verbatim and upstream has not
+   renamed the enclosing labels; verify with `./mfc.sh test -l` before regenerating.
 4. Build all three targets, run the full suite, run precheck, and for PR3 onward run
    the drift-canceled paired benchmark against the rebuilt tip's own base.
 5. Diff the rebuilt tip against the corresponding file states on `feature/eos-combined`
@@ -123,7 +129,8 @@ into the branch:
    Cray compiler locally; the Tuolumne build matrix gates them.
 
 Remaining: fold the Tuolumne Cray CPU, Cray GPU, and AMD GPU bench columns into the PR
-body when available, and land PR0 first so this PR's no-answer-change claim is exact.
+body when available. PR1's no-answer-change claim stands on its own; it does not touch
+the probe output file, so it does not wait on PR0.
 
 ## PR2: explicit EOS selector (submitted, #1664)
 
@@ -132,11 +139,14 @@ Canonical scope: stable enumeration (`stiffened_gas`, `ideal_gas_mixture`,
 stiffened gas default, unsupported combinations rejected explicitly, no promise of
 arbitrary per-cell family mixing.
 
-Implemented exactly so: constants in `src/common/m_constants.fpp`, per-fluid `%eos` in
-the derived types, name-to-enum mapping in the toolchain, rejection in
+Implemented so: constants in `src/common/m_constants.fpp`, per-fluid `%eos` in the
+derived types, name-to-enum mapping in the toolchain, rejection in
 `m_checker_common.fpp` and `case_validator.py`. `mie_gruneisen` and `table` are
 enumerated but rejected by the checkers until their rungs land, which keeps the
-enumeration stable from day one.
+enumeration stable from day one. One known gap remains open in the submitted #1664:
+the `s_check_eos` loop runs over `num_fluids` and misses the bubbles_euler extra fluid
+slot, leaving that slot's `%eos` unvalidated. The fix goes to #1664 directly during
+review, not to a later rung.
 
 ## PR3: generic Mie-Gruneisen (implemented, unsubmitted)
 
@@ -153,10 +163,26 @@ central identity every family plugs into is the accumulator triple: given a fami
     pi_inf += alpha * ((rho_i * dp_ref - p_ref) / Gamma - p_ref)
     qv     += alpha_rho * (e_ref + rho_i * de_ref - dp_ref / Gamma)
 
-which reduces exactly to the legacy stiffened slot arithmetic for a linear reference
-curve. That reduction is the manufactured test and the reason all-stiffened cells stay
-bit-identical. The identity reuses the existing gamma, pi_inf, and qv mixture slots in
-their existing algebraic roles, so no downstream consumer of the mixture state changes.
+The identity reuses the existing gamma, pi_inf, and qv mixture slots in their existing
+algebraic roles, so no downstream consumer of the mixture state changes. Two claims
+about it must be stated precisely, because a reviewer will check them. First, the
+reduction to legacy stiffened arithmetic: feeding the stiffened reference triple
+through the identity reproduces the legacy gamma and pi_inf slots exactly, and
+reproduces the legacy qv slot only when the reference energy carries the heat of
+formation (e_ref = pi_inf/rho + qv); the manufactured tests cover this reduction.
+Second, and separately, the bit-identity of all-stiffened cells does not rest on that
+reduction at all: such cells never enter the generalized path (the mg_mixture gate is
+false) and mixed cells keep the verbatim legacy arithmetic in the stiffened case arm.
+The reduction is the design argument; the gate and the verbatim arm are the mechanism.
+
+The slot split also carries a mathematical admission requirement for future families:
+the pi_inf/qv decomposition is energy-consistent only for reference curves satisfying
+rho^2 de_ref = p_ref, the isentrope condition. JWL satisfies it by construction
+(de_ref = p_ref/rho^2) and the manufactured suite tests it
+(`test_isentrope_self_consistency`). A Hugoniot-referenced family does not satisfy it
+and cannot be added as just another case arm; it needs either an energy-offset
+transformation to an isentrope-consistent form or an extension of the accumulator
+slots, and is therefore a separately designed rung.
 
 Implementation refinements beyond the canonical text:
 
@@ -168,7 +194,8 @@ Implementation refinements beyond the canonical text:
    generalized path with no gate edit, and a family missing its case arm contributes
    nothing and fails immediately with a zero mixture gamma rather than silently running
    stiffened arithmetic. Adding a family touches three files: the constants enum, the
-   case arm, and the checker allowlist.
+   case arm, and the checker allowlist; and its reference curve must satisfy the
+   isentrope condition above or the family is not admissible in this structure.
 3. This rung exposes no new user-facing choice. `fluid_pp(:)%eos = 'mie_gruneisen'`
    stays checker-rejected: the backend exists for families to build on, and exposing a
    bare generic family without a validated closure, parameter checks, and tests of its
@@ -203,8 +230,15 @@ Hardening shipped with this rung, all part of its review story:
 
 1. Vanished-phase gate: a phase driven below `sgm_eps` by reconstruction overshoot has
    an ill-defined phasic density; its reference-curve contribution is skipped while its
-   mass still enters the mixture density. This trades a NaN for a bias of order
-   `sgm_eps` and is bit-identical on every current test cell.
+   mass still enters the mixture density. The bias bound is two-part and stated
+   honestly: the omitted gamma and pi_inf terms are alpha-weighted and genuinely
+   O(sgm_eps), but the omitted qv term is mass-weighted, bounded by
+   alpha_rho x (A/(rho0 R1) + B/(rho0 R2)), which is proportional to the vanished
+   phase's partial mass, small in practice but not O(sgm_eps), since alpha and
+   alpha_rho are independently reconstructed at exactly the overshoot cells that fire
+   the gate. The trade is a bounded bias against a certain NaN. Bit-identical on every
+   current test cell; a stress case that actually fires the gate is in the Tuolumne
+   plan's correctness phase.
 2. amdflang cross-TU staleness: the Riemann kernels read `mg_mixture` through a
    firstprivate host-local copy, following the proven `Re_size_loc` idiom already in
    those kernels.
@@ -212,10 +246,22 @@ Hardening shipped with this rung, all part of its review story:
    IGR, immersed boundaries, acoustic sources, relativity, and post-process `sim_data`,
    each with a named checker message. Gates are lifted rung by rung, never implicitly.
 4. Coverage: golden tests for HLLC, HLL, and Lax-Friedrichs mixture accumulation, two
-   example-based goldens, and the `5eq_jwl_weno3_hllc` benchmark case that prices the
-   feature (+23 percent grind on JWL cells, from the two exponentials per fluid per
-   accumulation). The `bench.yaml` entry must ride in this PR and no earlier, since
-   upstream benchmark CI would otherwise run a case the solver rejects.
+   example-based goldens, and the `5eq_jwl_weno3_hllc` benchmark case. The `bench.yaml`
+   entry must ride in this PR and no earlier, since upstream benchmark CI would
+   otherwise run a case the solver rejects.
+5. Cost measurement, controlled: the quotable number is the whole-case grind delta of
+   the identical `5eq_jwl_weno3_hllc` geometry and initial condition run twice, once
+   with fluid 1 as JWL and once with fluid 1 as a stiffened surrogate, interleaved for
+   drift cancellation. The first indicative cross-case comparison (89.2 versus 72.4 ns
+   against the stock droplet case) mixes flow-structure effects into the delta and is
+   not the PR-body number; it only brackets the order of magnitude.
+6. Verification against external truth, since goldens and mirrored manufactured tests
+   only lock in current behavior: an exact-Riemann comparison for the JWL shocktube
+   (the Shyue 2001 multifluid JWL configuration, JCP 171:678, gives reference
+   solutions), an analytic principal-isentrope expansion overlay, and a JWL/air
+   interface advection test asserting pressure and velocity uniformity to a stated
+   tolerance, with convergence order reported for the shocktube. All are 1D and
+   laptop-runnable; they ride in the PR body as figures, cited.
 
 Remaining: rebuild after PR3 merges; attach the CPU versus GPU agreement runs and the
 measured cost factor from Tuolumne.
@@ -253,17 +299,22 @@ Preparing the answer before the question is most of why the combined branch exis
 | PR3 | why is the mixture rule in `m_variables_conversion` and not the leaf | inlining contract; the leaf stays pure so the accumulator inlines, the dispatch lives at call sites |
 | PR3 | what stops a half-added family | zero-gamma loud failure by construction, three-file extension contract, extension drill in the test plan |
 | PR4 | why no wave-speed or solver changes | the accumulator identity feeds the existing solvers; JWL is state evaluation only, which is the point of PR3 |
-| PR4 | cost of the feature | measured: +23 percent grind on JWL cells, zero on stiffened cases; quoted in the PR body |
-| PR4 | robustness at interfaces | vanished-phase gate with stated bias bound; eps-vanished phases exercised in suite, examples, and the bench case |
+| PR4 | cost of the feature | controlled same-case A/B (JWL versus stiffened surrogate fluid, identical geometry and numerics), interleaved; zero cost on stiffened cases by the gate |
+| PR4 | is it actually right, not just self-consistent | external-truth set: Shyue 2001 exact Riemann, isentrope overlay, interface advection uniformity, convergence order |
+| PR4 | robustness at interfaces | vanished-phase gate with the two-part bias bound (O(sgm_eps) on gamma/pi_inf, partial-mass-bounded on qv); gate-firing stress case in the test plan |
 | PR5 | is this an explosives library | no: loader plus synthetic demonstrations; provenance and release gating are how real data stays external |
 
 ## Submission sequence and dependencies
 
-The chain is strict: PR0, then PR1 through PR5, each submitted only after its
-predecessor merges, each rebuilt onto current master at submission time per the
-reconstruction procedure. Tuolumne results slot into PR bodies as follows: PR1 gets the
-three-platform bench table, PR2 and PR3 get build-matrix results, PR4 and PR5 get the
-CPU/GPU agreement runs and the JWL cost factor.
+The constraints are merge-order constraints, not a fiction about submission order the
+history already contradicts: #1663 (PR1) and #1664 (PR2) are in flight, with #1664
+stacked on #1663 and rebased onto master when #1663 merges. PR0 is independent of both
+(PR1 never touches the probe output file) and is filed now; its only hard edge is
+PR0 before PR4. From PR3 onward the chain is strict: each rung is rebuilt onto current
+master per the reconstruction procedure only after its predecessor merges. Tuolumne
+results slot into PR bodies as follows: PR1 gets the three-platform bench table, PR2
+and PR3 get build-matrix results, PR4 and PR5 get the CPU/GPU agreement runs and the
+controlled JWL cost factor.
 
 Before PR1 review advances, the two pre-existing upstream defects found during review
 (conserved-variable slot misuse and a scalar-stress energy loop in the relocated
