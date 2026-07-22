@@ -294,15 +294,20 @@ contains
                 ! the same three accumulator slots. A new family only adds a case here.
                 select case (eos_fl(i))
                 case (eos_jwl)
-                    ! Both floors matter: a vanished phase (alpha_rho exactly 0, e.g. after the
-                    ! mpp_lim clamp) would otherwise give rho_i = 0 and Inf*0 = NaN inside the
-                    ! reference curve; its contributions below are still weighted to zero.
-                    rho_i = max(alpha_rho_K(i), sgm_eps)/max(alpha_K(i), sgm_eps)
-                    call s_mg_jwl_reference(jwl_As(i), jwl_Bs(i), jwl_R1s(i), jwl_R2s(i), jwl_omegas(i), jwl_rho0s(i), rho_i, &
-                                            & gamma_mg, p_ref, dp_ref, e_ref, de_ref)
-                    gamma_K = gamma_K + alpha_K(i)/gamma_mg
-                    pi_inf_K = pi_inf_K + alpha_K(i)*((rho_i*dp_ref - p_ref)/gamma_mg - p_ref)
-                    qv_K = qv_K + alpha_rho_K(i)*(e_ref + rho_i*de_ref - dp_ref/gamma_mg)
+                    ! A vanished phase (alpha driven below sgm_eps by reconstruction overshoot, even
+                    ! negative without mpp_lim) has an ill-defined phasic density alpha_rho/alpha; skip
+                    ! its reference-curve contribution rather than evaluate the JWL isentrope at
+                    ! rho_i -> 0 (Inf*0 = NaN) or rho_i -> huge (p_ref, e_ref -> A + B). Its mass still
+                    ! enters rho_K, and the alpha-weighted gamma_K/pi_inf_K terms it omits are
+                    ! negligible for a phase that occupies no volume.
+                    if (alpha_K(i) > sgm_eps) then
+                        rho_i = alpha_rho_K(i)/alpha_K(i)
+                        call s_mg_jwl_reference(jwl_As(i), jwl_Bs(i), jwl_R1s(i), jwl_R2s(i), jwl_omegas(i), jwl_rho0s(i), rho_i, &
+                                                & gamma_mg, p_ref, dp_ref, e_ref, de_ref)
+                        gamma_K = gamma_K + alpha_K(i)/gamma_mg
+                        pi_inf_K = pi_inf_K + alpha_K(i)*((rho_i*dp_ref - p_ref)/gamma_mg - p_ref)
+                        qv_K = qv_K + alpha_rho_K(i)*(e_ref + rho_i*de_ref - dp_ref/gamma_mg)
+                    end if
                 case default
                     ! Stiffened gas keeps its legacy slot arithmetic verbatim so all-stiffened
                     ! cells stay bit-identical to the master accumulators.
