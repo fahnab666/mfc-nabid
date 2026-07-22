@@ -21,20 +21,84 @@ Governing principles, from the maintainer and preserved throughout:
 
 | Rung | Canonical scope | State | Where |
 |---|---|---|---|
+| PR0 | Probe enthalpy qv correction (split out, see PR1 notes) | Identified, unsubmitted | commit `d04ade6a` (partial) |
 | PR1 | Central thermodynamics interface, no changed answers | Submitted | upstream #1663; tip `feature/thermodynamics-interface` |
 | PR2 | Explicit `fluid_pp(:)%eos` selector, existing adapters only | Submitted | upstream #1664 |
-| PR3 | Generic Mie-Gruneisen backend | Implemented, unsubmitted | tip `feature/eos-mie-gruneisen` |
-| PR4 | Nonreactive JWL as a reference-curve specialization | Implemented, unsubmitted | tip `feature/eos-jwl` |
-| PR5 | External material-file mechanism | Implemented, unsubmitted | on `feature/eos-combined` |
-| PR6 to PR10 | Reaction separation and families | Not started | design notes below |
+| PR3 | Generic Mie-Gruneisen backend | Implemented, unsubmitted | scope on `feature/eos-combined` |
+| PR4 | Nonreactive JWL as a reference-curve specialization | Implemented, unsubmitted | scope on `feature/eos-combined` |
+| PR5 | External material-file mechanism | Implemented, unsubmitted | scope on `feature/eos-combined` |
+| PR6 to PR10 | Reaction separation and families | Not started | design constraints below |
+
+A warning that shapes the whole submission plan: the historical rung-tip branches
+(`feature/eos-mie-gruneisen`, `feature/eos-jwl`) are stale. Twenty-one commits of
+hardening, review fixes, and performance work landed on `feature/eos-combined` after
+those tips were cut, including the vanished-phase gate, the amdflang firstprivate
+idiom, the mg_mixture gate restructure, and the HLL/LF golden coverage. Submitting the
+old tips would ship unhardened code. The rung branches are therefore rebuilt from the
+combined diff at submission time, per the reconstruction procedure below; the old tips
+are historical markers only.
 
 `feature/eos-combined` carries all five implemented rungs plus the review-fix and
-performance commits (40 commits, roughly +2900 net LOC over master `0857ace6`, half of
-which is tests, benchmarks, and documentation). Verification state: 620/620 golden tests
-bit-identical for all pre-JWL paths, drift-canceled grind parity with master on every
-stock benchmark case (median pairwise deltas +0.1 to +0.4 percent), and a measured JWL
-cell cost of +23 percent grind over stiffened HLLC (89.2 versus 72.4 ns per grid point
-per equation per RHS on the reference laptop).
+performance commits (40 commits, roughly +2900 net LOC over master `0857ace6`, about
+half of which is tests, benchmarks, and documentation). Verification state: 620/620
+golden tests bit-identical for all pre-JWL paths, drift-canceled grind parity with
+master on every stock benchmark case (median pairwise deltas +0.1 to +0.4 percent), and
+a measured JWL cell cost of +23 percent grind over stiffened HLLC (89.2 versus 72.4 ns
+per grid point per equation per RHS on the reference laptop).
+
+## Rung reconstruction: fix assignment and procedure
+
+Every hardening commit on the combined branch has exactly one home rung. The assignment
+below is the authority when the rung branches are rebuilt; a fix that ships in the
+wrong rung either breaks the no-answer-change contract of an early rung or arrives too
+late to protect the rung that needs it.
+
+| Combined-branch work | Home rung | Reason |
+|---|---|---|
+| Six-op interface module, adapter wiring, `cray_inline` hints (`cf8b0819`) | PR1 | interface scope |
+| Mixed-precision `f_bulk_modulus` call-site kinds, `f_validate_state` NaN parity (`362793d2`) | PR1 | correctness of the relocated helpers |
+| Probe sound-speed enthalpy `+ qv` term (part of `d04ade6a`) | PR0, standalone | behavior change for any qv nonzero case; see below |
+| Selector enum, name mapping, rejection checkers | PR2 | selector scope |
+| MG leaf module, accumulator identity, `s_mg_mixture_variables` | PR3 | MG scope |
+| Dispatch hoist and `@:accumulate_mixture` macro (`07fc90ac`, `9899810f`) | PR3 | the accumulator's performance contract |
+| mg_mixture gate keyed on non-legacy families (`a460b17c`) | PR3 | the extension contract |
+| JWL reference curve, parameters, checkers, examples | PR4 | JWL scope |
+| Vanished-phase gate (`fcf286bd`, refining `09fa0a17`) | PR4 | JWL isentrope robustness |
+| amdflang firstprivate host copy `mg_mixture_loc` (`702c88f4`) | PR4 | first rung whose device path reads the gate in kernels |
+| Device refresh of `mixture_closure` from the defining TU (`09fa0a17`) | PR3 | the gate's own device copy |
+| JWL feature gates incl. acoustic_source, relativity (`d04ade6a` remainder), sim_data (`b9f33ce6`) | PR4 | JWL scope |
+| HLL/LF mixture goldens (`721d26ed`), example goldens, suite case | PR4 | JWL test coverage |
+| `5eq_jwl_weno3_hllc` bench case and `bench.yaml` entry (`c0eeeff0`) | PR4 | CI would fail benching a JWL case before PR4 merges |
+| `materials.py`, `test_materials.py` | PR5 | material-file scope |
+| Comment and documentation corrections (`de3d52d0`, `96c02284`) | with their subject's rung | |
+| Tuolumne plan, this document | fork only | not upstream material |
+
+PR0, the probe qv correction, is deliberately split out and submitted first as a tiny
+standalone fix. The simulation probe output path builds the sound-speed enthalpy
+without the qv term while the main path (`s_compute_enthalpy`) and the post-process
+energy loop both include it; the correction changes probe output for any case with
+nonzero qv, stiffened cases included, and no golden covers probes with qv. Hiding a
+behavior change inside PR1, whose entire claim is "no changed answers", would hand a
+reviewer a reason to distrust the ladder. As its own two-line PR with the two
+authoritative call sites quoted, it is instead an easy merge.
+
+Reconstruction procedure, applied per rung as its predecessor merges:
+
+1. Branch from current upstream master (predecessor merged).
+2. Apply the rung's scope as a fresh, small commit series extracted from the combined
+   diff using the file and assignment tables, not by cherry-picking the 40-commit
+   history; the history interleaves rungs and its intermediate states are not
+   individually verified.
+3. Regenerate the rung's new goldens on the rebuilt tip and confirm they match the
+   combined-branch values; test UUIDs are stable (CRC32 of the trace string) so the
+   identifiers carry over.
+4. Build all three targets, run the full suite, run precheck, and for PR3 onward run
+   the drift-canceled paired benchmark against the rebuilt tip's own base.
+5. Diff the rebuilt tip against the corresponding file states on `feature/eos-combined`
+   apart from intentional rebase drift; any unexplained difference is a porting error.
+
+The combined branch remains the integration proof (all rungs coexist and pass
+together) and the Tuolumne test article. It is never itself submitted.
 
 ## PR1: thermodynamics interface (submitted, #1663)
 
@@ -42,12 +106,15 @@ Canonical scope: centralize `pressure`, `internal_energy`, `temperature`, `sound
 `thermodynamic_derivatives`, `validate_state` behind one interface with
 `stiffened_gas` and `pyrometheus` adapters; bit-identical results.
 
-Implemented as `src/common/m_thermodynamics.fpp`. Learnings folded back into the branch:
+Implemented as `src/common/m_thermodynamics.fpp` (251 lines). Learnings folded back
+into the branch:
 
 1. Fypp macros, not procedure pointers, are the dispatch mechanism that survives all
-   four CI compilers and both GPU backends. Textual expansion keeps the hot path
-   inlinable; the `@:accumulate_mixture` macro in
-   `src/simulation/include/inline_riemann.fpp` is the pattern.
+   four CI compilers and both GPU backends. Polymorphic or pointer-based dispatch
+   inside device kernels is exactly the construct that diverges across nvfortran, Cray,
+   and amdflang offload; textual expansion keeps the hot path inlinable everywhere.
+   The `@:accumulate_mixture` macro in `src/simulation/include/inline_riemann.fpp` is
+   the pattern.
 2. Dispatch placement is a measured performance matter, not style. Putting a runtime
    branch inside the leaf accumulator blocked gfortran inlining and cost 8 percent on
    HLLC grind; hoisting the branch to the call sites restored parity. Any reviewer
@@ -56,7 +123,7 @@ Implemented as `src/common/m_thermodynamics.fpp`. Learnings folded back into the
    Cray compiler locally; the Tuolumne build matrix gates them.
 
 Remaining: fold the Tuolumne Cray CPU, Cray GPU, and AMD GPU bench columns into the PR
-body when available.
+body when available, and land PR0 first so this PR's no-answer-change claim is exact.
 
 ## PR2: explicit EOS selector (submitted, #1664)
 
@@ -77,9 +144,9 @@ Canonical scope: reference pressure and energy curves, Gruneisen coefficient,
 pressure/energy inversion, analytic sound speed and derivatives, synthetic manufactured
 tests. JWL then becomes a reference curve, not a special path.
 
-Implemented as `src/common/m_eos_mie_gruneisen.fpp` with manufactured tests in
-`toolchain/mfc/test_mg_eos.py` (CI-run pytest, 203 lines). The central identity every
-family plugs into is the accumulator triple: given a family's
+Implemented as `src/common/m_eos_mie_gruneisen.fpp` (a 126-line leaf) with
+manufactured tests in `toolchain/mfc/test_mg_eos.py` (CI-run pytest, 203 lines). The
+central identity every family plugs into is the accumulator triple: given a family's
 (Gamma, p_ref, dp_ref, e_ref, de_ref) at the phasic density,
 
     gamma  += alpha / Gamma
@@ -88,19 +155,31 @@ family plugs into is the accumulator triple: given a family's
 
 which reduces exactly to the legacy stiffened slot arithmetic for a linear reference
 curve. That reduction is the manufactured test and the reason all-stiffened cells stay
-bit-identical.
+bit-identical. The identity reuses the existing gamma, pi_inf, and qv mixture slots in
+their existing algebraic roles, so no downstream consumer of the mixture state changes.
 
-Implementation refinement beyond the canonical text: the five-equation model always has
-mixture cells, so the mixture rule cannot wait for PR4. `s_mg_mixture_variables` in
-`m_variables_conversion.fpp` owns it, with one `select case (eos_fl(i))` arm per family.
-The extension contract is deliberately loud: the `mg_mixture` gate keys on "any fluid
-outside the two legacy-slot families", so a new family activates the generalized path
-with no gate edit, and a family missing its case arm contributes nothing and fails
-immediately with a zero mixture gamma rather than silently running stiffened arithmetic.
-Adding a family touches three files: the constants enum, the case arm, and the checker
-allowlist.
+Implementation refinements beyond the canonical text:
 
-Remaining: submit after PR2 merges; rebase is expected clean since the module is a leaf.
+1. The five-equation model always has mixture cells, so the mixture rule cannot wait
+   for PR4. `s_mg_mixture_variables` in `m_variables_conversion.fpp` owns it, with one
+   `select case (eos_fl(i))` arm per family.
+2. The extension contract is deliberately loud: the `mg_mixture` gate keys on "any
+   fluid outside the two legacy-slot families", so a new family activates the
+   generalized path with no gate edit, and a family missing its case arm contributes
+   nothing and fails immediately with a zero mixture gamma rather than silently running
+   stiffened arithmetic. Adding a family touches three files: the constants enum, the
+   case arm, and the checker allowlist.
+3. This rung exposes no new user-facing choice. `fluid_pp(:)%eos = 'mie_gruneisen'`
+   stays checker-rejected: the backend exists for families to build on, and exposing a
+   bare generic family without a validated closure, parameter checks, and tests of its
+   own invites misuse. The first consumer is JWL in PR4; a user-facing generic MG
+   (for example a linear-Hugoniot solid) becomes its own later rung with its own
+   checkers when something needs it. Because nothing user-visible changes, this PR's
+   acceptance is the same as PR1's: full suite bit-identical plus the manufactured
+   tests.
+
+Remaining: rebuild per the reconstruction procedure after PR2 merges; the module is a
+leaf so rebase conflicts should be near zero.
 
 ## PR4: nonreactive JWL (implemented, unsubmitted)
 
@@ -120,24 +199,26 @@ ordering-checked (`R1 > R2 > 0`) in `s_check_jwl_inputs`. In-repo cases use synt
 coefficients only (examples: A = 5e11, B = 8e9, R1 = 4.5, R2 = 1.2, omega = 0.3,
 rho0 = 1600; suite and benchmark: the O(1) nondimensional set).
 
-Hardening added during review, all part of this rung's story:
+Hardening shipped with this rung, all part of its review story:
 
 1. Vanished-phase gate: a phase driven below `sgm_eps` by reconstruction overshoot has
    an ill-defined phasic density; its reference-curve contribution is skipped while its
    mass still enters the mixture density. This trades a NaN for a bias of order
    `sgm_eps` and is bit-identical on every current test cell.
 2. amdflang cross-TU staleness: the Riemann kernels read `mg_mixture` through a
-   firstprivate host-local copy, following the proven `Re_size_loc` idiom.
+   firstprivate host-local copy, following the proven `Re_size_loc` idiom already in
+   those kernels.
 3. Feature gates: JWL rejects bubbles, phase change, elasticity, MHD, surface tension,
-   IGR, immersed boundaries, and post-process `sim_data`, each with a named checker
-   message. Gates are lifted rung by rung, never implicitly.
+   IGR, immersed boundaries, acoustic sources, relativity, and post-process `sim_data`,
+   each with a named checker message. Gates are lifted rung by rung, never implicitly.
 4. Coverage: golden tests for HLLC, HLL, and Lax-Friedrichs mixture accumulation, two
    example-based goldens, and the `5eq_jwl_weno3_hllc` benchmark case that prices the
    feature (+23 percent grind on JWL cells, from the two exponentials per fluid per
-   accumulation).
+   accumulation). The `bench.yaml` entry must ride in this PR and no earlier, since
+   upstream benchmark CI would otherwise run a case the solver rejects.
 
-Remaining: submit after PR3; attach the CPU versus GPU agreement runs and the measured
-cost factor from Tuolumne.
+Remaining: rebuild after PR3 merges; attach the CPU versus GPU agreement runs and the
+measured cost factor from Tuolumne.
 
 ## PR5: external material files (implemented, unsubmitted)
 
@@ -145,26 +226,52 @@ Canonical scope: Cantera-style material file with `family`, `parameters`, and
 `provenance` (`citation`, `release_status`); search by explicit path, case directory,
 then configured public directory; analytic parameters stay runtime values.
 
-Implemented as `toolchain/mfc/materials.py` with unit tests in `test_materials.py`
-(148 lines): schema validation, provenance required, `release_status` gated, loader
-resolves into ordinary `fluid_pp` runtime values so the Fortran side needs no change.
-The repository keeps the loader and synthetic demonstration files; every calibrated
-real-explosive set stays external by construction.
+Implemented as `toolchain/mfc/materials.py` (a 126-line loader) with unit tests in
+`test_materials.py` (148 lines): schema validation, provenance required,
+`release_status` gated, loader resolves into ordinary `fluid_pp` runtime values so the
+Fortran side needs no change. The repository keeps the loader and synthetic
+demonstration files; every calibrated real-explosive set stays external by
+construction. The canonical schema sketch includes an energy-release parameter `Q`;
+the nonreactive ladder has no consumer for it, so the schema accepts only parameters
+its family consumes and `Q` enters the schema with PR8, keeping file validation strict
+instead of silently carrying dead keys.
 
-Remaining: submit after PR4; consider the CI grep gate that no real-explosive
+Remaining: rebuild after PR4 merges; consider the CI grep gate that no real-explosive
 coefficient block appears under `src/` or committed `examples/`.
+
+## Anticipated review objections, per rung
+
+Preparing the answer before the question is most of why the combined branch exists.
+
+| Rung | Likely objection | Prepared answer |
+|---|---|---|
+| PR0 | is the qv term correct? | the two authoritative paths (`s_compute_enthalpy`, post energy loop) both include qv; the probe path is the outlier |
+| PR1 | interface overhead in the hot path | drift-canceled bench table: +0.1 to +0.4 percent, within noise, after the dispatch-placement fix |
+| PR1 | why macros, not objects | four compilers and three GPU configurations cannot all inline dynamic dispatch in kernels; measured 8 percent penalty from one misplaced branch |
+| PR1 | pre-existing defects visible in relocated code | upstream issue filed beforehand (see below); relocation is byte-identical to master |
+| PR2 | dead enum values | stability of the enumeration is the point; checkers reject them loudly until implemented |
+| PR3 | why is the mixture rule in `m_variables_conversion` and not the leaf | inlining contract; the leaf stays pure so the accumulator inlines, the dispatch lives at call sites |
+| PR3 | what stops a half-added family | zero-gamma loud failure by construction, three-file extension contract, extension drill in the test plan |
+| PR4 | why no wave-speed or solver changes | the accumulator identity feeds the existing solvers; JWL is state evaluation only, which is the point of PR3 |
+| PR4 | cost of the feature | measured: +23 percent grind on JWL cells, zero on stiffened cases; quoted in the PR body |
+| PR4 | robustness at interfaces | vanished-phase gate with stated bias bound; eps-vanished phases exercised in suite, examples, and the bench case |
+| PR5 | is this an explosives library | no: loader plus synthetic demonstrations; provenance and release gating are how real data stays external |
 
 ## Submission sequence and dependencies
 
-The chain is strict: PR1 then PR2 then PR3 then PR4 then PR5, each submitted only after
-its predecessor merges, each rebased onto current master at submission time. The rung
-tips exist as local branches and are re-verified (build plus golden suite) after any
-rebase. Tuolumne results slot into PR bodies as follows: PR1 gets the three-platform
-bench table, PR2 and PR3 get build-matrix results, PR4 and PR5 get the CPU/GPU
-agreement runs and the JWL cost factor. Two pre-existing upstream defects found during
-review (conserved-variable slot misuse and a scalar-stress energy loop in the relocated
-`s_compute_pressure`) are byte-identical to master and will be reported upstream
-separately, not fixed in this ladder.
+The chain is strict: PR0, then PR1 through PR5, each submitted only after its
+predecessor merges, each rebuilt onto current master at submission time per the
+reconstruction procedure. Tuolumne results slot into PR bodies as follows: PR1 gets the
+three-platform bench table, PR2 and PR3 get build-matrix results, PR4 and PR5 get the
+CPU/GPU agreement runs and the JWL cost factor.
+
+Before PR1 review advances, the two pre-existing upstream defects found during review
+(conserved-variable slot misuse and a scalar-stress energy loop in the relocated
+`s_compute_pressure`) are filed as an upstream issue with the byte-identical evidence
+against master. Reviewers reading PR1 will see the relocated routine and may attribute
+the defects to the move; a pre-filed issue converts that moment from a liability into
+demonstrated diligence, and keeps their fixes out of the ladder where they would break
+the bit-identity claims.
 
 ## PR6 to PR10: reactions (not started, design constraints recorded)
 
@@ -182,7 +289,8 @@ reactor tests, CPU/GPU agreement) before any new EOS family couples to it.
 PR8 adds the generic progress variable for condensed materials: lambda, a supplied rate
 law, reactant EOS, product EOS, energy release. Pyrometheus is deliberately not the
 vehicle for this; program burn, ignition-and-growth, and pressure-triggered condensed
-reactions use the same integrator with a different mechanism backend.
+reactions use the same integrator with a different mechanism backend. The material-file
+schema gains `Q` here, with its provenance fields mandatory.
 
 PR9 is the hard thermodynamics: reactant and product EOS coupled through reaction
 progress with consistent mixture energy, pressure equilibrium, the reaction energy
