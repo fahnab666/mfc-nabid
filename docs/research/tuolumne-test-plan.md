@@ -11,6 +11,10 @@ bit-identical, both JWL examples stable, 7/7 bench cases at grind parity with ma
 Tuolumne closes the four lanes a laptop cannot: Cray ftn, AMD flang, GPU offload on MI300A,
 and multi-node MPI scaling. These are exactly the maintainer's open questions.
 
+This document covers only the hardware study of the combined branch. The PR-by-PR map,
+implementation state, and submission sequence live in `eos-pr-ladder-plan.md` in this
+directory.
+
 ## Phase 0: environment and baselines
 
 1. Load modules per mode before every build (the source is required):
