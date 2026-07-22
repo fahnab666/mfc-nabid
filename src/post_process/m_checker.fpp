@@ -11,6 +11,7 @@ module m_checker
     use m_mpi_proxy
     use m_helper_basic
     use m_helper
+    use m_constants, only: eos_jwl
 
     implicit none
 
@@ -20,6 +21,12 @@ contains
 
     !> Checks compatibility of parameters in the input file. Used by the post_process stage
     impure subroutine s_check_inputs
+
+        ! The sim_data energy diagnostics build the mixture gamma/pi_inf from the stiffened
+        ! gammas/pi_infs arrays, which a JWL fluid leaves at their dflt_real placeholders, so the
+        ! derived sound speed and Mach output would be garbage. Prohibit the combination.
+        @:PROHIBIT(sim_data .and. any(fluid_pp(1:num_fluids)%eos == eos_jwl), &
+                   & "sim_data is not supported with fluid_pp(:)%eos = 'jwl'")
 
     end subroutine s_check_inputs
 
