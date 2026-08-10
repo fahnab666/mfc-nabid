@@ -389,6 +389,10 @@ module m_derived_types
         real(wp)               :: cv             !< heat capacity
         real(wp)               :: qv             !< reference energy per unit mass for SGEOS, q (see Le Metayer (2004))
         real(wp)               :: qvp            !< reference entropy per unit mass for SGEOS, q' (see Le Metayer (2004))
+        real(wp)               :: mg_rho0        !< Mie-Grueneisen reference density
+        real(wp)               :: mg_c0          !< Mie-Grueneisen reference bulk sound speed
+        real(wp)               :: mg_s           !< Mie-Grueneisen linear Hugoniot slope
+        real(wp)               :: mg_p0          !< Mie-Grueneisen reference pressure
         real(wp)               :: G
         logical                :: non_newtonian  !< Enable Herschel-Bulkley non-Newtonian viscosity
         real(wp)               :: K              !< HB consistency index

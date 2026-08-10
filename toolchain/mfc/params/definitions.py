@@ -389,10 +389,10 @@ CONSTRAINTS = {
 
 # Values must match the hand-written eos_* constants in src/common/m_constants.fpp;
 # generate_constants_fpp skips compound keys, so these entries only drive name resolution and validation.
-_EOS_VALUE_LABELS = {1: "stiffened-gas", 2: "ideal-gas mixture"}
-_EOS_NAMES = {"stiffened_gas": 1, "ideal_gas_mixture": 2}
+_EOS_VALUE_LABELS = {1: "stiffened-gas", 2: "ideal-gas mixture", 3: "Mie-Grueneisen"}
+_EOS_NAMES = {"stiffened_gas": 1, "ideal_gas_mixture": 2, "mie_gruneisen": 3}
 for _f in range(1, NF + 1):
-    CONSTRAINTS[f"fluid_pp({_f})%eos"] = {"choices": [1, 2], "value_labels": _EOS_VALUE_LABELS, "names": _EOS_NAMES}
+    CONSTRAINTS[f"fluid_pp({_f})%eos"] = {"choices": [1, 2, 3], "value_labels": _EOS_VALUE_LABELS, "names": _EOS_NAMES}
 
 # Parameter dependencies (requires, recommends)
 DEPENDENCIES = {
@@ -894,6 +894,8 @@ def _load():
         for a, sym in [("gamma", r"\f$\gamma_k\f$"), ("pi_inf", r"\f$\pi_{\infty,k}\f$"), ("cv", r"\f$c_{v,k}\f$"), ("qv", r"\f$q_{v,k}\f$"), ("qvp", r"\f$q'_{v,k}\f$")]:
             _r(f"{px}{a}", REAL, math=sym)
         _r(f"{px}eos", INT, math=r"\f$\mathrm{EOS}_k\f$")
+        for a, sym in [("mg_rho0", r"\f$\rho_{0,k}\f$"), ("mg_c0", r"\f$c_{0,k}\f$"), ("mg_s", r"\f$s_k\f$"), ("mg_p0", r"\f$p_{0,k}\f$")]:
+            _r(f"{px}{a}", REAL, math=sym)
         _r(f"{px}G", REAL, {"hypoelasticity"}, math=r"\f$G_k\f$")
         _r(f"{px}Re(1)", REAL, {"viscosity"}, math=r"\f$\mathrm{Re}_k\f$ (shear)")
         _r(f"{px}Re(2)", REAL, {"viscosity"}, math=r"\f$\mathrm{Re}_k\f$ (bulk)")

@@ -427,6 +427,10 @@ contains
             fluid_pp(i)%cv = 0._wp
             fluid_pp(i)%qv = 0._wp
             fluid_pp(i)%qvp = 0._wp
+            fluid_pp(i)%mg_rho0 = dflt_real
+            fluid_pp(i)%mg_c0 = dflt_real
+            fluid_pp(i)%mg_s = dflt_real
+            fluid_pp(i)%mg_p0 = dflt_real
             fluid_pp(i)%eos = merge(eos_ideal_gas_mixture, eos_stiffened_gas, chemistry)
             fluid_pp(i)%Re(:) = dflt_real
             fluid_pp(i)%G = 0._wp

@@ -125,5 +125,6 @@ module m_constants
     ! Only backends with a thermodynamics adapter belong here; add a value when its backend lands.
     integer, parameter :: eos_stiffened_gas = 1
     integer, parameter :: eos_ideal_gas_mixture = 2
+    integer, parameter :: eos_mie_gruneisen = 3
     #:include 'generated_constants.fpp'
 end module m_constants

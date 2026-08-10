@@ -46,9 +46,9 @@ PHYSICS_DOCS = {
         "category": "Thermodynamic Constraints",
         "explanation": (
             "The per-fluid eos selector exposes only the backends with a thermodynamics adapter: "
-            "'stiffened_gas' (default) and 'ideal_gas_mixture' (chemistry, Pyrometheus). A single run "
-            "uses one family for every fluid, so intra-cell EOS mixing is rejected, as are values "
-            "outside the enumeration."
+            "'stiffened_gas' (default), 'ideal_gas_mixture' (chemistry, Pyrometheus), and 'mie_gruneisen' "
+            "(constant-Grueneisen, model_eqns = 2). Unimplemented values are rejected, and mie_gruneisen "
+            "requires its reference-curve parameters and is incompatible with alt_soundspeed and bubbles_euler."
         ),
         "references": ["Wilfong26"],
     },
@@ -752,9 +752,13 @@ class CaseValidator:
     def check_eos(self):
         """Restricts the per-fluid EOS selector to the currently supported adapters"""
         chemistry = self.get("chemistry", "F") == "T"
+        bubbles_euler = self.get("bubbles_euler", "F") == "T"
+        alt_soundspeed = self.get("alt_soundspeed", "F") == "T"
+        model_eqns = self.get("model_eqns")
 
         eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
         eos_ideal_gas_mixture = eos_names["ideal_gas_mixture"]
+        eos_mie_gruneisen = eos_names["mie_gruneisen"]
         eos_values = set(eos_names.values())
 
         # Every fluid_pp slot is default-assigned and MPI-broadcast up to num_fluids_max, so
@@ -767,9 +771,22 @@ class CaseValidator:
                 continue
             # The "choices" constraint is enforced by validate_constraints, a separate layer from
             # CaseValidator, so membership is re-checked here rather than assumed.
-            self.prohibit(eos not in eos_values, f"fluid_pp({i})%eos must be 'stiffened_gas' or 'ideal_gas_mixture'")
+            self.prohibit(
+                eos not in eos_values, f"fluid_pp({i})%eos selects an equation of state that is not yet implemented; " "only 'stiffened_gas', 'ideal_gas_mixture', and 'mie_gruneisen' are available"
+            )
             self.prohibit(chemistry and eos != eos_ideal_gas_mixture, f"fluid_pp({i})%eos must be 'ideal_gas_mixture' when chemistry is enabled")
             self.prohibit(not chemistry and eos == eos_ideal_gas_mixture, f"fluid_pp({i})%eos = 'ideal_gas_mixture' requires a chemistry build")
+
+            if eos == eos_mie_gruneisen:
+                # The backend is wired only through the Allaire five-equation conversion path
+                self.prohibit(model_eqns not in (None, 2), f"fluid_pp({i})%eos = 'mie_gruneisen' requires model_eqns = 2")
+                self.prohibit(alt_soundspeed, f"fluid_pp({i})%eos = 'mie_gruneisen' is incompatible with alt_soundspeed")
+                self.prohibit(bubbles_euler, f"fluid_pp({i})%eos = 'mie_gruneisen' is incompatible with bubbles_euler")
+                for p in ("mg_rho0", "mg_c0", "mg_s", "mg_p0"):
+                    self.prohibit(self.get(f"fluid_pp({i})%{p}") is None, f"fluid_pp({i})%eos = 'mie_gruneisen' requires fluid_pp({i})%{p}")
+                rho0, c0 = self.get(f"fluid_pp({i})%mg_rho0"), self.get(f"fluid_pp({i})%mg_c0")
+                self.prohibit(rho0 is not None and rho0 <= 0, f"fluid_pp({i})%mg_rho0 must be positive")
+                self.prohibit(c0 is not None and c0 <= 0, f"fluid_pp({i})%mg_c0 must be positive")
 
     def check_surface_tension(self):
         """Checks constraints on surface tension"""

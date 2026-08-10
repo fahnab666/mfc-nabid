@@ -45,8 +45,8 @@ contains
         do i = 1, num_fluids_max
             @:PROHIBIT(chemistry .and. fluid_pp(i)%eos /= eos_ideal_gas_mixture, &
                        & "fluid_pp(:)%eos must be 'ideal_gas_mixture' for every fluid when chemistry is enabled")
-            @:PROHIBIT(.not. chemistry .and. fluid_pp(i)%eos /= eos_stiffened_gas, &
-                       & "fluid_pp(:)%eos selector is not supported; only 'stiffened_gas' is available " &
+            @:PROHIBIT(.not. chemistry .and. fluid_pp(i)%eos /= eos_stiffened_gas .and. fluid_pp(i)%eos /= eos_mie_gruneisen, &
+                       & "fluid_pp(:)%eos selector is not supported; only 'stiffened_gas' and 'mie_gruneisen' are available " &
                        & // "(or 'ideal_gas_mixture' with a chemistry build)")
         end do
 

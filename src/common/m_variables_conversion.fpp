@@ -14,7 +14,7 @@ module m_variables_conversion
     use m_helper_basic
     use m_helper
     use m_constants, only: riemann_solver_hll, riemann_solver_hlld, model_eqns_gamma_law, model_eqns_5eq, model_eqns_6eq, &
-        & avg_state_roe
+        & avg_state_roe, eos_mie_gruneisen
     use m_thermochem, only: num_species, get_temperature, get_pressure, gas_constant, get_mixture_molecular_weight, &
         & get_mixture_energy_mass
 
@@ -239,7 +239,13 @@ contains
             do i = 1, num_fluids
                 rho_K = rho_K + alpha_rho_K(i)
                 gamma_K = gamma_K + alpha_K(i)*gammas(i)
-                pi_inf_K = pi_inf_K + alpha_K(i)*pi_infs(i)
+                if (mg_mixture .and. eos_fl(i) == eos_mie_gruneisen) then
+                    ! Mie-Grueneisen stiffening is density dependent: pi_inf = -f(rho)/Gamma, with 1/Gamma = gammas
+                    pi_inf_K = pi_inf_K - alpha_K(i)*gammas(i)*f_mg_reference(alpha_rho_K(i)/max(alpha_K(i), sgm_eps), &
+                                                  & mg_rho0s(i), mg_c0s(i), mg_ss(i), mg_p0s(i), 1._wp/gammas(i))
+                else
+                    pi_inf_K = pi_inf_K + alpha_K(i)*pi_infs(i)
+                end if
                 qv_K = qv_K + alpha_rho_K(i)*qvs(i)
             end do
         end if
@@ -299,6 +305,11 @@ contains
         @:ALLOCATE(qvs    (1:num_fluids))
         @:ALLOCATE(qvps    (1:num_fluids))
         @:ALLOCATE(Gs_vc     (1:num_fluids))
+        @:ALLOCATE(eos_fl (1:num_fluids))
+        @:ALLOCATE(mg_rho0s(1:num_fluids))
+        @:ALLOCATE(mg_c0s (1:num_fluids))
+        @:ALLOCATE(mg_ss  (1:num_fluids))
+        @:ALLOCATE(mg_p0s (1:num_fluids))
 
         do i = 1, num_fluids
             gammas(i) = fluid_pp(i)%gamma
@@ -309,8 +320,16 @@ contains
             cvs(i) = fluid_pp(i)%cv
             qvs(i) = fluid_pp(i)%qv
             qvps(i) = fluid_pp(i)%qvp
+            eos_fl(i) = fluid_pp(i)%eos
+            mg_rho0s(i) = fluid_pp(i)%mg_rho0
+            mg_c0s(i) = fluid_pp(i)%mg_c0
+            mg_ss(i) = fluid_pp(i)%mg_s
+            mg_p0s(i) = fluid_pp(i)%mg_p0
         end do
+        ! A Mie-Grueneisen fluid switches on the density-dependent stiffening path
+        mg_mixture = any(eos_fl(1:num_fluids) == eos_mie_gruneisen)
         $:GPU_UPDATE(device='[gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc]')
+        $:GPU_UPDATE(device='[eos_fl, mg_rho0s, mg_c0s, mg_ss, mg_p0s, mg_mixture]')
 
         @:ALLOCATE(Res_vc(1:2, 1:max(1, Re_size_max)))
         Res_vc = dflt_real
@@ -1154,6 +1173,7 @@ contains
         if (allocated(rho_sf)) deallocate (rho_sf, gamma_sf, pi_inf_sf, qv_sf)
 
         @:DEALLOCATE(gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc)
+        @:DEALLOCATE(eos_fl, mg_rho0s, mg_c0s, mg_ss, mg_p0s)
         if (allocated(bubrs_vc)) then
             @:DEALLOCATE(bubrs_vc)
         end if

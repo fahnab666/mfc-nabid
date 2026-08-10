@@ -40,7 +40,7 @@ class TestEosEnum(unittest.TestCase):
 
     def test_only_implemented_backends_are_exposed(self):
         """Reserved values must not appear until they have a backend and a check_eos branch."""
-        self.assertEqual(set(_EOS_NAMES), {"stiffened_gas", "ideal_gas_mixture"})
+        self.assertEqual(set(_EOS_NAMES), {"stiffened_gas", "ideal_gas_mixture", "mie_gruneisen"})
 
 
 class TestEosNameResolution(unittest.TestCase):

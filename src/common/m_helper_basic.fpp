@@ -15,7 +15,8 @@ module m_helper_basic
 
     private
     public :: f_approx_equal, f_approx_in_array, f_is_default, f_all_default, f_is_integer, s_configure_coordinate_bounds, &
-        & s_update_cell_bounds
+        & s_update_cell_bounds, f_mg_reference, f_mg_dref_drho, f_mg_pressure, f_mg_internal_energy, f_mg_temperature, &
+        & f_mg_sound_speed_sq
 
 contains
 
@@ -175,5 +176,75 @@ contains
         bounds%mnp_min = min(m, n, p)
 
     end subroutine s_update_cell_bounds
+
+    !> Mie-Grueneisen reference pressure curve f(rho) at constant Grueneisen coefficient. Compressed states follow the linear-Us
+    !! Hugoniot; expanded states an isentropic tail.
+    real(wp) elemental function f_mg_reference(rho, rho0, c0, s, p0, Gamma) result(f_ref)
+        $:GPU_ROUTINE(parallelism='[seq]')
+        real(wp), intent(in) :: rho, rho0, c0, s, p0, Gamma
+        real(wp)             :: eta, p_h
+
+        eta = (rho - rho0)/rho
+        if (eta >= 0._wp) then
+            p_h = p0 + rho0*c0**2*eta/(1._wp - s*eta)**2
+            f_ref = p_h*(1._wp - Gamma*eta/(2._wp*(1._wp - eta))) - p0*Gamma*eta/(2._wp*(1._wp - eta))
+        else
+            f_ref = p0 + c0**2*(rho - rho0)
+        end if
+
+    end function f_mg_reference
+
+    !> Density derivative of the Mie-Grueneisen reference curve, df/drho.
+    real(wp) elemental function f_mg_dref_drho(rho, rho0, c0, s, p0, Gamma) result(dref)
+        $:GPU_ROUTINE(parallelism='[seq]')
+        real(wp), intent(in) :: rho, rho0, c0, s, p0, Gamma
+        real(wp)             :: eta, p_h
+
+        eta = (rho - rho0)/rho
+        if (eta >= 0._wp) then
+            p_h = p0 + rho0*c0**2*eta/(1._wp - s*eta)**2
+            dref = c0**2*(1._wp - eta)*(1._wp - (1._wp + Gamma/2._wp)*eta)*(1._wp + s*eta)/(1._wp - s*eta)**3 - Gamma/(2._wp*rho0) &
+                          & *(p_h + p0)
+        else
+            dref = c0**2
+        end if
+
+    end function f_mg_dref_drho
+
+    !> Mie-Grueneisen pressure from density and internal energy per unit mass.
+    real(wp) elemental function f_mg_pressure(rho, e, e0, Gamma, f_ref) result(pres)
+        $:GPU_ROUTINE(parallelism='[seq]')
+        real(wp), intent(in) :: rho, e, e0, Gamma, f_ref
+
+        pres = Gamma*rho*(e - e0) + f_ref
+
+    end function f_mg_pressure
+
+    !> Inverse of f_mg_pressure: internal energy per unit mass from pressure.
+    real(wp) elemental function f_mg_internal_energy(rho, pres, e0, Gamma, f_ref) result(e)
+        $:GPU_ROUTINE(parallelism='[seq]')
+        real(wp), intent(in) :: rho, pres, e0, Gamma, f_ref
+
+        e = e0 + (pres - f_ref)/(Gamma*rho)
+
+    end function f_mg_internal_energy
+
+    !> Mie-Grueneisen temperature at constant specific heat.
+    real(wp) elemental function f_mg_temperature(e, e0, cv, T0) result(T)
+        $:GPU_ROUTINE(parallelism='[seq]')
+        real(wp), intent(in) :: e, e0, cv, T0
+
+        T = T0 + (e - e0)/cv
+
+    end function f_mg_temperature
+
+    !> Single-material Mie-Grueneisen sound speed squared.
+    real(wp) elemental function f_mg_sound_speed_sq(rho, e, e0, pres, Gamma, dref) result(c2)
+        $:GPU_ROUTINE(parallelism='[seq]')
+        real(wp), intent(in) :: rho, e, e0, pres, Gamma, dref
+
+        c2 = Gamma*(e - e0) + dref + Gamma*pres/rho
+
+    end function f_mg_sound_speed_sq
 
 end module m_helper_basic

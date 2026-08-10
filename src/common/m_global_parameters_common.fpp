@@ -54,6 +54,14 @@ module m_global_parameters_common
     $:GPU_DECLARE(create='[gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps]')
     !> @}
 
+    !> @name Per-fluid EOS selector and Mie-Grueneisen reference-curve parameters, device-resident
+    !> @{
+    integer, allocatable, dimension(:)  :: eos_fl
+    real(wp), allocatable, dimension(:) :: mg_rho0s, mg_c0s, mg_ss, mg_p0s
+    logical                             :: mg_mixture = .false.
+    $:GPU_DECLARE(create='[eos_fl, mg_rho0s, mg_c0s, mg_ss, mg_p0s, mg_mixture]')
+    !> @}
+
     !> @name Fluids participating in shear and bulk viscosity
     !> @{
     integer, dimension(2)                :: Re_size = 0
