@@ -790,6 +790,11 @@ class CaseValidator:
             pi_inf = self.get(f"fluid_pp({i})%pi_inf")
             cv = self.get(f"fluid_pp({i})%cv")
 
+            # eos is a plain INT param (no `choices` restriction), so an out-of-enum
+            # value such as 99 is not caught for free elsewhere.
+            if eos is not None:
+                self.prohibit(eos not in [1, 2], f"fluid_pp({i})%eos must be eos_stiffened_gas (1) or eos_jwl (2)")
+
             # Positivity checks
             if gamma is not None:
                 self.prohibit(gamma <= 0, f"fluid_pp({i})%gamma must be positive")
