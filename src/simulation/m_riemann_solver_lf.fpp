@@ -225,16 +225,16 @@ contains
                                 E_R = rho_R*E_R + 5.e-1*rho_R*vel_R_rms
                                 H_L = (E_L + pres_L)/rho_L
                                 H_R = (E_R + pres_R)/rho_R
-                            #:if not MFC_CASE_OPTIMIZATION or jwl_active
-                            else if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
-                                Y_jwl_L = min(max(alpha_rho_L(jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
-                                Y_jwl_R = min(max(alpha_rho_R(jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
-                                ! jwl_reactive requires HLLC, so this solver only sees fully-reacted states.
-                                lambda_jwl_L = 1._wp; lambda_jwl_R = 1._wp
-                                @:JWL_RECONSTRUCT_ENERGY_C()
-                                H_L = (E_L + pres_L)/rho_L
-                                H_R = (E_R + pres_R)/rho_R
-                            #:endif
+                                #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                                else if (jwl_idx > 0 .and. model_eqns == model_eqns_5eq) then
+                                    Y_jwl_L = min(max(alpha_rho_L(jwl_idx)/max(rho_L, sgm_eps), 0._wp), 1._wp)
+                                    Y_jwl_R = min(max(alpha_rho_R(jwl_idx)/max(rho_R, sgm_eps), 0._wp), 1._wp)
+                                    ! jwl_reactive requires HLLC, so this solver only sees fully-reacted states.
+                                    lambda_jwl_L = 1._wp; lambda_jwl_R = 1._wp
+                                    @:JWL_RECONSTRUCT_ENERGY_C()
+                                    H_L = (E_L + pres_L)/rho_L
+                                    H_R = (E_R + pres_R)/rho_R
+                                #:endif
                             else
                                 E_L = gamma_L*pres_L + pi_inf_L + 5.e-1_wp*rho_L*vel_L_rms + qv_L
                                 E_R = gamma_R*pres_R + pi_inf_R + 5.e-1_wp*rho_R*vel_R_rms + qv_R
