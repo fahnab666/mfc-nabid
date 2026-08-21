@@ -350,10 +350,8 @@ contains
                                     end if
                                     if (bubbles_euler) then
                                         q_cons_vf(eqn_idx%E)%sf(j, k, l) = (1._wp - alpha_IP(1))*(gamma*pres_IP + pi_inf + dyn_pres)
-                                    else if (model_eqns /= model_eqns_4eq) then
-                                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + dyn_pres
                                     else
-                                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = 0._wp
+                                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + dyn_pres
                                     end if
                                     #:if not MFC_CASE_OPTIMIZATION or jwl_active
                                     end if

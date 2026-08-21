@@ -139,8 +139,7 @@ contains
                 end do
 
                 #:if not MFC_CASE_OPTIMIZATION or jwl_active
-                    if ((jwl_idx > 0) .and. (.not. mhd) .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) &
-                        & then
+                    if ((jwl_idx > 0) .and. (.not. mhd) .and. (bubbles_euler .neqv. .true.)) then
                         Y_jwl = 1._wp
                         if (present(jwl_Y)) Y_jwl = jwl_Y
                         lambda_jwl = 1._wp
@@ -1126,7 +1125,7 @@ contains
                         call get_mixture_energy_mass(T_K, Y_K, E_K)
                         E_K = rho_K*E_K + 5.e-1_wp*rho_K*vel_K_sum
                         #:if not MFC_CASE_OPTIMIZATION or jwl_active
-                        else if (jwl_idx > 0 .and. (model_eqns /= model_eqns_4eq) .and. (bubbles_euler .neqv. .true.)) then
+                        else if (jwl_idx > 0 .and. (bubbles_euler .neqv. .true.)) then
                             Y_j = min(max(qK_prim_vf(j, k, l, jwl_idx)/max(rho_K, sgm_eps), 0._wp), 1._wp)
                             lambda_j = 1._wp
                             if (jwl_reactive) lambda_j = min(max(qK_prim_vf(j, k, l, eqn_idx%rxn), 0._wp), 1._wp)
