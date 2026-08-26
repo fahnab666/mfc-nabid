@@ -64,9 +64,16 @@ contains
 
         if (collision_model == 0) return
 
+        ! A rank may legitimately have no IBs in its current neighborhood.
+        ! In that case forces/torques are zero-size automatic arrays, whose
+        ! OpenACC device address is null. Do not launch collision kernels that
+        ! reference them.
+        if (num_ibs == 0) return
+
         ! get is distance used in the force calculation with each IB and each wall
         call s_detect_wall_collisions()
-        call s_detect_ib_collisions(ghost_points, ib_markers, num_gps, num_considered_collisions)
+        num_considered_collisions = 0
+        if (num_gps > 0) call s_detect_ib_collisions(ghost_points, ib_markers, num_gps, num_considered_collisions)
 
         select case (collision_model)
         case (1)  ! soft sphere model
