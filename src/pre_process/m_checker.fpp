@@ -18,7 +18,8 @@ module m_checker
 
 contains
 
-    !> Checks compatibility of parameters in the input file. Used by the pre_process stage
+    !> Checks compatibility of parameters in the input file. Used by the pre_process stage. patch_icpp(i)%rxn_val constraints live
+    !! in toolchain/mfc/case_validator.py (check_stiffened_eos) since they are pure case-file checks.
     impure subroutine s_check_inputs
 
         integer :: i

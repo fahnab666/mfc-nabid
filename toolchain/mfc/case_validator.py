@@ -993,6 +993,11 @@ class CaseValidator:
             pi_inf = self.get(f"fluid_pp({i})%pi_inf")
             cv = self.get(f"fluid_pp({i})%cv")
 
+            # eos is a plain INT param (no `choices` restriction), so an out-of-enum
+            # value such as 99 is not caught for free elsewhere.
+            if eos is not None:
+                self.prohibit(eos not in [1, 2], f"fluid_pp({i})%eos must be eos_stiffened_gas (1) or eos_jwl (2)")
+
             # Positivity checks
             if gamma is not None:
                 self.prohibit(gamma <= 0, f"fluid_pp({i})%gamma must be positive")
@@ -2023,6 +2028,7 @@ class CaseValidator:
         charWidth = self.get("lag_params%charwidth", 0)
         fd_order = self.get("fd_order", 0)
         kahan_summation = self.get("lag_params%kahan_summation", "T") == "T"
+        bubble_model = self.get("bubble_model")
 
         self.prohibit(n is not None and n == 0, "bubbles_lagrange accepts 2D and 3D simulations only")
         # Gilmore radial dynamics need Tait liquid constants the EL path never supplies.

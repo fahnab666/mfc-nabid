@@ -382,9 +382,30 @@ contains
         do i = 1, num_dims
             dynP = dynP + 0.5_wp*q_cons_vf(eqn_idx%cont%end + i)%sf(cell(1), cell(2), cell(3))**2/rhol
         end do
-        ! Stiffened-gas inversion; must match s_compute_pressure in m_variables_conversion,
-        ! including the qv (heat of formation) term, which is nonzero for phase-change fluids.
-        pliq = (q_cons_vf(eqn_idx%E)%sf(cell(1), cell(2), cell(3)) - dynP - pi_inf - qv)/gamma
+        #:if not MFC_CASE_OPTIMIZATION or jwl_active
+            if (jwl_idx > 0) then
+                ! JWL host cell: seed the bubble pressure from the JWL closure so a bubble
+                ! placed in a products/mixture cell is not initialised with a stiffened-gas pressure.
+                block
+                    real(wp) :: e_l, Y_j, T_l, c_l, lambda_j
+                    e_l = (q_cons_vf(eqn_idx%E)%sf(cell(1), cell(2), cell(3)) - dynP)/max(rhol, sgm_eps)
+                    Y_j = min(max(q_cons_vf(jwl_idx)%sf(cell(1), cell(2), cell(3))/max(rhol, sgm_eps), 0._wp), 1._wp)
+                    ! A bubble seeded in unreacted explosive (jwl_reactive, lambda < 1) must be
+                    ! initialised with the same lambda the solver's pressure law uses.
+                    lambda_j = 1._wp
+                    if (jwl_reactive) lambda_j = min(max(q_cons_vf(eqn_idx%rxn)%sf(cell(1), cell(2), cell(3)), 0._wp), 1._wp)
+                    call s_jwl_mix_state_er(rhol, e_l, Y_j, jwl_idx, pliq, T_l, c_l, lambda_j)
+                end block
+            else
+                ! Stiffened-gas inversion; must match s_compute_pressure in m_variables_conversion,
+                ! including the qv (heat of formation) term, which is nonzero for phase-change fluids.
+                pliq = (q_cons_vf(eqn_idx%E)%sf(cell(1), cell(2), cell(3)) - dynP - pi_inf - qv)/gamma
+            end if
+        #:else
+            ! Stiffened-gas inversion; must match s_compute_pressure in m_variables_conversion,
+            ! including the qv (heat of formation) term, which is nonzero for phase-change fluids.
+            pliq = (q_cons_vf(eqn_idx%E)%sf(cell(1), cell(2), cell(3)) - dynP - pi_inf - qv)/gamma
+        #:endif
         if (pliq < 0) print *, "Negative pressure", proc_rank, q_cons_vf(eqn_idx%E)%sf(cell(1), cell(2), cell(3)), pi_inf, gamma, &
             & pliq, cell, dynP
 

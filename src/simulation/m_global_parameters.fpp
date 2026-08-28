@@ -297,6 +297,16 @@ module m_global_parameters
     !> @{
     !> @}
 
+    ! JWL per-fluid property tables: allocated and populated in m_jwl (s_initialize_jwl_module) for
+    ! every target, but declared here in simulation so the GPU_DECLARE binds in the declaring module
+    ! (Cray ftn rejects declare-target on use-associated names).
+    real(wp), allocatable, dimension(:) :: jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, jwl_E0s
+    real(wp), allocatable, dimension(:) :: jwl_air_e0s, jwl_air_rho0s, jwl_air_gammas, jwl_ej_rho_refs, jwl_air_pi_infs
+    real(wp), allocatable, dimension(:) :: jwl_delta_es
+    $:GPU_DECLARE(create='[jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, jwl_E0s]')
+    $:GPU_DECLARE(create='[jwl_air_e0s, jwl_air_rho0s, jwl_air_gammas, jwl_ej_rho_refs, jwl_air_pi_infs]')
+    $:GPU_DECLARE(create='[jwl_delta_es]')
+
     real(wp)                                    :: mytime     !< Current simulation time
     real(wp)                                    :: finaltime  !< Final simulation time
     type(pres_field), allocatable, dimension(:) :: pb_ts
