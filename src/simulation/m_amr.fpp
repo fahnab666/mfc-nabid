@@ -625,6 +625,20 @@ contains
             end if
         end do
 
+        ! A static hierarchy never creates a box larger than the user-specified
+        ! initial L1 footprint. Using the dynamic-regrid upper bound here can
+        ! over-allocate every fine state/scratch family by orders of magnitude
+        ! on long, thin domains, and device allocation failure then appears as
+        ! an AMR+IB segfault. Cap each active direction independently to the
+        ! fixed block. min() preserves per-rank and explicit case caps. For
+        ! static L2 at ratio 2, the central-half child has the same finest-grid
+        ! extent as its L1 parent, so this covers the supported hierarchy.
+        if (amr_regrid_int == 0) then
+            do d = 1, num_dims
+                amr_maxc_fit(d) = min(amr_maxc_fit(d), amr_block_end(d) - amr_block_beg(d) + 1)
+            end do
+        end if
+
         ! preallocation cap for MY fine arrays: a block is owned WHOLE, so any rank must hold an entire block. regrid clamps every
         ! box to amr_maxc_fit, so amr_maxc_fit (NOT the global-half amr_maxc) is the true max block a rank can own; sizing to it
         ! right-sizes the fine/coord arrays. At np=1 amr_maxc_fit == amr_maxc, so the sizing (and everything) is unchanged.
