@@ -11,7 +11,7 @@ module m_riemann_state
 
     use m_derived_types
     use m_global_parameters
-    use m_constants, only: riemann_solver_hll, riemann_solver_hlld, verysmall
+    use m_constants, only: verysmall
     use m_hb_function
 
     implicit none
@@ -29,6 +29,21 @@ module m_riemann_state
     !> @{
     real(wp), allocatable, dimension(:,:,:,:) :: flux_gsrc_rsx_vf
     $:GPU_DECLARE(create='[flux_gsrc_rsx_vf]')
+
+    real(wp), allocatable, dimension(:,:,:,:) :: nc_iface_vel_rsx_vf
+    $:GPU_DECLARE(create='[nc_iface_vel_rsx_vf]')
+
+    !> Dual-pass HLLD second flux set: the hat_R-anchored fluxes (and, for axisymmetric runs, the hat_R interface velocities)
+    !! written by the same fused solve that fills flux_rsx / nc_iface_vel_rsx with the hat_L-anchored values. Allocated only when
+    !! hypo_nc_mode_dual_pass.
+    real(wp), allocatable, dimension(:,:,:,:) :: flux_hatR_rsx_vf
+    $:GPU_DECLARE(create='[flux_hatR_rsx_vf]')
+
+    real(wp), allocatable, dimension(:,:,:,:) :: nc_iface_vel_hatR_rsx_vf
+    $:GPU_DECLARE(create='[nc_iface_vel_hatR_rsx_vf]')
+
+    real(wp), allocatable, dimension(:,:,:,:) :: flux_gsrc_hatR_rsx_vf
+    $:GPU_DECLARE(create='[flux_gsrc_hatR_rsx_vf]')
     !> @}
 
     ! Cell-boundary velocity from Riemann solution; used for source flux
@@ -62,22 +77,21 @@ contains
     !! geometries. For more information please refer to: 1) s_compute_cartesian_viscous_source_flux 2)
     !! s_compute_cylindrical_viscous_source_flux
     subroutine s_compute_viscous_source_flux(velL_vf, dvelL_dx_vf, dvelL_dy_vf, dvelL_dz_vf, velR_vf, dvelR_dx_vf, dvelR_dy_vf, &
-        & dvelR_dz_vf, flux_src_vf, q_prim_vf, norm_dir, ix, iy, iz)
+        & dvelR_dz_vf, q_prim_vf, norm_dir, ix, iy, iz)
 
         type(scalar_field), dimension(num_vels), intent(in) :: velL_vf, velR_vf, dvelL_dx_vf, dvelR_dx_vf, dvelL_dy_vf, &
              & dvelR_dy_vf, dvelL_dz_vf, dvelR_dz_vf
 
-        type(scalar_field), dimension(sys_size), intent(inout) :: flux_src_vf
-        type(scalar_field), dimension(sys_size), intent(in)    :: q_prim_vf
-        integer, intent(in)                                    :: norm_dir
-        type(int_bounds_info), intent(in)                      :: ix, iy, iz
+        type(scalar_field), dimension(sys_size), intent(in) :: q_prim_vf
+        integer, intent(in)                                 :: norm_dir
+        type(int_bounds_info), intent(in)                   :: ix, iy, iz
 
         if (grid_geometry == 3) then
             call s_compute_cylindrical_viscous_source_flux(velL_vf, dvelL_dx_vf, dvelL_dy_vf, dvelL_dz_vf, velR_vf, dvelR_dx_vf, &
-                & dvelR_dy_vf, dvelR_dz_vf, flux_src_vf, q_prim_vf, norm_dir, ix, iy, iz)
+                & dvelR_dy_vf, dvelR_dz_vf, q_prim_vf, norm_dir, ix, iy, iz)
         else
             call s_compute_cartesian_viscous_source_flux(dvelL_dx_vf, dvelL_dy_vf, dvelL_dz_vf, dvelR_dx_vf, dvelR_dy_vf, &
-                & dvelR_dz_vf, flux_src_vf, q_prim_vf, norm_dir)
+                & dvelR_dz_vf, q_prim_vf, norm_dir)
         end if
 
     end subroutine s_compute_viscous_source_flux
@@ -107,13 +121,19 @@ contains
 
         $:GPU_UPDATE(device='[is1, is2, is3]')
 
-        if (elasticity) then
+        if (hypoelasticity) then
+            ! dir_idx_tau(1:3) = (nn, nt, nt2): face-normal stress row for wave speeds and momentum flux. stress_perm(1:n_stress) =
+            ! full tensor permutation mapping F_HLL local basis index -> physical storage index. Local order: (nn, nt, tt, nt2,
+            ! t1t2, t2t2). In 2D only entries 1-3 are used.
             if (norm_dir == 1) then
                 dir_idx_tau = (/1, 2, 4/)
+                stress_perm = (/1, 2, 3, 4, 5, 6/)
             else if (norm_dir == 2) then
                 dir_idx_tau = (/3, 2, 5/)
+                stress_perm = (/3, 2, 1, 5, 4, 6/)
             else
                 dir_idx_tau = (/6, 4, 5/)
+                stress_perm = (/6, 4, 1, 5, 2, 3/)
             end if
         end if
 
@@ -121,7 +141,7 @@ contains
         ! for stuff in the same module
         $:GPU_UPDATE(device='[isx, isy, isz]')
         ! for stuff in different modules
-        $:GPU_UPDATE(device='[dir_idx, dir_flg, dir_idx_tau]')
+        $:GPU_UPDATE(device='[dir_idx, dir_flg, dir_idx_tau, stress_perm]')
 
         ! Population of Buffers in x-direction
         if (norm_dir == 1) then
@@ -410,11 +430,10 @@ contains
     end subroutine s_populate_riemann_states_variables_buffers
 
     !> Set up the chosen Riemann solver algorithm for the current direction
-    subroutine s_initialize_riemann_solver(flux_src_vf, norm_dir)
+    subroutine s_initialize_riemann_solver(norm_dir)
 
-        type(scalar_field), dimension(sys_size), intent(inout) :: flux_src_vf
-        integer, intent(in)                                    :: norm_dir
-        integer                                                :: i, j, k, l  !< Generic loop iterators
+        integer, intent(in) :: norm_dir
+        integer             :: i, j, k, l  !< Generic loop iterators
 
         ! Reshaping Inputted Data in x-direction
 
@@ -425,7 +444,7 @@ contains
                     do l = is3%beg, is3%end
                         do k = is2%beg, is2%end
                             do j = is1%beg, is1%end
-                                flux_src_vf(i)%sf(j, k, l) = 0._wp
+                                flux_src_rsx_vf(j, k, l, i) = 0._wp
                             end do
                         end do
                     end do
@@ -440,7 +459,7 @@ contains
                         do k = is2%beg, is2%end
                             do j = is1%beg, is1%end
                                 if (i == eqn_idx%E .or. i >= eqn_idx%species%beg) then
-                                    flux_src_vf(i)%sf(j, k, l) = 0._wp
+                                    flux_src_rsx_vf(j, k, l, i) = 0._wp
                                 end if
                             end do
                         end do
@@ -471,7 +490,7 @@ contains
                     do l = is3%beg, is3%end
                         do j = is1%beg, is1%end
                             do k = is2%beg, is2%end
-                                flux_src_vf(i)%sf(k, j, l) = 0._wp
+                                flux_src_rsx_vf(k, j, l, i) = 0._wp
                             end do
                         end do
                     end do
@@ -486,7 +505,7 @@ contains
                         do j = is1%beg, is1%end
                             do k = is2%beg, is2%end
                                 if (i == eqn_idx%E .or. i >= eqn_idx%species%beg) then
-                                    flux_src_vf(i)%sf(k, j, l) = 0._wp
+                                    flux_src_rsx_vf(k, j, l, i) = 0._wp
                                 end if
                             end do
                         end do
@@ -517,7 +536,7 @@ contains
                     do j = is1%beg, is1%end
                         do k = is2%beg, is2%end
                             do l = is3%beg, is3%end
-                                flux_src_vf(i)%sf(l, k, j) = 0._wp
+                                flux_src_rsx_vf(l, k, j, i) = 0._wp
                             end do
                         end do
                     end do
@@ -532,7 +551,7 @@ contains
                         do k = is2%beg, is2%end
                             do l = is3%beg, is3%end
                                 if (i == eqn_idx%E .or. i >= eqn_idx%species%beg) then
-                                    flux_src_vf(i)%sf(l, k, j) = 0._wp
+                                    flux_src_rsx_vf(l, k, j, i) = 0._wp
                                 end if
                             end do
                         end do
@@ -560,16 +579,15 @@ contains
 
     !> Compute cylindrical viscous source flux contributions for momentum and energy
     subroutine s_compute_cylindrical_viscous_source_flux(velL_vf, dvelL_dx_vf, dvelL_dy_vf, dvelL_dz_vf, velR_vf, dvelR_dx_vf, &
-        & dvelR_dy_vf, dvelR_dz_vf, flux_src_vf, q_prim_vf, norm_dir, ix, iy, iz)
+        & dvelR_dy_vf, dvelR_dz_vf, q_prim_vf, norm_dir, ix, iy, iz)
 
-        type(scalar_field), dimension(num_dims), intent(in)    :: velL_vf, velR_vf
-        type(scalar_field), dimension(num_dims), intent(in)    :: dvelL_dx_vf, dvelR_dx_vf
-        type(scalar_field), dimension(num_dims), intent(in)    :: dvelL_dy_vf, dvelR_dy_vf
-        type(scalar_field), dimension(num_dims), intent(in)    :: dvelL_dz_vf, dvelR_dz_vf
-        type(scalar_field), dimension(sys_size), intent(inout) :: flux_src_vf
-        type(scalar_field), dimension(sys_size), intent(in)    :: q_prim_vf
-        integer, intent(in)                                    :: norm_dir
-        type(int_bounds_info), intent(in)                      :: ix, iy, iz
+        type(scalar_field), dimension(num_dims), intent(in) :: velL_vf, velR_vf
+        type(scalar_field), dimension(num_dims), intent(in) :: dvelL_dx_vf, dvelR_dx_vf
+        type(scalar_field), dimension(num_dims), intent(in) :: dvelL_dy_vf, dvelR_dy_vf
+        type(scalar_field), dimension(num_dims), intent(in) :: dvelL_dz_vf, dvelR_dz_vf
+        type(scalar_field), dimension(sys_size), intent(in) :: q_prim_vf
+        integer, intent(in)                                 :: norm_dir
+        type(int_bounds_info), intent(in)                   :: ix, iy, iz
 
         ! Local variables
 
@@ -758,20 +776,20 @@ contains
 
                         $:GPU_LOOP(parallelism='[seq]')
                         do i_vel = 1, num_dims
-                            flux_src_vf(eqn_idx%mom%beg + i_vel - 1)%sf(j, k, l) = flux_src_vf(eqn_idx%mom%beg + i_vel - 1)%sf(j, &
-                                        & k, l) - stress_vector_shear(i_vel)
-                            flux_src_vf(eqn_idx%E)%sf(j, k, l) = flux_src_vf(eqn_idx%E)%sf(j, k, &
-                                        & l) - vel_src_int(i_vel)*stress_vector_shear(i_vel)
+                            flux_src_rsx_vf(j, k, l, eqn_idx%mom%beg + i_vel - 1) = flux_src_rsx_vf(j, k, l, &
+                                            & eqn_idx%mom%beg + i_vel - 1) - stress_vector_shear(i_vel)
+                            flux_src_rsx_vf(j, k, l, eqn_idx%E) = flux_src_rsx_vf(j, k, l, &
+                                            & eqn_idx%E) - vel_src_int(i_vel)*stress_vector_shear(i_vel)
                         end do
                     end if
 
                     if (bulk_stress) then
                         stress_normal_bulk = divergence_cyl/Re_b
 
-                        flux_src_vf(eqn_idx%mom%beg + norm_dir - 1)%sf(j, k, &
-                                    & l) = flux_src_vf(eqn_idx%mom%beg + norm_dir - 1)%sf(j, k, l) - stress_normal_bulk
-                        flux_src_vf(eqn_idx%E)%sf(j, k, l) = flux_src_vf(eqn_idx%E)%sf(j, k, &
-                                    & l) - vel_src_int(norm_dir)*stress_normal_bulk
+                        flux_src_rsx_vf(j, k, l, eqn_idx%mom%beg + norm_dir - 1) = flux_src_rsx_vf(j, k, l, &
+                                        & eqn_idx%mom%beg + norm_dir - 1) - stress_normal_bulk
+                        flux_src_rsx_vf(j, k, l, eqn_idx%E) = flux_src_rsx_vf(j, k, l, &
+                                        & eqn_idx%E) - vel_src_int(norm_dir)*stress_normal_bulk
                     end if
                 end do
             end do
@@ -782,15 +800,14 @@ contains
 
     !> Compute Cartesian viscous source flux contributions for momentum and energy
     subroutine s_compute_cartesian_viscous_source_flux(dvelL_dx_vf, dvelL_dy_vf, dvelL_dz_vf, dvelR_dx_vf, dvelR_dy_vf, &
-        & dvelR_dz_vf, flux_src_vf, q_prim_vf, norm_dir)
+        & dvelR_dz_vf, q_prim_vf, norm_dir)
 
         ! Arguments
-        type(scalar_field), dimension(num_dims), intent(in)    :: dvelL_dx_vf, dvelR_dx_vf
-        type(scalar_field), dimension(num_dims), intent(in)    :: dvelL_dy_vf, dvelR_dy_vf
-        type(scalar_field), dimension(num_dims), intent(in)    :: dvelL_dz_vf, dvelR_dz_vf
-        type(scalar_field), dimension(sys_size), intent(inout) :: flux_src_vf
-        type(scalar_field), dimension(sys_size), intent(in)    :: q_prim_vf
-        integer, intent(in)                                    :: norm_dir
+        type(scalar_field), dimension(num_dims), intent(in) :: dvelL_dx_vf, dvelR_dx_vf
+        type(scalar_field), dimension(num_dims), intent(in) :: dvelL_dy_vf, dvelR_dy_vf
+        type(scalar_field), dimension(num_dims), intent(in) :: dvelL_dz_vf, dvelR_dz_vf
+        type(scalar_field), dimension(sys_size), intent(in) :: q_prim_vf
+        integer, intent(in)                                 :: norm_dir
 
         ! Local variables
 
@@ -924,12 +941,11 @@ contains
                         call s_calculate_shear_stress_tensor(vel_grad_avg, Re_shear, divergence_v, current_tau_shear)
 
                         do i_dim = 1, num_dims
-                            flux_src_vf(eqn_idx%mom%beg + i_dim - 1)%sf(j_loop, k_loop, &
-                                        & l_loop) = flux_src_vf(eqn_idx%mom%beg + i_dim - 1)%sf(j_loop, k_loop, &
-                                        & l_loop) - current_tau_shear(norm_dir, i_dim)
+                            flux_src_rsx_vf(j_loop, k_loop, l_loop, eqn_idx%mom%beg + i_dim - 1) = flux_src_rsx_vf(j_loop, &
+                                            & k_loop, l_loop, eqn_idx%mom%beg + i_dim - 1) - current_tau_shear(norm_dir, i_dim)
 
-                            flux_src_vf(eqn_idx%E)%sf(j_loop, k_loop, l_loop) = flux_src_vf(eqn_idx%E)%sf(j_loop, k_loop, &
-                                        & l_loop) - vel_src_at_interface(i_dim)*current_tau_shear(norm_dir, i_dim)
+                            flux_src_rsx_vf(j_loop, k_loop, l_loop, eqn_idx%E) = flux_src_rsx_vf(j_loop, k_loop, l_loop, &
+                                            & eqn_idx%E) - vel_src_at_interface(i_dim)*current_tau_shear(norm_dir, i_dim)
                         end do
                     end if
 
@@ -938,12 +954,11 @@ contains
                         call s_calculate_bulk_stress_tensor(Re_bulk, divergence_v, current_tau_bulk)
 
                         do i_dim = 1, num_dims
-                            flux_src_vf(eqn_idx%mom%beg + i_dim - 1)%sf(j_loop, k_loop, &
-                                        & l_loop) = flux_src_vf(eqn_idx%mom%beg + i_dim - 1)%sf(j_loop, k_loop, &
-                                        & l_loop) - current_tau_bulk(norm_dir, i_dim)
+                            flux_src_rsx_vf(j_loop, k_loop, l_loop, eqn_idx%mom%beg + i_dim - 1) = flux_src_rsx_vf(j_loop, &
+                                            & k_loop, l_loop, eqn_idx%mom%beg + i_dim - 1) - current_tau_bulk(norm_dir, i_dim)
 
-                            flux_src_vf(eqn_idx%E)%sf(j_loop, k_loop, l_loop) = flux_src_vf(eqn_idx%E)%sf(j_loop, k_loop, &
-                                        & l_loop) - vel_src_at_interface(i_dim)*current_tau_bulk(norm_dir, i_dim)
+                            flux_src_rsx_vf(j_loop, k_loop, l_loop, eqn_idx%E) = flux_src_rsx_vf(j_loop, k_loop, l_loop, &
+                                            & eqn_idx%E) - vel_src_at_interface(i_dim)*current_tau_bulk(norm_dir, i_dim)
                         end do
                     end if
                 end do
@@ -1070,22 +1085,23 @@ contains
 
     !> Accumulate the hypoelastic stress contribution to the energies of the left and right Riemann states: mix the shear modulus
     !! over the fluids, scale it by the continuum damage state when damage is modeled, and add the elastic energy of each stress
-    !! component (doubled for the shear components) when both mixture moduli are non-negligible. The elastic shear stresses are
-    !! loaded from the state buffers by the caller, which reuses them for the stress fluxes and elastic wave speeds. The G >
-    !! verysmall gate is a deliberate maintainer ruling that replaces HLL's former hard-coded G > 1000 stability floor, retiring its
-    !! "TODO take out if statement if stable without".
+    !! component (doubled for the shear components) on each side whose mixture modulus is non-negligible. The elastic shear stresses
+    !! are loaded from the state buffers by the caller, which reuses them for the stress fluxes and elastic wave speeds. The G >
+    !! verysmall per-side gate is a deliberate maintainer ruling that replaces HLL's former hard-coded G > 1000 stability floor,
+    !! retiring its "TODO take out if statement if stable without".
     subroutine s_compute_hypoelastic_interface_energy(nf, alpha_L, alpha_R, damage_L, damage_R, tau_e_L, tau_e_R, G_L, G_R, E_L, &
         & E_R)
 
         $:GPU_ROUTINE(function_name='s_compute_hypoelastic_interface_energy', parallelism='[seq]', cray_inline=True)
 
-        integer, intent(in)                 :: nf                  !< Number of fluids to mix the shear modulus over
-        real(wp), dimension(nf), intent(in) :: alpha_L, alpha_R    !< Left and right volume fractions
-        real(wp), intent(in)                :: damage_L, damage_R  !< Continuum damage states (referenced only when cont_damage)
-        real(wp), dimension(6), intent(in)  :: tau_e_L, tau_e_R    !< Left and right elastic shear stresses
-        real(wp), intent(out)               :: G_L, G_R            !< Left and right mixture shear moduli
-        real(wp), intent(inout)             :: E_L, E_R            !< Left and right state energies
-        integer                             :: i                   !< Loop iterator
+        integer, intent(in)                 :: nf                    !< Number of fluids to mix the shear modulus over
+        real(wp), dimension(nf), intent(in) :: alpha_L, alpha_R      !< Left and right volume fractions
+        real(wp), intent(in)                :: damage_L, damage_R    !< Continuum damage states (referenced only when cont_damage)
+        real(wp), dimension(6), intent(in)  :: tau_e_L, tau_e_R      !< Left and right elastic shear stresses
+        real(wp), intent(out)               :: G_L, G_R              !< Left and right mixture shear moduli
+        real(wp), intent(inout)             :: E_L, E_R              !< Left and right state energies
+        integer                             :: i                     !< Loop iterator
+        logical                             :: elastic_L, elastic_R  !< Side retains elastic energy (not damage-collapsed)
 
         G_L = 0._wp; G_R = 0._wp
 
@@ -1100,15 +1116,32 @@ contains
             G_R = G_R*max((1._wp - damage_R), 0._wp)
         end if
 
+        ! Under continuum damage a heavily-damaged interface can drive G -> 0 while the reconstructed stress does
+        ! not relax with it, so tau^2/(4G) blows up. It stays finite (and negligible) on most backends but goes
+        ! NaN under macOS gfortran's libm. Gate on the damage variable itself - skip the elastic energy only
+        ! where damage has collapsed the modulus (the blow-up mechanism), treating > 99.9% damaged as failed.
+        ! Dimensionless, so soft/nondimensionalized materials (G <= O(1e3)) keep their energy term; pristine
+        ! states keep master's verysmall gate regardless of material stiffness.
+        elastic_L = .true.; elastic_R = .true.
+        if (cont_damage) then
+            elastic_L = (1._wp - damage_L > damage_energy_cutoff)
+            elastic_R = (1._wp - damage_R > damage_energy_cutoff)
+        end if
+
         $:GPU_LOOP(parallelism='[seq]')
         do i = 1, eqn_idx%stress%end - eqn_idx%stress%beg + 1
             ! Elastic contribution to energy if G large enough
-            if ((G_L > verysmall) .and. (G_R > verysmall)) then
+            if ((G_L > verysmall) .and. elastic_L) then
                 E_L = E_L + (tau_e_L(i)*tau_e_L(i))/(4._wp*G_L)
-                E_R = E_R + (tau_e_R(i)*tau_e_R(i))/(4._wp*G_R)
                 ! Double for shear stresses
                 if (any(eqn_idx%stress%beg - 1 + i == shear_indices)) then
                     E_L = E_L + (tau_e_L(i)*tau_e_L(i))/(4._wp*G_L)
+                end if
+            end if
+            if ((G_R > verysmall) .and. elastic_R) then
+                E_R = E_R + (tau_e_R(i)*tau_e_R(i))/(4._wp*G_R)
+                ! Double for shear stresses
+                if (any(eqn_idx%stress%beg - 1 + i == shear_indices)) then
                     E_R = E_R + (tau_e_R(i)*tau_e_R(i))/(4._wp*G_R)
                 end if
             end if
@@ -1136,152 +1169,182 @@ contains
 
     end function f_compute_hllc_star_momentum_flux
 
-    !> Deallocation and/or disassociation procedures that are needed to finalize the selected Riemann problem solver
-    subroutine s_finalize_riemann_solver(flux_vf, flux_src_vf, flux_gsrc_vf, norm_dir)
+    !> Reshape and copy the Riemann-solver flux buffers back to the physical-space output arrays for the selected sweep direction,
+    !! finalizing the Riemann solve. Two variants are emitted from one template so the shared unpermute logic cannot drift apart:
+    !! the plain routine also copies the advection flux_src set and the grid_geometry==3 z-sweep geometric source flux, while the
+    !! _hatR variant unpermutes the hat_R-anchored flux_hatR_rs* set of the fused dual-pass HLLD solve (called between the two RHS
+    !! assemblies) and is a strict subset: flux_src is anchor-independent (already finalized with the hat_L set) and its geometric
+    !! source flux only exists for the axisymmetric y-sweep.
+    #:for SUFFIX in ['', '_hatR']
+        #:set INFIX = 'hatR_' if SUFFIX else ''
+        #:if SUFFIX == ''
+            subroutine s_finalize_riemann_solver(flux_vf, flux_src_vf, flux_gsrc_vf, norm_dir)
 
-        type(scalar_field), dimension(sys_size), intent(inout) :: flux_vf, flux_src_vf, flux_gsrc_vf
-        integer, intent(in)                                    :: norm_dir
-        integer                                                :: i, j, k, l  !< Generic loop iterators
-        ! Reshaping Outputted Data in y-direction
+                type(scalar_field), dimension(sys_size), intent(inout) :: flux_vf, flux_src_vf, flux_gsrc_vf
 
-        if (norm_dir == 2) then
-            $:GPU_PARALLEL_LOOP(collapse=4)
-            do i = 1, sys_size
-                do l = is3%beg, is3%end
-                    do j = is1%beg, is1%end
-                        do k = is2%beg, is2%end
-                            flux_vf(i)%sf(k, j, l) = flux_rsx_vf(k, j, l, i)
-                        end do
-                    end do
-                end do
-            end do
-            $:END_GPU_PARALLEL_LOOP()
+            #:else
+                subroutine s_finalize_riemann_solver_hatR(flux_vf, flux_gsrc_vf, norm_dir)
 
-            if (cyl_coord) then
-                $:GPU_PARALLEL_LOOP(collapse=4)
-                do i = 1, sys_size
-                    do l = is3%beg, is3%end
-                        do j = is1%beg, is1%end
-                            do k = is2%beg, is2%end
-                                flux_gsrc_vf(i)%sf(k, j, l) = flux_gsrc_rsx_vf(k, j, l, i)
-                            end do
-                        end do
-                    end do
-                end do
-                $:END_GPU_PARALLEL_LOOP()
-            end if
+                    type(scalar_field), dimension(sys_size), intent(inout) :: flux_vf, flux_gsrc_vf
 
-            $:GPU_PARALLEL_LOOP(collapse=3)
-            do l = is3%beg, is3%end
-                do j = is1%beg, is1%end
-                    do k = is2%beg, is2%end
-                        flux_src_vf(eqn_idx%adv%beg)%sf(k, j, l) = flux_src_rsx_vf(k, j, l, eqn_idx%adv%beg)
-                    end do
-                end do
-            end do
-            $:END_GPU_PARALLEL_LOOP()
+                #:endif
+                integer, intent(in) :: norm_dir
+                integer             :: i, j, k, l  !< Generic loop iterators
+                ! Reshaping Outputted Data in y-direction
 
-            if (riemann_solver == riemann_solver_hll .or. riemann_solver == riemann_solver_hlld) then
-                $:GPU_PARALLEL_LOOP(collapse=4)
-                do i = eqn_idx%adv%beg + 1, eqn_idx%adv%end
-                    do l = is3%beg, is3%end
-                        do j = is1%beg, is1%end
-                            do k = is2%beg, is2%end
-                                flux_src_vf(i)%sf(k, j, l) = flux_src_rsx_vf(k, j, l, i)
-                            end do
-                        end do
-                    end do
-                end do
-                $:END_GPU_PARALLEL_LOOP()
-            end if
-            ! Reshaping Outputted Data in z-direction
-        else if (norm_dir == 3) then
-            $:GPU_PARALLEL_LOOP(collapse=4)
-            do i = 1, sys_size
-                do j = is1%beg, is1%end
-                    do k = is2%beg, is2%end
+                if (norm_dir == 2) then
+                    $:GPU_PARALLEL_LOOP(collapse=4)
+                    do i = 1, sys_size
                         do l = is3%beg, is3%end
-                            flux_vf(i)%sf(l, k, j) = flux_rsx_vf(l, k, j, i)
-                        end do
-                    end do
-                end do
-            end do
-            $:END_GPU_PARALLEL_LOOP()
-            if (grid_geometry == 3) then
-                $:GPU_PARALLEL_LOOP(collapse=4)
-                do i = 1, sys_size
-                    do j = is1%beg, is1%end
-                        do k = is2%beg, is2%end
-                            do l = is3%beg, is3%end
-                                flux_gsrc_vf(i)%sf(l, k, j) = flux_gsrc_rsx_vf(l, k, j, i)
-                            end do
-                        end do
-                    end do
-                end do
-                $:END_GPU_PARALLEL_LOOP()
-            end if
-
-            $:GPU_PARALLEL_LOOP(collapse=3)
-            do j = is1%beg, is1%end
-                do k = is2%beg, is2%end
-                    do l = is3%beg, is3%end
-                        flux_src_vf(eqn_idx%adv%beg)%sf(l, k, j) = flux_src_rsx_vf(l, k, j, eqn_idx%adv%beg)
-                    end do
-                end do
-            end do
-            $:END_GPU_PARALLEL_LOOP()
-
-            if (riemann_solver == riemann_solver_hll .or. riemann_solver == riemann_solver_hlld) then
-                $:GPU_PARALLEL_LOOP(collapse=4)
-                do i = eqn_idx%adv%beg + 1, eqn_idx%adv%end
-                    do j = is1%beg, is1%end
-                        do k = is2%beg, is2%end
-                            do l = is3%beg, is3%end
-                                flux_src_vf(i)%sf(l, k, j) = flux_src_rsx_vf(l, k, j, i)
-                            end do
-                        end do
-                    end do
-                end do
-                $:END_GPU_PARALLEL_LOOP()
-            end if
-        else if (norm_dir == 1) then
-            $:GPU_PARALLEL_LOOP(collapse=4)
-            do i = 1, sys_size
-                do l = is3%beg, is3%end
-                    do k = is2%beg, is2%end
-                        do j = is1%beg, is1%end
-                            flux_vf(i)%sf(j, k, l) = flux_rsx_vf(j, k, l, i)
-                        end do
-                    end do
-                end do
-            end do
-            $:END_GPU_PARALLEL_LOOP()
-
-            $:GPU_PARALLEL_LOOP(collapse=3)
-            do l = is3%beg, is3%end
-                do k = is2%beg, is2%end
-                    do j = is1%beg, is1%end
-                        flux_src_vf(eqn_idx%adv%beg)%sf(j, k, l) = flux_src_rsx_vf(j, k, l, eqn_idx%adv%beg)
-                    end do
-                end do
-            end do
-            $:END_GPU_PARALLEL_LOOP()
-
-            if (riemann_solver == riemann_solver_hll .or. riemann_solver == riemann_solver_hlld) then
-                $:GPU_PARALLEL_LOOP(collapse=4)
-                do i = eqn_idx%adv%beg + 1, eqn_idx%adv%end
-                    do l = is3%beg, is3%end
-                        do k = is2%beg, is2%end
                             do j = is1%beg, is1%end
-                                flux_src_vf(i)%sf(j, k, l) = flux_src_rsx_vf(j, k, l, i)
+                                do k = is2%beg, is2%end
+                                    flux_vf(i)%sf(k, j, l) = flux_${INFIX}$rsx_vf(k, j, l, i)
+                                end do
                             end do
                         end do
                     end do
-                end do
-                $:END_GPU_PARALLEL_LOOP()
-            end if
-        end if
+                    $:END_GPU_PARALLEL_LOOP()
 
-    end subroutine s_finalize_riemann_solver
+                    if (cyl_coord) then
+                        $:GPU_PARALLEL_LOOP(collapse=4)
+                        do i = 1, sys_size
+                            do l = is3%beg, is3%end
+                                do j = is1%beg, is1%end
+                                    do k = is2%beg, is2%end
+                                        flux_gsrc_vf(i)%sf(k, j, l) = flux_gsrc_${INFIX}$rsx_vf(k, j, l, i)
+                                    end do
+                                end do
+                            end do
+                        end do
+                        $:END_GPU_PARALLEL_LOOP()
+                    end if
 
-end module m_riemann_state
+                    #:if SUFFIX == ''
+                        $:GPU_PARALLEL_LOOP(collapse=3)
+                        do l = is3%beg, is3%end
+                            do j = is1%beg, is1%end
+                                do k = is2%beg, is2%end
+                                    flux_src_vf(eqn_idx%adv%beg)%sf(k, j, l) = flux_src_rsx_vf(k, j, l, eqn_idx%adv%beg)
+                                end do
+                            end do
+                        end do
+                        $:END_GPU_PARALLEL_LOOP()
+
+                        ! Copy the per-fluid flux_src entries only for the alpha-interface representation. HLLD
+                        ! (adv_src_mode_none) writes only the adv%beg row, so its per-fluid entries are never
+                        ! initialized and must not be copied out; nothing consumes them in that mode.
+                        if (adv_src_mode == adv_src_mode_alpha_iface) then
+                            $:GPU_PARALLEL_LOOP(collapse=4)
+                            do i = eqn_idx%adv%beg + 1, eqn_idx%adv%end
+                                do l = is3%beg, is3%end
+                                    do j = is1%beg, is1%end
+                                        do k = is2%beg, is2%end
+                                            flux_src_vf(i)%sf(k, j, l) = flux_src_rsx_vf(k, j, l, i)
+                                        end do
+                                    end do
+                                end do
+                            end do
+                            $:END_GPU_PARALLEL_LOOP()
+                        end if
+                    #:endif
+                    ! Reshaping Outputted Data in z-direction
+                else if (norm_dir == 3) then
+                    $:GPU_PARALLEL_LOOP(collapse=4)
+                    do i = 1, sys_size
+                        do j = is1%beg, is1%end
+                            do k = is2%beg, is2%end
+                                do l = is3%beg, is3%end
+                                    flux_vf(i)%sf(l, k, j) = flux_${INFIX}$rsx_vf(l, k, j, i)
+                                end do
+                            end do
+                        end do
+                    end do
+                    $:END_GPU_PARALLEL_LOOP()
+                    #:if SUFFIX == ''
+                        if (grid_geometry == 3) then
+                            $:GPU_PARALLEL_LOOP(collapse=4)
+                            do i = 1, sys_size
+                                do j = is1%beg, is1%end
+                                    do k = is2%beg, is2%end
+                                        do l = is3%beg, is3%end
+                                            flux_gsrc_vf(i)%sf(l, k, j) = flux_gsrc_rsx_vf(l, k, j, i)
+                                        end do
+                                    end do
+                                end do
+                            end do
+                            $:END_GPU_PARALLEL_LOOP()
+                        end if
+
+                        $:GPU_PARALLEL_LOOP(collapse=3)
+                        do j = is1%beg, is1%end
+                            do k = is2%beg, is2%end
+                                do l = is3%beg, is3%end
+                                    flux_src_vf(eqn_idx%adv%beg)%sf(l, k, j) = flux_src_rsx_vf(l, k, j, eqn_idx%adv%beg)
+                                end do
+                            end do
+                        end do
+                        $:END_GPU_PARALLEL_LOOP()
+
+                        ! Copy the per-fluid flux_src entries only for the alpha-interface representation. HLLD
+                        ! (adv_src_mode_none) writes only the adv%beg row, so its per-fluid entries are never
+                        ! initialized and must not be copied out; nothing consumes them in that mode.
+                        if (adv_src_mode == adv_src_mode_alpha_iface) then
+                            $:GPU_PARALLEL_LOOP(collapse=4)
+                            do i = eqn_idx%adv%beg + 1, eqn_idx%adv%end
+                                do j = is1%beg, is1%end
+                                    do k = is2%beg, is2%end
+                                        do l = is3%beg, is3%end
+                                            flux_src_vf(i)%sf(l, k, j) = flux_src_rsx_vf(l, k, j, i)
+                                        end do
+                                    end do
+                                end do
+                            end do
+                            $:END_GPU_PARALLEL_LOOP()
+                        end if
+                    #:endif
+                else if (norm_dir == 1) then
+                    $:GPU_PARALLEL_LOOP(collapse=4)
+                    do i = 1, sys_size
+                        do l = is3%beg, is3%end
+                            do k = is2%beg, is2%end
+                                do j = is1%beg, is1%end
+                                    flux_vf(i)%sf(j, k, l) = flux_${INFIX}$rsx_vf(j, k, l, i)
+                                end do
+                            end do
+                        end do
+                    end do
+                    $:END_GPU_PARALLEL_LOOP()
+
+                    #:if SUFFIX == ''
+                        $:GPU_PARALLEL_LOOP(collapse=3)
+                        do l = is3%beg, is3%end
+                            do k = is2%beg, is2%end
+                                do j = is1%beg, is1%end
+                                    flux_src_vf(eqn_idx%adv%beg)%sf(j, k, l) = flux_src_rsx_vf(j, k, l, eqn_idx%adv%beg)
+                                end do
+                            end do
+                        end do
+                        $:END_GPU_PARALLEL_LOOP()
+
+                        ! Copy the per-fluid flux_src entries only for the alpha-interface representation. HLLD
+                        ! (adv_src_mode_none) writes only the adv%beg row, so its per-fluid entries are never
+                        ! initialized and must not be copied out; nothing consumes them in that mode.
+                        if (adv_src_mode == adv_src_mode_alpha_iface) then
+                            $:GPU_PARALLEL_LOOP(collapse=4)
+                            do i = eqn_idx%adv%beg + 1, eqn_idx%adv%end
+                                do l = is3%beg, is3%end
+                                    do k = is2%beg, is2%end
+                                        do j = is1%beg, is1%end
+                                            flux_src_vf(i)%sf(j, k, l) = flux_src_rsx_vf(j, k, l, i)
+                                        end do
+                                    end do
+                                end do
+                            end do
+                            $:END_GPU_PARALLEL_LOOP()
+                        end if
+                    #:endif
+                end if
+
+            end subroutine s_finalize_riemann_solver${SUFFIX}$
+        #:endfor
+    end module m_riemann_state

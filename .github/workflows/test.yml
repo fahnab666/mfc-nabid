@@ -306,6 +306,30 @@ jobs:
             /bin/bash mfc.sh test -v --dry-run -j 2 --test-all --gpu mp
           '
 
+      # Case-optimized build guard.
+      #
+      # --case-optimization hard-codes case parameters into the generated
+      # sources, which sharply increases cross-file inlining pressure in the
+      # -Mextract/-Minline IPO pass (cmake/MFCTargets.cmake). That pass is
+      # where NVHPC fort2 has historically hit internal compiler errors, and
+      # the jobs above cannot see them: they never pass --case-optimization,
+      # and the self-hosted case-opt jobs run a single pinned NVHPC. NVHPC
+      # 25.5 shipped an ICE that was invisible to CI for exactly that reason.
+      #
+      # One 3D case is enough: the failure is at compile time, so nothing is
+      # run. 3D specifically, because m_sim_helpers.fpp guards its 3D block
+      # with "#:if not MFC_CASE_OPTIMIZATION or num_dims > 2" -- a
+      # case-optimized 2D build elides that code entirely. OpenACC only,
+      # since the two-pass IPO is disabled for OpenMP offload.
+      - name: Build (NVHPC GPU, case-optimized)
+        if:   matrix.nvhpc && matrix.target == 'gpu'
+        run: |
+          docker exec nvhpc bash -c '
+            source /etc/nvhpc-env.sh
+            /bin/bash mfc.sh build -v -j 2 --gpu acc -t simulation \
+              -i examples/3D_sphbubcollapse/case.py --case-optimization
+          '
+
       - name: Test (NVHPC)
         if:   matrix.nvhpc && matrix.target == 'cpu'
         run: |
@@ -431,9 +455,33 @@ jobs:
         run:  bash .github/workflows/${{ matrix.cluster }}/build.sh ${{ matrix.device }} ${{ matrix.interface }}
 
       - name: Build
+        # Phoenix builds+tests in one allocation (see "Build & Test"); others build separately.
+        if:   ${{ matrix.cluster != 'phoenix' && !(matrix.cluster == 'frontier_amd' && matrix.device == 'gpu') }}
         run:  bash .github/scripts/submit-slurm-job.sh .github/workflows/common/build.sh ${{ matrix.device }} ${{ matrix.interface }} ${{ matrix.cluster }} ${{ matrix.shard }}
 
+      - name: Build (concurrent variants)
+        if:   matrix.cluster == 'frontier_amd' && matrix.device == 'gpu'
+        # The suite needs a base and a chemistry simulation binary, and on amdflang
+        # each device LTO link is ~1 h -- building both serially overruns the 2 h
+        # walltime. They touch disjoint staging directories, so submit one SLURM job
+        # per variant and wait on both (mirrors the case-optimization pre-build).
+        run:  |
+          pids=""
+          for v in base chem; do
+            bash .github/scripts/submit-slurm-job.sh .github/workflows/common/build.sh ${{ matrix.device }} ${{ matrix.interface }} ${{ matrix.cluster }} "${{ matrix.shard }}" "$v" &
+            pids="$pids $!"
+          done
+          rc=0
+          for p in $pids; do wait "$p" || rc=1; done
+          exit $rc
+
+      - name: Build & Test
+        # Phoenix: build+test in one allocation so the 'embers' queue wait is paid once.
+        if:   matrix.cluster == 'phoenix'
+        run:  bash .github/scripts/submit-slurm-job.sh .github/workflows/common/build-and-test.sh ${{ matrix.device }} ${{ matrix.interface }} ${{ matrix.cluster }} ${{ matrix.shard }}
+
       - name: Test
+        if:   matrix.cluster != 'phoenix'
         run:  bash .github/scripts/submit-slurm-job.sh .github/workflows/common/test.sh ${{ matrix.device }} ${{ matrix.interface }} ${{ matrix.cluster }} ${{ matrix.shard }}
 
       - name: Cancel SLURM Jobs
@@ -456,12 +504,17 @@ jobs:
           fi
           echo "build_slug=build-${{ matrix.device }}-${{ matrix.interface }}${SHARD_SUFFIX}" >> "$GITHUB_OUTPUT"
           echo "test_slug=test-${{ matrix.device }}-${{ matrix.interface }}${SHARD_SUFFIX}" >> "$GITHUB_OUTPUT"
+          echo "combined_slug=build-and-test-${{ matrix.device }}-${{ matrix.interface }}${SHARD_SUFFIX}" >> "$GITHUB_OUTPUT"
 
       - name: Print Logs
         if:   always()
         run:  |
-          for f in ${{ steps.log.outputs.build_slug }}.out ${{ steps.log.outputs.test_slug }}.out; do
-            [ -f "$f" ] && echo "=== $f ===" && cat "$f"
+          # build_slug matches the plain log (and per-variant base/chem builds);
+          # combined_slug matches Phoenix's single build-and-test allocation.
+          # Use `if` (not `[ -f ] && ...`) so a missing file — e.g. test_slug on
+          # Phoenix's combined jobs — doesn't make the loop exit non-zero under -e.
+          for f in ${{ steps.log.outputs.build_slug }}*.out ${{ steps.log.outputs.combined_slug }}.out ${{ steps.log.outputs.test_slug }}.out; do
+            if [ -f "$f" ]; then echo "=== $f ==="; cat "$f"; fi
           done
 
       - name: Archive Logs
@@ -470,7 +523,7 @@ jobs:
         with:
           name: logs-${{ strategy.job-index }}-${{ steps.log.outputs.test_slug }}
           path: |
-            ${{ steps.log.outputs.build_slug }}.out
+            ${{ steps.log.outputs.build_slug }}*.out
             ${{ steps.log.outputs.test_slug }}.out
 
   case-optimization:

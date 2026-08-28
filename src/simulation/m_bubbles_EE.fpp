@@ -52,14 +52,15 @@ contains
         $:GPU_UPDATE(device='[rs, vs]')
         $:GPU_UPDATE(device='[ps, ms]')
 
-        @:ALLOCATE(divu%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, idwbuff(3)%beg:idwbuff(3)%end))
+        @:ALLOCATE(divu%sf(idwbuff_alloc(1)%beg:idwbuff_alloc(1)%end, idwbuff_alloc(2)%beg:idwbuff_alloc(2)%end, &
+                   & idwbuff_alloc(3)%beg:idwbuff_alloc(3)%end))
         @:ACC_SETUP_SFs(divu)
 
-        @:ALLOCATE(bub_adv_src(0:m, 0:n, 0:p))
-        @:ALLOCATE(bub_r_src(0:m, 0:n, 0:p, 1:nb))
-        @:ALLOCATE(bub_v_src(0:m, 0:n, 0:p, 1:nb))
-        @:ALLOCATE(bub_p_src(0:m, 0:n, 0:p, 1:nb))
-        @:ALLOCATE(bub_m_src(0:m, 0:n, 0:p, 1:nb))
+        @:ALLOCATE(bub_adv_src(0:m_alloc, 0:n_alloc, 0:p_alloc))
+        @:ALLOCATE(bub_r_src(0:m_alloc, 0:n_alloc, 0:p_alloc, 1:nb))
+        @:ALLOCATE(bub_v_src(0:m_alloc, 0:n_alloc, 0:p_alloc, 1:nb))
+        @:ALLOCATE(bub_p_src(0:m_alloc, 0:n_alloc, 0:p_alloc, 1:nb))
+        @:ALLOCATE(bub_m_src(0:m_alloc, 0:n_alloc, 0:p_alloc, 1:nb))
 
         if (adap_dt .and. f_is_default(adap_dt_tol)) adap_dt_tol = dflt_adap_dt_tol
 
@@ -70,7 +71,7 @@ contains
 
         type(scalar_field), dimension(sys_size), intent(inout) :: q_cons_vf
         real(wp)                                               :: nR3bar
-        integer(wp)                                            :: i, j, k, l
+        integer                                                :: i, j, k, l
 
         $:GPU_PARALLEL_LOOP(private='[i, j, k, l, nR3bar]', collapse=3)
         do l = 0, p
@@ -141,12 +142,13 @@ contains
     impure subroutine s_compute_bubble_EE_source(q_cons_vf, q_prim_vf, rhs_vf, divu_in)
 
         type(scalar_field), dimension(sys_size), intent(inout) :: q_cons_vf
-        type(scalar_field), dimension(sys_size), intent(in)    :: q_prim_vf
+        type(scalar_field), dimension(sys_size), intent(in) :: q_prim_vf
         type(scalar_field), dimension(sys_size), intent(inout) :: rhs_vf
-        type(scalar_field), intent(in)                         :: divu_in  !< matrix for div(u)
-        real(wp)                                               :: rddot
-        real(wp)                                               :: pb_local, mv_local, vflux, pbdot
-        real(wp)                                               :: n_tait, B_tait
+        type(scalar_field), intent(in) :: divu_in  !< matrix for div(u)
+        real(wp) :: rddot
+        real(wp) :: pb_local, mv_local, vflux, pbdot
+        real(wp) :: n_tait, B_tait
+        real(wp) :: chi_vw_l, k_mw_l, rho_mw_l     !< Per-thread bubble-wall scratch (avoid module-scalar race)
 
         #:if not MFC_CASE_OPTIMIZATION and USING_AMD
             real(wp), dimension(3) :: Rtmp, Vtmp
@@ -158,7 +160,7 @@ contains
         real(wp) :: myR, myV, alf, myP, myRho, R2Vav, R3
         real(wp) :: nbub                            !< Bubble number density
         integer  :: i, j, k, l, q, ii               !< Loop variables
-        integer  :: adap_dt_stop_max, adap_dt_stop  !< Fail-safe exit if max iteration count reached
+        integer  :: adap_dt_stop_sum, adap_dt_stop  !< Fail-safe exit if max iteration count reached
         integer  :: dmBub_id                        !< Dummy variables for unified subgrid bubble subroutines
         real(wp) :: dmMass_v, dmMass_n, dmBeta_c, dmBeta_t, dmCson
 
@@ -180,10 +182,10 @@ contains
         end do
         $:END_GPU_PARALLEL_LOOP()
 
-        adap_dt_stop_max = 0
+        adap_dt_stop_sum = 0
         $:GPU_PARALLEL_LOOP(private='[j, k, l, Rtmp, Vtmp, myalpha_rho, myalpha, myR, myV, alf, myP, myRho, R2Vav, R3, nbub, &
-                            & pb_local, mv_local, vflux, pbdot, rddot, n_tait, B_tait]', collapse=3, &
-                            & reduction = '[[adap_dt_stop_max]]', reductionOp = '[MAX]', copy = '[adap_dt_stop_max]')
+                            & pb_local, mv_local, vflux, pbdot, rddot, n_tait, B_tait, adap_dt_stop, chi_vw_l, k_mw_l, &
+                            & rho_mw_l]', collapse=3, copy='[adap_dt_stop_sum]')
         do l = 0, p
             do k = 0, n
                 do j = 0, m
@@ -262,33 +264,34 @@ contains
                             if (.not. polytropic) then
                                 pb_local = q_prim_vf(ps(q))%sf(j, k, l)
                                 mv_local = q_prim_vf(ms(q))%sf(j, k, l)
-                                call s_bwproperty(pb_local, q, chi_vw, k_mw, rho_mw)
-                                call s_vflux(myR, myV, pb_local, mv_local, q, vflux)
-                                pbdot = f_bpres_dot(vflux, myR, myV, pb_local, mv_local, q)
+                                call s_bwproperty(pb_local, q, chi_vw_l, k_mw_l, rho_mw_l)
+                                call s_vflux(myR, myV, pb_local, mv_local, q, vflux, fchi_vw=chi_vw_l, frho_mw=rho_mw_l)
+                                pbdot = f_bpres_dot(vflux, myR, myV, pb_local, mv_local, q, fk_mw=k_mw_l)
                                 bub_p_src(j, k, l, q) = nbub*pbdot
                                 bub_m_src(j, k, l, q) = nbub*vflux*4._wp*pi*(myR**2._wp)
                             else
                                 pb_local = 0._wp; mv_local = 0._wp; vflux = 0._wp; pbdot = 0._wp
                             end if
 
+                            adap_dt_stop = 0
+
                             ! Adaptive time stepping
                             if (adap_dt) then
-                                adap_dt_stop = 0
-
-                                call s_advance_step(myRho, myP, myR, myV, R0(q), pb_local, pbdot, alf, n_tait, B_tait, &
-                                                    & bub_adv_src(j, k, l), divu_in%sf(j, k, l), dmBub_id, dmMass_v, dmMass_n, &
-                                                    & dmBeta_c, dmBeta_t, dmCson, adap_dt_stop)
+                                adap_dt_stop = f_advance_step(myRho, myP, myR, myV, R0(q), pb_local, pbdot, alf, n_tait, B_tait, &
+                                                              & bub_adv_src(j, k, l), divu_in%sf(j, k, l), dmBub_id, dmMass_v, &
+                                                              & dmMass_n, dmBeta_c, dmBeta_t, dmCson)
 
                                 q_cons_vf(rs(q))%sf(j, k, l) = nbub*myR
                                 q_cons_vf(vs(q))%sf(j, k, l) = nbub*myV
-
-                                adap_dt_stop_max = max(adap_dt_stop_max, adap_dt_stop)
                             else
                                 rddot = f_rddot(myRho, myP, myR, myV, R0(q), pb_local, pbdot, alf, n_tait, B_tait, bub_adv_src(j, &
                                                 & k, l), divu_in%sf(j, k, l), dmCson)
                                 bub_v_src(j, k, l, q) = nbub*rddot
                                 bub_r_src(j, k, l, q) = q_cons_vf(vs(q))%sf(j, k, l)
                             end if
+
+                            $:GPU_ATOMIC(atomic='update')
+                            adap_dt_stop_sum = adap_dt_stop_sum + adap_dt_stop
                         end if
                     end do
                 end do
@@ -296,7 +299,7 @@ contains
         end do
         $:END_GPU_PARALLEL_LOOP()
 
-        if (adap_dt .and. adap_dt_stop_max > 0) call s_mpi_abort("Adaptive time stepping failed to converge.")
+        if (adap_dt .and. adap_dt_stop_sum > 0) call s_mpi_abort("Adaptive time stepping failed to converge.")
 
         if (.not. adap_dt) then
             $:GPU_PARALLEL_LOOP(private='[i, k, l, q]', collapse=3)
@@ -322,5 +325,66 @@ contains
         end if
 
     end subroutine s_compute_bubble_EE_source
+
+    !> Evaluate the Euler-Euler pressure correction at cell centers and store it in ptil. This mirrors the modified mixture pressure
+    !! that the HLLC solver applies to the reconstructed face states in m_riemann_solver_hllc.fpp, following Ando (2010), Eq. (2.5).
+    !! It is a diagnostic: ptil is read only by the probe output path and never feeds back into the solution.
+    impure subroutine s_compute_ptilde(q_cons_vf, q_prim_vf)
+
+        type(scalar_field), dimension(sys_size), intent(in) :: q_cons_vf, q_prim_vf
+        real(wp)                                            :: R3bar, R3V2bar, PbwR3bar
+        real(wp)                                            :: myRho, myP, alf, myR, myV, myPb
+        integer                                             :: j, k, l, q, ii
+
+        $:GPU_PARALLEL_LOOP(private='[j, k, l, q, ii, R3bar, R3V2bar, PbwR3bar, myRho, myP, alf, myR, myV, myPb]', collapse=3)
+        do l = 0, p
+            do k = 0, n
+                do j = 0, m
+                    alf = q_prim_vf(eqn_idx%alf)%sf(j, k, l)
+                    myP = q_prim_vf(eqn_idx%E)%sf(j, k, l)
+
+                    myRho = 0._wp
+                    $:GPU_LOOP(parallelism='[seq]')
+                    do ii = 1, num_fluids
+                        myRho = myRho + q_cons_vf(ii)%sf(j, k, l)
+                    end do
+
+                    if (qbmm) then
+                        R3bar = mom_sp(1)%sf(j, k, l)
+                        R3V2bar = mom_sp(3)%sf(j, k, l)
+                        PbwR3bar = mom_sp(4)%sf(j, k, l)
+                    else
+                        R3bar = 0._wp
+                        R3V2bar = 0._wp
+                        PbwR3bar = 0._wp
+
+                        $:GPU_LOOP(parallelism='[seq]')
+                        do q = 1, nb
+                            myR = q_prim_vf(rs(q))%sf(j, k, l)
+                            myV = q_prim_vf(vs(q))%sf(j, k, l)
+                            if (polytropic) then
+                                myPb = 0._wp
+                            else
+                                myPb = q_prim_vf(ps(q))%sf(j, k, l)
+                            end if
+
+                            R3bar = R3bar + weight(q)*(myR**3._wp)
+                            R3V2bar = R3V2bar + weight(q)*(myR**3._wp)*(myV**2._wp)
+                            PbwR3bar = PbwR3bar + weight(q)*f_cpbw_KM(R0(q), myR, myV, myPb)*(myR**3._wp)
+                        end do
+                    end if
+
+                    ! Same degenerate-state guard the HLLC solver uses
+                    if (alf < small_alf .or. R3bar < small_alf) then
+                        ptil(j, k, l) = alf*myP
+                    else
+                        ptil(j, k, l) = alf*(myP - PbwR3bar/R3bar - myRho*R3V2bar/R3bar)
+                    end if
+                end do
+            end do
+        end do
+        $:END_GPU_PARALLEL_LOOP()
+
+    end subroutine s_compute_ptilde
 
 end module m_bubbles_EE

@@ -11,8 +11,8 @@ Based on the constraints enforced in:
 - src/simulation/m_checker.fpp
 - src/post_process/m_checker.fpp
 """
-# Justification: Comprehensive validator covering all MFC parameter constraints
 
+import math
 import re
 from functools import lru_cache
 from typing import Any, Dict, List, Set
@@ -81,6 +81,14 @@ PHYSICS_DOCS = {
         "math": r"m > 0, \quad n \geq 0, \quad p \geq 0",
         "explanation": ("The x-direction must have cells. Cannot have z without y. Cylindrical coordinates require odd p."),
     },
+    "check_domain_extents": {
+        "title": "Domain Extents Specified",
+        "category": "Domain and Geometry",
+        "math": r"m > 0 \Rightarrow x_{\mathrm{beg}}, x_{\mathrm{end}} \ \mathrm{set}",
+        "explanation": (
+            "Every dimension that has cells needs its physical extents so that the grid can be generated. Skipped on restarts (old_grid = T), where the mesh is read from the existing grid files."
+        ),
+    },
     "check_patch_within_domain": {
         "title": "Patch Within Domain",
         "category": "Domain and Geometry",
@@ -122,7 +130,18 @@ PHYSICS_DOCS = {
     "check_bubbles_lagrange": {
         "title": "Euler-Lagrange Bubble Model",
         "category": "Bubble Physics",
-        "explanation": "2D/3D only. Requires polytropic = F and thermal = 3. Not compatible with model_eqns = 3.",
+        "explanation": "2D/3D only. Requires polytropic = F and thermal = 3. Not compatible with model_eqns = 3. Kahan summation not compatible with --mixed precision.",
+    },
+    "check_reactive_burn": {
+        "title": "Condensed-Phase Reactive Burn",
+        "category": "Combustion",
+        "explanation": (
+            "Programmed pressure-driven burn converting a reactant fluid to a product fluid on the multi-fluid model. "
+            "Requires model_eqns = 2 or 3 and num_fluids = 2 (reactant, product) sharing the stiffened-gas EOS "
+            "(equal gamma, pi_inf) with qv_reactant > qv_product. rburn%k (> 0), rburn%pign, rburn%pref (> 0), "
+            "and rburn%n (>= 0) must all be set. rburn%ta (activation temperature [K]) is optional and must be >= 0; "
+            ">0 adds an Arrhenius exp(-rburn%ta/T) factor and requires fluid_pp(1)%cv > 0."
+        ),
     },
     # Numerical Schemes
     "check_weno": {
@@ -160,7 +179,7 @@ PHYSICS_DOCS = {
     "check_hypoelasticity": {
         "title": "Hypoelasticity",
         "category": "Feature Compatibility",
-        "explanation": "Requires model_eqns = 2, HLL Riemann solver.",
+        "explanation": "Requires model_eqns = 2, HLL/HLLC/HLLD Riemann solver.",
     },
     "check_phase_change": {
         "title": "Phase Change",
@@ -170,7 +189,7 @@ PHYSICS_DOCS = {
     "check_alt_soundspeed": {
         "title": "Alternative Sound Speed",
         "category": "Feature Compatibility",
-        "explanation": "Requires model_eqns = 2, num_fluids 2 or 3, HLLC solver. Incompatible with bubbles.",
+        "explanation": "Requires model_eqns = 2, exactly two fluid components, HLL/HLLC/HLLD solver. Incompatible with bubbles.",
     },
     "check_igr": {
         "title": "Iterative Generalized Riemann (IGR)",
@@ -193,6 +212,100 @@ PHYSICS_DOCS = {
         ),
         "references": ["Papanastasiou87"],
         "docs_section": "sec-non-newtonian",
+    },
+    # Active-Box Optimization
+    "check_active_box": {
+        "title": "Active-Box RHS Restriction",
+        "category": "Active-Box Optimization",
+        "explanation": (
+            "Causal-envelope active-box optimization restricts the RHS compute window to the "
+            "causal support of the initial disturbance, assuming a static uniform exterior. "
+            "Requires WENO reconstruction (recon_type = 1) and SSP-RK3 time stepping (time_stepper = 3). "
+            "Incompatible with immersed boundaries, acoustic sources, body forces, "
+            "Euler-Euler bubbles, Lagrangian bubbles, phase change (relax), and the IGR solver. "
+            "Also incompatible with viscous (diffusion has no finite domain of dependence), "
+            "surface_tension (nonlocal curvature coupling), cyl_coord (geometric source terms "
+            "are nonzero for uniform flow, so the exterior is not static), "
+            "hypoelasticity (stress source terms), "
+            "mhd (magnetic field source terms), and chemistry (reactive source terms)."
+        ),
+    },
+    # Adaptive Mesh Refinement
+    "check_amr": {
+        "title": "Adaptive Mesh Refinement (AMR)",
+        "category": "Adaptive Mesh Refinement",
+        "explanation": (
+            "Block-structured AMR (Experimental) adds up to amr_max_blocks refined blocks at amr_ref_ratio:1 "
+            "refinement (amr_ref_ratio = 2 or 4); with amr_max_level > 1 the blocks nest recursively to that "
+            "depth (multi-level nesting requires amr_ref_ratio = 2). "
+            "Requires WENO reconstruction (recon_type = 1), SSP-RK3 (time_stepper = 3), "
+            "and the 5- or 6-equation model (model_eqns = 2 or 3; for 6-eq the per-stage pressure "
+            "relaxation also runs on each fine block); num_fluids > 1 additionally requires "
+            "mpp_lim (its volume-fraction clamp+renormalize maintains coarse/fine alpha "
+            "consistency). "
+            "Euler-Euler bubbles (bubbles_euler, and with them QBMM) are not supported with amr: "
+            "their mpp_lim pre-conversion rescale and pb/mv quadrature side-state would force "
+            "per-block special cases through the batched advance, so the support was retired. "
+            "Supports phase change (relax): the cell-local, mass/energy-conserving relaxation runs "
+            "on the fine solution before restriction (matching the coarse once-per-step timing). "
+            "Supports chemistry reactions, advection, and species diffusion (single- and multi-rank): the "
+            "cell-local reaction source runs on the fine block through the shared RHS, species partial "
+            "densities are refluxed, and prolongation rescales them to the continuity density for "
+            "realizability. Species diffusion (chem_params%diffusion) is refluxed too: its species mass "
+            "fluxes (and thermal-conduction/enthalpy energy flux) travel through flux_src and are captured "
+            "into the coarse/fine registers, so element mass and energy conserve across the block boundary. "
+            "Supports static and prescribed-motion immersed boundaries (ib), including multiple bodies: "
+            "each fine block carries its own fine-grid markers/ghost points computed from the body "
+            "geometry, and the fine advance applies the IB state correction on the block, so the bodies "
+            "are resolved on the refined level. Limited to non-STL bodies on a static block "
+            "(amr_regrid_int = 0); force-driven moving IB, STL IB, and dynamic-regrid-with-IB are gated "
+            "pending validation. Hypoelasticity (with continuum damage) is supported. "
+            "Acoustic sources are supported: the source acts on the coarse grid; its support "
+            "must not overlap the user-placed initial block (checked at startup), and under dynamic "
+            "regrid the source region stays coarse (tags are suppressed over the support and candidate "
+            "boxes are clipped clear of it). "
+            "IGR is supported with restriction-only coarse/fine coupling: the fine block runs its "
+            "own fixed-iteration sigma solve seeded and Dirichlet-bounded by the converged coarse "
+            "sigma; seam conservation is truncation-order (the reflux is not captured from the "
+            "fused IGR flux kernels); amr_subcycle is not yet supported under IGR. "
+            "Lagrangian bubbles are supported with the cloud excluded from fine blocks (two-way "
+            "coupling lives on the coarse grid): regrid suppresses tags and clips boxes around the "
+            "cloud's padded bbox, and a per-stage guard aborts if the cloud reaches an active block. "
+            "Incompatible with surface tension, "
+            "3D cylindrical coordinates (2D axisymmetric IS supported: the axis half-cell's "
+            "per-cell WENO coefficients are recomputed for each block on swap), and "
+            "2D/3D MHD (measured: the coarse/fine seam is a continuous O(1) div(B) source that GLM "
+            "cleaning spreads but cannot remove; divergence-preserving B prolongation/reflux is future "
+            "work). 1D MHD/RMHD IS supported: div(B) = 0 by construction there (Bx is the uniform Bx0 "
+            "parameter; By/Bz reflux and restrict as ordinary conserved scalars). "
+            "active_box is supported (single-rank, per active_box's own MPI gate): blocks must "
+            "sit strictly inside the growing active window (init abort + regrid clamp), and the "
+            "fine advance treats its whole block as active. "
+            "Dynamic regrid (amr_regrid_int > 0) requires amr_tag_eps > 0 and amr_buf >= 1; amr_buf < amr_regrid_int "
+            "is allowed but advisory-warned (at CFL near 1 a feature can outrun the tag buffer between regrids - the "
+            "runtime [amr-cad] report counts tags that escaped the previous coverage; keep it at 0). "
+            "amr_ref_ratio must be 2 or 4 (amr_ref_ratio = 4 is single-level without subcycling); amr_max_level >= 1, "
+            "and multi-level (amr_max_level > 1) needs amr_max_blocks >= 2. "
+            "amr_subcycle advances the fine level at dt/2 with Berger-Colella refluxing; "
+            "incompatible with cfl_dt. "
+            "Under MPI the patch may span ranks (each rank holds the fine cells covering its "
+            "own subdomain) but may cover at most about half of any rank's subdomain per "
+            "dimension. amr_max_grid_size caps a block at an absolute number of coarse cells "
+            "per dimension (0, the default, derives the cap from the decomposition instead). "
+            "Setting it makes the box set identical at every rank count, and may exceed half a "
+            "subdomain: the solver scratch is then sized to the cap instead of the subdomain, "
+            "costing per-rank memory that grows as the cap raised to the dimension count."
+        ),
+    },
+    # Forcing
+    "check_synthetic_turbulence": {
+        "title": "Synthetic Turbulence Forcing",
+        "category": "Feature Compatibility",
+        "explanation": (
+            "num_turbulent_sources must be > 0 and <= num_turb_sources_max. Each active forcing zone i needs "
+            "turb_pos(i,d) set and synth_L(i,d) > 0 for every active dimension d (d = 1..num_dims); components "
+            "beyond num_dims are unused and not required."
+        ),
     },
     # Acoustic Sources
     "check_acoustic_source": {
@@ -309,12 +422,6 @@ class CaseValidator:
             f"recon_type must be one of {_recon_shown}",
         )
 
-        # Required domain parameters when m > 0
-        m = self.get("m")
-        if m is not None and m > 0:
-            self.prohibit(not self.is_set("x_domain%beg"), "x_domain%beg must be set when m > 0")
-            self.prohibit(not self.is_set("x_domain%end"), "x_domain%end must be set when m > 0")
-
     # Common Checks (All Stages)
 
     def check_simulation_domain(self):
@@ -339,12 +446,11 @@ class CaseValidator:
         cyl_coord = self.get("cyl_coord", "F") == "T"
         p = self.get("p", 0)
 
-        self.prohibit(model_eqns is not None and model_eqns not in [1, 2, 3, 4], "model_eqns must be 1, 2, 3, or 4")
+        self.prohibit(model_eqns is not None and model_eqns not in [1, 2, 3], "model_eqns must be 1, 2, or 3")
         self.prohibit(num_fluids is not None and num_fluids < 1, "num_fluids must be positive")
         self.prohibit(model_eqns == 1 and num_fluids is not None, "num_fluids is not supported for model_eqns = 1")
         self.prohibit(model_eqns == 2 and num_fluids is None, "5-equation model (model_eqns = 2) requires num_fluids to be set")
         self.prohibit(model_eqns == 3 and num_fluids is None, "6-equation model (model_eqns = 3) requires num_fluids to be set")
-        self.prohibit(model_eqns == 4 and num_fluids is None, "4-equation model (model_eqns = 4) requires num_fluids to be set")
         self.prohibit(model_eqns == 1 and mpp_lim, "model_eqns = 1 does not support mpp_lim")
         self.prohibit(num_fluids == 1 and mpp_lim, "num_fluids = 1 does not support mpp_lim")
         self.prohibit(model_eqns == 3 and cyl_coord and p != 0, "6-equation model (model_eqns = 3) does not support cylindrical coordinates (cyl_coord = T and p != 0)")
@@ -492,9 +598,6 @@ class CaseValidator:
         thermal = self.get("thermal")
         model_eqns = self.get("model_eqns")
         cyl_coord = self.get("cyl_coord", "F") == "T"
-        rhoref = self.get("rhoref")
-        pref = self.get("pref")
-        num_fluids = self.get("num_fluids")
 
         self.prohibit(nb is None or nb < 1, "The Ensemble-Averaged Bubble Model requires nb >= 1")
         self.prohibit(polydisperse and nb == 1, "Polydisperse bubble dynamics requires nb > 1")
@@ -502,11 +605,6 @@ class CaseValidator:
         self.prohibit(thermal is not None and thermal > 3, "thermal must be <= 3")
         self.prohibit(model_eqns == 3, "Bubble models untested with 6-equation model (model_eqns = 3)")
         self.prohibit(model_eqns == 1, "Bubble models untested with pi-gamma model (model_eqns = 1)")
-        self.prohibit(model_eqns == 4 and rhoref is None, "rhoref must be set if using bubbles_euler with model_eqns = 4")
-        self.prohibit(rhoref is not None and rhoref <= 0, "rhoref (reference density) must be positive")
-        self.prohibit(model_eqns == 4 and pref is None, "pref must be set if using bubbles_euler with model_eqns = 4")
-        self.prohibit(pref is not None and pref <= 0, "pref (reference pressure) must be positive")
-        self.prohibit(model_eqns == 4 and num_fluids != 1, "4-equation model (model_eqns = 4) is single-component and requires num_fluids = 1")
         self.prohibit(cyl_coord, "Bubble models untested in cylindrical coordinates")
 
         # BUBBLE PHYSICS PARAMETERS
@@ -575,24 +673,73 @@ class CaseValidator:
         hypoelasticity = self.get("hypoelasticity", "F") == "T"
         model_eqns = self.get("model_eqns")
         riemann_solver = self.get("riemann_solver")
+        riemann_hypo_ADC = self.get("riemann_hypo_ADC", "F") == "T"
+        hypo_hll_interface_rhs = self.get("hypo_hll_interface_rhs", "F") == "T"
+        self.prohibit(riemann_hypo_ADC and not hypoelasticity, "riemann_hypo_ADC requires hypoelasticity to be enabled")
+        self.prohibit(hypo_hll_interface_rhs and not hypoelasticity, "hypo_hll_interface_rhs requires hypoelasticity to be enabled")
 
         if not hypoelasticity:
             return
 
         self.prohibit(model_eqns is not None and model_eqns != 2, "hypoelasticity requires model_eqns = 2")
-        self.prohibit(riemann_solver is not None and riemann_solver != 1, "hypoelasticity requires HLL Riemann solver (riemann_solver = 1)")
+        self.prohibit(riemann_solver is not None and riemann_solver not in [1, 2, 4], "hypoelasticity requires HLL (1), HLLC (2), or HLLD (4) Riemann solver")
+        self.prohibit(riemann_hypo_ADC and riemann_solver is not None and riemann_solver not in [2, 4], "riemann_hypo_ADC only applies to HLLC (2) or HLLD (4)")
+        self.prohibit(hypo_hll_interface_rhs and riemann_solver is not None and riemann_solver != 1, "hypo_hll_interface_rhs requires HLL Riemann solver (riemann_solver = 1)")
+        viscous = self.get("viscous", "F") == "T"
+        surface_tension = self.get("surface_tension", "F") == "T"
+        self.prohibit(riemann_solver == 4 and viscous, "HLLD hypoelasticity does not support viscous effects (the dual-pass omits the viscous source term)")
+        self.prohibit(riemann_solver == 4 and surface_tension, "HLLD hypoelasticity does not support surface tension (the dual-pass omits the surface-tension source term)")
+        cont_damage = self.get("cont_damage", "F") == "T"
+        bubbles_euler = self.get("bubbles_euler", "F") == "T"
+        chemistry = self.get("chemistry", "F") == "T"
+        mhd = self.get("mhd", "F") == "T"
+        n = self.get("n", 0)
+        p = self.get("p", 0)
+        cyl_coord = self.get("cyl_coord", "F") == "T"
+        num_fluids = self.get("num_fluids")
+        alt_soundspeed = self.get("alt_soundspeed", "F") == "T"
+        self.prohibit(cyl_coord and p > 0, "3D cylindrical hypoelasticity is not supported")
+        self.prohibit(riemann_solver == 4 and n == 0, "HLLD hypoelasticity requires at least 2D (n > 0)")
+        self.prohibit(riemann_solver == 4 and num_fluids is not None and num_fluids != 2, "HLLD hypoelasticity requires exactly 2 fluid components")
+        self.prohibit(alt_soundspeed and num_fluids is not None and num_fluids != 2, "hypoelastic alt_soundspeed requires exactly 2 fluid components")
+        self.prohibit(mhd, "MHD and hypoelasticity cannot be enabled together")
+        self.prohibit(bubbles_euler, "Hypoelasticity does not support Euler-Euler bubbles")
+        self.prohibit(riemann_solver == 4 and cont_damage, "HLLD hypoelasticity does not support continuum damage (the dual-pass does not damage-scale the shear modulus)")
+        self.prohibit(riemann_solver == 4 and chemistry, "HLLD hypoelasticity does not support chemistry")
+        self.prohibit(
+            riemann_hypo_ADC and (bubbles_euler or surface_tension or chemistry or cont_damage),
+            "riemann_hypo_ADC does not support bubbles, surface tension, chemistry, or continuum damage (the ADC HLL blend omits their flux components)",
+        )
+        fd_order = self.get("fd_order")
+        wave_speeds = self.get("wave_speeds")
+        low_Mach = self.get("low_Mach", 0)
+        ADC_kappa = self.get("ADC_kappa")
+        cfl_const_dt = self.get("cfl_const_dt", "F") == "T"
+        cfl_adap_dt = self.get("cfl_adap_dt", "F") == "T"
+        self.prohibit(fd_order is None, "hypoelasticity requires fd_order to be set (1, 2, or 4); the finite-difference coefficients are initialized unconditionally")
+        self.prohibit(wave_speeds == 2, "Pressure-based wave speeds (wave_speeds = 2) omit the elastic longitudinal speed and are not supported with hypoelasticity")
+        self.prohibit(riemann_hypo_ADC and low_Mach > 0, "riemann_hypo_ADC does not support low_Mach (the ADC HLL reference flux uses pre-correction velocities)")
+        self.prohibit(riemann_hypo_ADC and ADC_kappa is not None and ADC_kappa <= 0, "ADC_kappa must be positive")
+        self.prohibit(
+            cfl_const_dt or cfl_adap_dt, "Automatic CFL time stepping uses the acoustic sound speed only and does not bound the elastic characteristic speed; set dt explicitly for hypoelastic runs"
+        )
 
     def check_phase_change(self):
         """Checks constraints on phase change parameters"""
         relax = self.get("relax", "F") == "T"
         relax_model = self.get("relax_model")
         model_eqns = self.get("model_eqns")
+        num_fluids = self.get("num_fluids")
         palpha_eps = self.get("palpha_eps")
         ptgalpha_eps = self.get("ptgalpha_eps")
 
         if not relax:
             return
 
+        self.prohibit(
+            num_fluids is None or num_fluids < 2,
+            "phase change requires num_fluids >= 2 (liquid = 1, vapor = 2)",
+        )
         self.prohibit(
             (model_eqns not in (2, 3) or (model_eqns == 2 and relax_model not in (5, 6)) or (model_eqns == 3 and relax_model not in (1, 4, 5, 6))),
             "phase change requires model_eqns==2 with relax_model in [5,6] or model_eqns==3 with relax_model in [1,4,5,6]",
@@ -610,6 +757,7 @@ class CaseValidator:
         num_particle_clouds = self.get("num_particle_clouds", 0) or 0
 
         ib_state_wrt = self.get("ib_state_wrt", "F") == "T"
+        many_ib_patch_parallelism = self.get("many_ib_patch_parallelism", "F") == "T"
 
         fd_order = self.get("fd_order")
         self.prohibit(ib and fd_order is None, "fd_order must be specified for ib")
@@ -626,9 +774,17 @@ class CaseValidator:
         )
         self.prohibit(not ib and num_ibs > 0, "num_ibs is set, but ib is not enabled")
         self.prohibit(ib_state_wrt and not ib, "ib_state_wrt requires ib to be enabled")
+        self.prohibit(many_ib_patch_parallelism and not ib, "many_ib_patch_parallelism requires ib to be enabled")
 
         for i in range(1, num_particle_clouds + 1):
+            n = self.get("n", 0)
+            p = self.get("p", 0)
+            geometry = self.get(f"particle_cloud({i})%cloud_geometry", 1)
             packing_method = self.get(f"particle_cloud({i})%packing_method", None)
+            self.prohibit(
+                geometry not in [1, 2],
+                f"particle_cloud({i})%cloud_geometry must be 1 (box) or 2 (hemisphere shell)",
+            )
             self.prohibit(
                 packing_method is None,
                 f"particle_cloud({i})%packing_method must be specified (1 = rejection sampling, 2 = lattice)",
@@ -637,6 +793,118 @@ class CaseValidator:
                 packing_method is not None and packing_method not in [1, 2],
                 f"particle_cloud({i})%packing_method must be 1 (rejection sampling) or 2 (lattice)",
             )
+            shell_outer_radius = self.get(f"particle_cloud({i})%shell_outer_radius", None)
+            shell_inner_radius = self.get(f"particle_cloud({i})%shell_inner_radius", None)
+            radius = self.get(f"particle_cloud({i})%radius", None)
+            mass = self.get(f"particle_cloud({i})%mass", None)
+            num_particles = self.get(f"particle_cloud({i})%num_particles", None)
+            periodic = self.get(f"particle_cloud({i})%periodic", 0)
+            length_x = self.get(f"particle_cloud({i})%length_x", None)
+            length_y = self.get(f"particle_cloud({i})%length_y", None)
+            length_z = self.get(f"particle_cloud({i})%length_z", None)
+
+            self.prohibit(
+                periodic not in [0, 1],
+                f"particle_cloud({i})%periodic must be 0 (off) or 1 (on)",
+            )
+            self.prohibit(
+                periodic == 1 and geometry != 1,
+                f"particle_cloud({i})%periodic is only supported for box particle clouds",
+            )
+            self.prohibit(
+                periodic == 1 and packing_method != 1,
+                f"particle_cloud({i})%periodic is only supported for rejection packing",
+            )
+            self.prohibit(
+                periodic == 1
+                and (
+                    length_x is None
+                    or not self._is_numeric(length_x)
+                    or length_x <= 0
+                    or length_y is None
+                    or not self._is_numeric(length_y)
+                    or length_y <= 0
+                    or (p > 0 and (length_z is None or not self._is_numeric(length_z) or length_z <= 0))
+                ),
+                f"particle_cloud({i})%periodic requires positive box lengths in each active dimension",
+            )
+
+            # radius, mass, and num_particles are required and positive for every cloud, independent of
+            # geometry. An unset radius reaches the sampler as dflt_real, which makes min_dist negative and
+            # corrupts both the spatial-hash bin index and the overlap test; an unset mass/num_particles is
+            # meaningless. The Fortran sampler cannot re-check these cheaply, so they belong here.
+            self.prohibit(
+                num_particles is None or (self._is_numeric(num_particles) and num_particles <= 0),
+                f"particle_cloud({i})%num_particles must be specified and > 0",
+            )
+            self.prohibit(
+                radius is None or (self._is_numeric(radius) and radius <= 0),
+                f"particle_cloud({i})%radius must be specified and > 0",
+            )
+            self.prohibit(
+                mass is None or (self._is_numeric(mass) and mass <= 0),
+                f"particle_cloud({i})%mass must be specified and > 0",
+            )
+            # A hemisphere shell in 1D degenerates to a half-annulus the y-extent check below cannot see
+            # (it is skipped when n == 0), so reject it explicitly here.
+            self.prohibit(
+                geometry == 2 and n == 0,
+                f"particle_cloud({i}) hemisphere shell requires a 2D or 3D domain (n > 0)",
+            )
+            self.prohibit(
+                geometry == 2 and (shell_inner_radius is None or (self._is_numeric(shell_inner_radius) and shell_inner_radius < 0)),
+                f"particle_cloud({i}) hemisphere shell requires shell_inner_radius >= 0",
+            )
+            self.prohibit(
+                geometry == 2
+                and (
+                    shell_outer_radius is None
+                    or radius is None
+                    or shell_inner_radius is None
+                    or (all(self._is_numeric(v) for v in [shell_outer_radius, shell_inner_radius, radius]) and shell_outer_radius <= shell_inner_radius + 2 * radius)
+                ),
+                f"particle_cloud({i}) hemisphere shell requires shell_outer_radius > shell_inner_radius + 2*radius",
+            )
+            self.prohibit(
+                geometry == 2 and packing_method == 2,
+                f"particle_cloud({i}) hemisphere-shell lattice packing is not implemented",
+            )
+            if geometry == 2 and shell_outer_radius is not None and self._is_numeric(shell_outer_radius):
+                x_centroid = self.get(f"particle_cloud({i})%x_centroid", None)
+                y_centroid = self.get(f"particle_cloud({i})%y_centroid", None)
+                z_centroid = self.get(f"particle_cloud({i})%z_centroid", None)
+                x_beg = self.get("x_domain%beg", None)
+                x_end = self.get("x_domain%end", None)
+                y_beg = self.get("y_domain%beg", None)
+                y_end = self.get("y_domain%end", None)
+                z_beg = self.get("z_domain%beg", None)
+                z_end = self.get("z_domain%end", None)
+
+                if all(self._is_numeric(v) for v in [x_centroid, x_beg, x_end]):
+                    self.prohibit(
+                        x_centroid - shell_outer_radius < x_beg or x_centroid + shell_outer_radius > x_end,
+                        f"particle_cloud({i}) hemisphere shell x-extent must lie within x_domain",
+                    )
+                if n > 0 and all(self._is_numeric(v) for v in [y_centroid, y_beg, y_end, radius]):
+                    if p > 0:
+                        self.prohibit(
+                            y_centroid - shell_outer_radius < y_beg or y_centroid + shell_outer_radius > y_end,
+                            f"particle_cloud({i}) hemisphere shell y-extent must lie within y_domain",
+                        )
+                    else:
+                        # 2D half-annulus opens toward +y from the flat face at y_centroid; require one
+                        # particle radius of standoff so no particle surface sits on the domain wall.
+                        self.prohibit(
+                            y_centroid - radius < y_beg or y_centroid + shell_outer_radius > y_end,
+                            f"particle_cloud({i}) half-annulus must clear y_domain by one particle radius",
+                        )
+                if p > 0 and all(self._is_numeric(v) for v in [z_centroid, z_beg, z_end, radius]):
+                    # 3D hemisphere shell opens toward +z from the flat face at z_centroid; require one
+                    # particle radius of standoff so no particle surface sits on the domain wall.
+                    self.prohibit(
+                        z_centroid - radius < z_beg or z_centroid + shell_outer_radius > z_end,
+                        f"particle_cloud({i}) hemisphere shell must clear z_domain by one particle radius",
+                    )
 
         num_ib_airfoils_max = get_fortran_constants().get("num_ib_airfoils_max", 5)
         num_stl_models_max = get_fortran_constants().get("num_stl_models_max", 10)
@@ -683,6 +951,13 @@ class CaseValidator:
                     True,
                     f"patch_ib({i})%model_id is set but geometry ({geometry}) is not an STL model (5 or 12)",
                 )
+            # Vieille's-law burn-rate exponent must be non-negative: a negative exponent makes
+            # v_blow ~ p^n diverge (Inf) as the surface pressure approaches zero.
+            burn_rate_exp = self.get(f"patch_ib({i})%burn_rate_exp", None)
+            self.prohibit(
+                burn_rate_exp is not None and burn_rate_exp < 0,
+                f"patch_ib({i})%burn_rate_exp must be >= 0 (Vieille's-law pressure exponent)",
+            )
         num_patches = self.get("num_patches", 0) or 0
         for i in range(1, num_patches + 1):
             geometry = self.get(f"patch_icpp({i})%geometry", None)
@@ -913,12 +1188,20 @@ class CaseValidator:
         low_Mach = self.get("low_Mach", 0)
         cyl_coord = self.get("cyl_coord", "F") == "T"
         viscous = self.get("viscous", "F") == "T"
+        hll_u_interface = self.get("hll_u_interface", "F") == "T"
 
         self.prohibit(riemann_solver is None, "riemann_solver must be specified (1=HLL, 2=HLLC, 4=HLLD, 5=Lax-Friedrichs)")
         if riemann_solver is None:
             return
 
         self.prohibit(riemann_solver not in [1, 2, 4, 5], "riemann_solver must be 1 (HLL), 2 (HLLC), 4 (HLLD), or 5 (Lax-Friedrichs)")
+        self.prohibit(hll_u_interface and riemann_solver != 1, "hll_u_interface requires HLL Riemann solver (riemann_solver = 1)")
+        mhd = self.get("mhd", "F") == "T"
+        surface_tension = self.get("surface_tension", "F") == "T"
+        self.prohibit(hll_u_interface and mhd, "HLL Method 2 does not support MHD (the MHD path zeroes the shared interface-velocity trace)")
+        self.prohibit(riemann_solver == 1 and hll_u_interface and cyl_coord and self.get("p", 0) > 0, "HLL Method 2 is not supported for 3D cylindrical geometry")
+        self.prohibit(surface_tension and riemann_solver == 1 and not hll_u_interface, "surface_tension requires a shared interface-velocity representation (HLL Method 2 or HLLC)")
+        self.prohibit(surface_tension and riemann_solver == 5, "surface_tension requires a shared interface-velocity representation (HLL Method 2 or HLLC)")
         self.prohibit(riemann_solver != 2 and model_eqns == 3, "6-equation model (model_eqns = 3) requires riemann_solver = 2 (HLLC)")
         self.prohibit(wave_speeds is not None and wave_speeds not in [1, 2], "wave_speeds must be 1 or 2")
         self.prohibit(avg_state is not None and avg_state not in [1, 2], "avg_state must be 1 or 2")
@@ -927,13 +1210,15 @@ class CaseValidator:
         self.prohibit(low_Mach not in [0, 1, 2], "low_Mach must be 0, 1, or 2")
         self.prohibit(riemann_solver != 2 and low_Mach == 2, "low_Mach = 2 requires riemann_solver = 2")
         self.prohibit(low_Mach != 0 and model_eqns not in [2, 3], "low_Mach = 1 or 2 requires model_eqns = 2 or 3")
+        self.prohibit(riemann_solver == 4 and wave_speeds == 2, "HLLD uses its own direct wave-speed estimates; wave_speeds = 2 is not supported")
+        self.prohibit(riemann_solver == 4 and low_Mach > 0, "low_Mach corrections are not implemented for HLLD")
         self.prohibit(riemann_solver == 5 and cyl_coord and viscous, "Lax Friedrichs with cylindrical viscous flux not supported")
 
     def check_time_stepping(self):
         """Checks time stepping parameters (simulation/post-process)"""
-        cfl_dt = self.get("cfl_dt", "F") == "T"
+        # mirrors the Fortran derivation (m_start_up.fpp): cfl_adap_dt or cfl_const_dt sets cfl_dt
+        cfl_dt = any(self.get(k, "F") == "T" for k in ("cfl_dt", "cfl_adap_dt", "cfl_const_dt"))
         cfl_adap_dt = self.get("cfl_adap_dt", "F") == "T"
-        adap_dt = self.get("adap_dt", "F") == "T"
         time_stepper = self.get("time_stepper")
 
         # Check time_stepper bounds
@@ -972,10 +1257,13 @@ class CaseValidator:
         )
 
         if not variable_dt:
-            # dt is required in pure fixed dt mode (not cfl_dt, not cfl_adap_dt)
-            # adap_dt mode uses dt as initial value, so it's optional
+            # dt is required whenever stepping is not CFL-driven. adap_dt is not an
+            # exemption: it uses dt as its initial value, and the Fortran checked
+            # `if (.not. cfl_dt) dt <= 0`, which fired on the dflt_real sentinel when
+            # dt was left unset. Cases that genuinely need no dt set cfl_adap_dt
+            # instead, which lands in the variable_dt branch above.
             uses_fixed_stepping = self.is_set("t_step_start") or self.is_set("t_step_stop")
-            self.prohibit(uses_fixed_stepping and not adap_dt and not self.is_set("dt"), "dt must be set when using fixed time stepping (t_step_start/t_step_stop)")
+            self.prohibit(uses_fixed_stepping and not self.is_set("dt"), "dt must be set when using fixed time stepping (t_step_start/t_step_stop)")
 
     def check_finite_difference(self):
         """Checks constraints on finite difference parameters"""
@@ -1070,8 +1358,45 @@ class CaseValidator:
         self.prohibit(avg_state is not None and avg_state != 2, "Bubble modeling requires arithmetic average (avg_state = 2)")
         self.prohibit(model_eqns == 2 and bubble_model == 1, "The 5-equation bubbly flow model does not support bubble_model = 1 (Gilmore)")
 
+    def check_synthetic_turbulence(self):
+        """Checks constraints on synthetic-turbulence forcing zones (simulation)"""
+        if self.get("synthetic_turbulence", "F") != "T":
+            return
+
+        num_turbulent_sources = self.get("num_turbulent_sources", 0) or 0
+        self.prohibit(num_turbulent_sources <= 0, "num_turbulent_sources must be > 0 when synthetic_turbulence is enabled")
+
+        num_turb_sources_max = get_fortran_constants().get("num_turb_sources_max", 10)
+        self.prohibit(
+            num_turbulent_sources > num_turb_sources_max,
+            f"num_turbulent_sources must be <= {num_turb_sources_max} (num_turb_sources_max in m_constants.fpp)",
+        )
+
+        # Each active zone needs a position and a positive extent in every active
+        # dimension; the Fortran loops d = 1, num_dims, so trailing components of a
+        # lower-dimensional case are not required.
+        num_dims = 3 if (self.get("p", 0) or 0) > 0 else (2 if (self.get("n", 0) or 0) > 0 else 1)
+        for i in range(1, min(num_turbulent_sources, num_turb_sources_max) + 1):
+            for d in range(1, num_dims + 1):
+                self.prohibit(
+                    not self.is_set(f"turb_pos({i},{d})"),
+                    f"turb_pos({i},{d}) must be specified for all num_dims when synthetic_turbulence is enabled",
+                )
+                synth_l = self.get(f"synth_L({i},{d})")
+                self.prohibit(
+                    synth_l is None or (self._is_numeric(synth_l) and synth_l <= 0),
+                    f"synth_L({i},{d}) must be positive for all num_dims when synthetic_turbulence is enabled",
+                )
+
     def check_body_forces(self):
         """Checks constraints on body forces parameters"""
+        # Spatially supported forcing writes mom%beg and mom%beg+1 directly, so it is
+        # only defined for a 2D domain (n > 0 with p == 0).
+        bf_spatial_support = self.get("bf_spatial_support", "F") == "T"
+        n = self.get("n", 0) or 0
+        p = self.get("p", 0) or 0
+        self.prohibit(bf_spatial_support and (n == 0 or p != 0), "bf_spatial_support is implemented for 2D only (it forces mom%beg and mom%beg+1)")
+
         for dir in ["x", "y", "z"]:
             bf = self.get(f"bf_{dir}", "F") == "T"
 
@@ -1187,7 +1512,8 @@ class CaseValidator:
 
         self.prohibit(mhd and riemann_solver is not None and riemann_solver not in [1, 4], "MHD simulations require riemann_solver = 1 (HLL) or riemann_solver = 4 (HLLD)")
         self.prohibit(mhd and wave_speeds is not None and wave_speeds == 2, "MHD requires wave_speeds = 1")
-        self.prohibit(riemann_solver == 4 and not mhd, "HLLD (riemann_solver = 4) is only available for MHD simulations")
+        hypoelasticity = self.get("hypoelasticity", "F") == "T"
+        self.prohibit(riemann_solver == 4 and not mhd and not hypoelasticity, "HLLD (riemann_solver = 4) requires MHD or hypoelasticity")
         self.prohibit(riemann_solver == 4 and relativity, "HLLD is not available for RMHD (relativity)")
         self.prohibit(hyper_cleaning and not mhd, "Hyperbolic cleaning requires mhd to be enabled")
         self.prohibit(hyper_cleaning and n is not None and n == 0, "Hyperbolic cleaning is not supported for 1D simulations")
@@ -1213,7 +1539,6 @@ class CaseValidator:
         acoustic_source = self.get("acoustic_source", "F") == "T"
         relax = self.get("relax", "F") == "T"
         mhd = self.get("mhd", "F") == "T"
-        hyperelasticity = self.get("hyperelasticity", "F") == "T"
         cyl_coord = self.get("cyl_coord", "F") == "T"
         probe_wrt = self.get("probe_wrt", "F") == "T"
         int_comp = self.get("int_comp", 0)
@@ -1232,7 +1557,6 @@ class CaseValidator:
         self.prohibit(acoustic_source, "IGR does not support acoustic sources")
         self.prohibit(relax, "IGR does not support phase change")
         self.prohibit(mhd, "IGR does not support magnetohydrodynamics")
-        self.prohibit(hyperelasticity, "IGR does not support hyperelasticity")
         self.prohibit(cyl_coord, "IGR does not support cylindrical or axisymmetric coordinates")
         self.prohibit(probe_wrt, "IGR does not support probe writes")
         self.prohibit(int_comp > 0, "IGR does not support int_comp > 0")
@@ -1391,6 +1715,247 @@ class CaseValidator:
                 self.prohibit(element_polygon_ratio is None, f"acoustic({jstr})%element_polygon_ratio must be specified for support = 11 (3D transducer)")
                 self.prohibit(element_polygon_ratio is not None and element_polygon_ratio <= 0, f"acoustic({jstr})%element_polygon_ratio must be positive for support = 11")
 
+    def check_active_box(self):
+        """Checks active-box optimization compatibility (simulation)"""
+        active_box = self.get("active_box", "F") == "T"
+
+        if not active_box:
+            return
+
+        recon_type = self.get("recon_type")
+        time_stepper = self.get("time_stepper")
+        ib = self.get("ib", "F") == "T"
+        acoustic_source = self.get("acoustic_source", "F") == "T"
+        # mirrors the Fortran derivation (m_start_up.fpp): bf_spatial_support alone also enables it
+        bodyForces = any(self.get(f"bf_{d}", "F") == "T" for d in ["x", "y", "z"]) or self.get("bf_spatial_support", "F") == "T"
+        bubbles_lagrange = self.get("bubbles_lagrange", "F") == "T"
+        relax = self.get("relax", "F") == "T"
+        igr = self.get("igr", "F") == "T"
+        viscous = self.get("viscous", "F") == "T"
+        surface_tension = self.get("surface_tension", "F") == "T"
+        cyl_coord = self.get("cyl_coord", "F") == "T"
+        hypoelasticity = self.get("hypoelasticity", "F") == "T"
+        mhd = self.get("mhd", "F") == "T"
+        chemistry = self.get("chemistry", "F") == "T"
+        bubbles_euler = self.get("bubbles_euler", "F") == "T"
+        synthetic_turbulence = self.get("synthetic_turbulence", "F") == "T"
+
+        self.prohibit(recon_type is not None and recon_type != 1, "active_box requires WENO reconstruction (recon_type = 1)")
+        # unset is a failure too: the Fortran default is the dflt_int sentinel, which is not 3
+        self.prohibit(time_stepper != 3, "active_box requires time_stepper = 3 (SSP-RK3)")
+        self.prohibit(ib, "active_box is incompatible with immersed boundaries")
+        self.prohibit(acoustic_source, "active_box is incompatible with acoustic sources")
+        self.prohibit(bodyForces, "active_box is incompatible with body forces")
+        self.prohibit(bubbles_lagrange, "active_box is incompatible with Lagrangian bubbles")
+        self.prohibit(relax, "active_box is incompatible with phase change")
+        self.prohibit(igr, "active_box is incompatible with the IGR solver")
+        self.prohibit(viscous, "active_box is incompatible with viscous (no finite domain of dependence for the frozen exterior)")
+        self.prohibit(surface_tension, "active_box is incompatible with surface_tension (nonlocal curvature coupling violates the static-uniform-exterior assumption)")
+        self.prohibit(cyl_coord, "active_box is incompatible with cyl_coord (geometric source terms are nonzero for uniform flow; exterior is not static)")
+        self.prohibit(hypoelasticity, "active_box is incompatible with hypoelasticity (stress source terms violate the static-uniform-exterior assumption)")
+        self.prohibit(mhd, "active_box is incompatible with mhd (magnetic field source terms violate the static-uniform-exterior assumption)")
+        self.prohibit(chemistry, "active_box is incompatible with chemistry (reactive source terms violate the static-uniform-exterior assumption)")
+        self.prohibit(bubbles_euler, "active_box is incompatible with bubbles_euler (cell-local bubble sources in a non-equilibrium ambient violate the static-uniform-exterior assumption)")
+        self.prohibit(synthetic_turbulence, "active_box is incompatible with synthetic turbulence (the volumetric forcing writes the whole domain every step, so the exterior is not static)")
+
+    def check_load_balance(self):
+        """Checks load_balance requirements (simulation)"""
+        # PHYSICS_DOCS: load_balance requires parallel_io=T and more than one MPI rank.
+        load_balance = self.get("load_balance", "F") == "T"
+
+        if not load_balance:
+            return
+
+        parallel_io = self.get("parallel_io", "F") == "T"
+        file_per_process = self.get("file_per_process", "F") == "T"
+        self.prohibit(not parallel_io, "load_balance requires parallel_io = T")
+        self.prohibit(file_per_process, "load_balance is incompatible with file_per_process (per-rank restart files are sized for the equal decomposition)")
+
+    def check_amr(self):
+        """Checks AMR parameter constraints (simulation)"""
+        amr = self.get("amr", "F") == "T"
+        amr_subcycle = self.get("amr_subcycle", "F") == "T"
+        amr_regrid_int = self.get("amr_regrid_int")
+        # mirrors the Fortran derivation (m_start_up.fpp): cfl_adap_dt or cfl_const_dt sets cfl_dt
+        cfl_dt = any(self.get(k, "F") == "T" for k in ("cfl_dt", "cfl_adap_dt", "cfl_const_dt"))
+
+        # Standalone checks that apply regardless of amr=T
+        self.prohibit(amr_subcycle and not amr, "amr_subcycle requires amr = T")
+        self.prohibit(amr_subcycle and cfl_dt, "amr_subcycle requires a fixed dt (cfl_dt not supported)")
+        self.prohibit(not amr and amr_regrid_int is not None and amr_regrid_int > 0, "amr_regrid_int requires amr = T")
+
+        if not amr:
+            return
+
+        recon_type = self.get("recon_type")
+        time_stepper = self.get("time_stepper")
+        model_eqns = self.get("model_eqns")
+        num_fluids = self.get("num_fluids")
+        surface_tension = self.get("surface_tension", "F") == "T"
+        bubbles_lagrange = self.get("bubbles_lagrange", "F") == "T"
+        mhd = self.get("mhd", "F") == "T"
+        ib = self.get("ib", "F") == "T"
+        igr = self.get("igr", "F") == "T"
+        cyl_coord = self.get("cyl_coord", "F") == "T"
+        amr_tag_eps = self.get("amr_tag_eps")
+        amr_buf = self.get("amr_buf")
+        amr_max_blocks = self.get("amr_max_blocks")
+        amr_max_grid_size = self.get("amr_max_grid_size")
+        amr_cluster_eff = self.get("amr_cluster_eff")
+        amr_max_level = self.get("amr_max_level")
+        amr_ref_ratio = self.get("amr_ref_ratio")
+
+        self.prohibit(amr_max_blocks is not None and amr_max_blocks < 1, "amr_max_blocks must be >= 1")
+        self.prohibit(
+            amr_max_grid_size is not None and amr_max_grid_size < 0,
+            "amr_max_grid_size must be >= 0 (0 derives the block size cap from the decomposition)",
+        )
+        self.prohibit(
+            amr_max_grid_size is not None and 0 < amr_max_grid_size < 2,
+            "amr_max_grid_size must be >= 2 coarse cells when set (a block must admit a refinement stencil)",
+        )
+        self.prohibit(amr_max_level is not None and amr_max_level < 1, "amr_max_level must be >= 1")
+        self.prohibit(
+            amr_max_level is not None and amr_max_level > 1 and amr_max_blocks is not None and amr_max_blocks < 2,
+            "multi-level AMR (amr_max_level > 1) needs amr_max_blocks >= 2 " "(at least one level-1 block plus one nested level-2 block)",
+        )
+        self.prohibit(amr_ref_ratio is not None and amr_ref_ratio not in (2, 4), "amr_ref_ratio must be 2 or 4")
+        self.prohibit(
+            amr_ref_ratio is not None and amr_ref_ratio != 2 and ((amr_max_level is not None and amr_max_level > 1) or amr_subcycle),
+            "amr_ref_ratio /= 2 is only supported at amr_max_level = 1 without subcycling (v1)",
+        )
+        self.prohibit(
+            amr_cluster_eff is not None and (amr_cluster_eff <= 0 or amr_cluster_eff > 1),
+            "amr_cluster_eff must satisfy 0 < amr_cluster_eff <= 1",
+        )
+        amr_blocking_factor = self.get("amr_blocking_factor")
+        self.prohibit(
+            amr_blocking_factor is not None and amr_blocking_factor < 1,
+            "amr_blocking_factor must be >= 1 (1 = no minimum box size, the default)",
+        )
+        self.prohibit(recon_type is not None and recon_type != 1 and not igr, "amr requires WENO reconstruction (recon_type = 1) or the IGR solver")
+        # unset is a failure too: the Fortran default is the dflt_int sentinel, which is not 3
+        self.prohibit(time_stepper != 3, "amr requires time_stepper = 3 (SSP-RK3)")
+        self.prohibit(model_eqns not in (2, 3), "amr requires model_eqns = 2 (5-equation) or 3 (6-equation)")
+        self.prohibit(self.get("bubbles_euler", "F") == "T", "amr does not support Euler-Euler bubbles (bubbles_euler)")
+        mpp_lim = self.get("mpp_lim", "F") == "T"
+        self.prohibit(
+            num_fluids is not None and num_fluids > 1 and not mpp_lim and not bubbles_lagrange,
+            "amr with num_fluids > 1 requires mpp_lim "
+            "(its volume-fraction clamp+renormalize maintains coarse/fine alpha consistency); "
+            "Lagrangian bubbles are exempt (their alphas sum to the local liquid fraction)",
+        )
+        self.prohibit(
+            surface_tension,
+            "amr does not support surface_tension",
+        )
+        self.prohibit(
+            mhd and (self.get("n", 0) or 0) > 0,
+            "amr with mhd is 1D-only " "(the coarse/fine seam is not divergence-preserving for B; in 1D div(B) = 0 by construction)",
+        )
+        self.prohibit(
+            igr and self.get("amr_subcycle", "F") == "T",
+            "amr_subcycle with the IGR solver is not yet supported (lockstep only)",
+        )
+        self.prohibit(
+            cyl_coord and (self.get("p", 0) or 0) > 0,
+            "amr with cyl_coord supports 2D axisymmetric only: " "the 3D cylindrical azimuthal Fourier filter is a global operation incompatible with the block-local fine advance",
+        )
+        self.prohibit(
+            cyl_coord and amr_max_level is not None and amr_max_level > 1,
+            "amr with cyl_coord supports amr_max_level = 1 only: " "multi-level axisymmetric restriction/reflux in the parent-fine frame is not yet radius-weighted (conservation would drift)",
+        )
+        qbmm = self.get("qbmm", "F") == "T"
+        polytropic = self.get("polytropic", "T") == "T"
+        self.prohibit(
+            cyl_coord and qbmm and not polytropic,
+            "amr with cyl_coord and non-polytropic QBMM is not supported: " "the pb/mv quadrature side-state fold-back is not radius-weighted (conservation would drift)",
+        )
+        num_dims = 1 + ((self.get("n", 0) or 0) > 0) + ((self.get("p", 0) or 0) > 0)
+        bc_riemann_extrap = any(self.get(f"bc_{d}%{e}") == -4 for d in "xyz"[:num_dims] for e in ("beg", "end"))
+        self.prohibit(
+            bc_riemann_extrap,
+            "amr does not support Riemann-extrapolation boundary conditions (bc = -4): "
+            "they alter the WENO coefficient rows near the boundary, which the fine-block reconstruction cannot inherit correctly",
+        )
+        bc_characteristic = any(-12 <= (self.get(f"bc_{d}%{e}") or 0) <= -5 for d in "xyz"[:num_dims] for e in ("beg", "end"))
+        self.prohibit(
+            bc_characteristic,
+            "amr does not support characteristic (CBC) boundary conditions (bc = -5..-12): " "the fine-block advance would apply the boundary treatment at block edges inside the domain",
+        )
+        self.prohibit(
+            (amr_regrid_int or 0) == 0 and amr_max_level is not None and amr_max_level > 2,
+            "static multi-level AMR (amr_regrid_int = 0) nests exactly one level-2 block in block 1, so it supports at most "
+            "amr_max_level = 2; use amr_regrid_int > 0 for deeper or multi-block nesting",
+        )
+        # Block-geometry bounds (mirrors the Fortran checker; global cell maxima are m/n/p in the case dict)
+        glb = {1: self.get("m"), 2: self.get("n"), 3: self.get("p")}
+        rr = amr_ref_ratio if amr_ref_ratio is not None else 2
+        for d in range(1, num_dims + 1):
+            beg = self.get(f"amr_block_beg({d})")
+            end = self.get(f"amr_block_end({d})")
+            self.prohibit(beg is not None and beg < 0, "amr_block_beg must be >= 0")
+            self.prohibit(
+                end is not None and glb[d] is not None and end > glb[d],
+                "amr_block_end must be <= global cell max per axis",
+            )
+            self.prohibit(
+                (end or 0) <= (beg or 0),
+                "amr_block_end must exceed amr_block_beg on each active axis (both default to 0, so an amr run must set " "the initial block)",
+            )
+            self.prohibit(
+                beg is not None and end is not None and glb[d] is not None and rr * (end - beg + 1) - 1 > glb[d],
+                "amr fine extent exceeds the base grid (module scratch is sized to the base)",
+            )
+        if ib:
+            # static/prescribed-motion IB AMR (SP20/21): one or more bodies resolved on a static fine block.
+            num_ibs = self.get("num_ibs") or 0
+            force_driven = any((self.get(f"patch_ib({i})%moving_ibm") or 0) == 2 for i in range(1, num_ibs + 1))
+            stl = any((self.get(f"patch_ib({i})%geometry")) == 12 for i in range(1, num_ibs + 1))
+            self.prohibit(
+                force_driven,
+                "amr with ib supports static or prescribed-motion (moving_ibm=1) bodies only; " "force-driven moving IB (moving_ibm=2) under amr is not yet validated",
+            )
+            self.prohibit(stl, "amr with ib does not support STL-model geometry (not yet validated)")
+            moving = any((self.get(f"patch_ib({i})%moving_ibm") or 0) != 0 for i in range(1, num_ibs + 1))
+            self.prohibit(
+                amr_max_level is not None and amr_max_level > 1 and moving,
+                "multi-level AMR (amr_max_level > 1) with a MOVING immersed body is not yet supported; use a static body",
+            )
+        stretched = any(self.get(f"stretch_{d}", "F") == "T" for d in "xyz")
+        self.prohibit(
+            stretched and (bubbles_lagrange or (ib and amr_regrid_int is not None and amr_regrid_int > 0)),
+            "amr on a stretched grid does not support Lagrangian bubbles or dynamic regrid with immersed bodies " "(their position-to-cell-index conversions assume uniform spacing)",
+        )
+
+        self.prohibit(amr_regrid_int is not None and amr_regrid_int < 0, "amr_regrid_int must be >= 0")
+        self.prohibit(
+            (amr_regrid_int or 0) > 0 and amr_tag_eps is not None and amr_tag_eps <= 0,
+            "amr_tag_eps must be > 0 when amr_regrid_int > 0",
+        )
+        self.prohibit(
+            (amr_regrid_int or 0) > 0 and amr_buf is not None and amr_buf < 1,
+            "amr_buf must be >= 1 when amr_regrid_int > 0",
+        )
+        # advisory, not a prohibit: at CFL <= 1 a feature front can cross up to one cell per step, so
+        # amr_buf < amr_regrid_int risks features outrunning the tag buffer between regrids; low-CFL
+        # cases are legitimately below this worst-case bound (several suite goldens run int=5, buf=2-3).
+        # The runtime [amr-cad] counter reports the per-run truth (tags escaping the previous coverage).
+        self.warn(
+            amr_regrid_int is not None and amr_regrid_int > 0 and amr_buf is not None and amr_buf < amr_regrid_int,
+            "amr_buf < amr_regrid_int: at CFL near 1 a feature can outrun the tag buffer between regrids; " "check the [amr-cad] escaped-tag report stays 0 for this case",
+        )
+
+    def check_sfc_partition(self):
+        """Checks SFC partitioner tile-size guard (simulation)"""
+        sfc_partition_wrt = self.get("sfc_partition_wrt", "F") == "T"
+
+        if not sfc_partition_wrt:
+            return
+
+        partition_tile_size = self.get("partition_tile_size")
+        self.prohibit(partition_tile_size is not None and partition_tile_size < 1, "partition_tile_size must be >= 1")
+
     def check_adaptive_time_stepping(self):
         """Checks adaptive time stepping parameters (simulation)"""
         adap_dt = self.get("adap_dt", "F") == "T"
@@ -1423,12 +1988,19 @@ class CaseValidator:
         avg_state = self.get("avg_state")
         riemann_solver = self.get("riemann_solver")
         num_fluids = self.get("num_fluids")
+        hll_u_interface = self.get("hll_u_interface", "F") == "T"
+        hypoelasticity = self.get("hypoelasticity", "F") == "T"
+        cyl_coord = self.get("cyl_coord", "F") == "T"
+        p = self.get("p", 0)
 
         self.prohibit(model_eqns is not None and model_eqns != 2, "5-equation model (model_eqns = 2) is required for alt_soundspeed")
         self.prohibit(bubbles_euler, "alt_soundspeed is not compatible with bubbles_euler")
         self.prohibit(avg_state is not None and avg_state != 2, "alt_soundspeed requires avg_state = 2")
-        self.prohibit(riemann_solver is not None and riemann_solver != 2, "alt_soundspeed requires HLLC Riemann solver (riemann_solver = 2)")
-        self.prohibit(num_fluids is not None and num_fluids not in [2, 3], "alt_soundspeed requires num_fluids = 2 or 3")
+        self.prohibit(riemann_solver is not None and riemann_solver not in [1, 2, 4], "alt_soundspeed requires HLL (1), HLLC (2), or HLLD (4) Riemann solver")
+        self.prohibit(num_fluids is not None and num_fluids != 2, "alt_soundspeed requires exactly 2 fluid components (the Kapila K coefficient is a two-fluid closure)")
+        self.prohibit(riemann_solver == 1 and not hll_u_interface and cyl_coord and p == 0, "alt_soundspeed with HLL Method 1 is not supported for 2D axisymmetric geometry")
+        self.prohibit(riemann_solver == 1 and cyl_coord and p > 0, "alt_soundspeed with HLL is not currently supported for 3D cylindrical geometry")
+        self.prohibit(riemann_solver == 4 and not hypoelasticity, "alt_soundspeed with HLLD requires hypoelasticity = T")
 
     def check_bubbles_lagrange(self):
         """Checks Lagrangian bubble parameters (simulation)"""
@@ -1438,13 +2010,19 @@ class CaseValidator:
             return
 
         n = self.get("n", 0)
+        p = self.get("p", 0)
         file_per_process = self.get("file_per_process", "F") == "T"
         model_eqns = self.get("model_eqns")
         cluster_type = self.get("lag_params%cluster_type")
         smooth_type = self.get("lag_params%smooth_type")
         polytropic = self.get("polytropic", "F") == "T"
         thermal = self.get("thermal")
-        bubble_model = self.get("bubble_model")
+        vel_model = self.get("lag_params%vel_model", 0)
+        drag_model = self.get("lag_params%drag_model", 0)
+        charNz = self.get("lag_params%charNz", 0)
+        charWidth = self.get("lag_params%charwidth", 0)
+        fd_order = self.get("fd_order", 0)
+        kahan_summation = self.get("lag_params%kahan_summation", "T") == "T"
 
         self.prohibit(n is not None and n == 0, "bubbles_lagrange accepts 2D and 3D simulations only")
         # Gilmore radial dynamics need Tait liquid constants the EL path never supplies.
@@ -1454,6 +2032,12 @@ class CaseValidator:
         self.prohibit(polytropic, "bubbles_lagrange requires polytropic = F")
         self.prohibit(thermal is not None and thermal != 3, "bubbles_lagrange requires thermal = 3")
         self.prohibit(cluster_type is not None and cluster_type >= 2 and smooth_type != 1, "cluster_type >= 2 requires smooth_type = 1")
+        self.prohibit(vel_model < 0 or vel_model > 2, "lag_params%vel_model must be 0, 1, or 2")
+        self.prohibit(drag_model < 0 or drag_model > 3, "lag_params%drag_model must be 0, 1, 2, or 3")
+        self.prohibit(charNz <= 0 and p == 0, "lag_params%charNz must be positive for 2D bubbles_lagrange")
+        self.prohibit(charWidth <= 0 and p == 0, "lag_params%charwidth must be positive for 2D bubbles_lagrange")
+        self.prohibit(fd_order == 0 and vel_model > 0, "Non-zero lag_params%vel_model requires fd_order to be set")
+        self.prohibit(kahan_summation and CFG().mixed, "lag_params%kahan_summation = T is not compatible with --mixed precision")
 
     def check_continuum_damage(self):
         """Checks continuum damage model parameters (simulation)"""
@@ -1466,11 +2050,13 @@ class CaseValidator:
         cont_damage_s = self.get("cont_damage_s")
         alpha_bar = self.get("alpha_bar")
         model_eqns = self.get("model_eqns")
+        alt_soundspeed = self.get("alt_soundspeed", "F") == "T"
 
         self.prohibit(tau_star is None, "tau_star must be specified for cont_damage")
         self.prohibit(cont_damage_s is None, "cont_damage_s must be specified for cont_damage")
         self.prohibit(alpha_bar is None, "alpha_bar must be specified for cont_damage")
         self.prohibit(model_eqns is not None and model_eqns != 2, "cont_damage requires model_eqns = 2")
+        self.prohibit(alt_soundspeed, "Continuum damage does not support alt_soundspeed")
 
     def check_grcbc(self):
         """Checks Generalized Relaxation Characteristics BC (simulation)"""
@@ -1490,31 +2076,12 @@ class CaseValidator:
             if grcbc_vel_out:
                 self.prohibit(bc_beg != -8 and bc_end != -8, f"Subsonic Outflow Velocity (grcbc_vel_out) requires bc_{dir}%beg = -8 or bc_{dir}%end = -8")
 
-    def check_probe_integral_output(self):
-        """Checks probe and integral output requirements (simulation)"""
+    def check_probe_output(self):
+        """Checks probe output requirements (simulation)"""
         probe_wrt = self.get("probe_wrt", "F") == "T"
-        integral_wrt = self.get("integral_wrt", "F") == "T"
         fd_order = self.get("fd_order")
-        bubbles_euler = self.get("bubbles_euler", "F") == "T"
 
         self.prohibit(probe_wrt and fd_order is None, "fd_order must be specified for probe_wrt")
-        self.prohibit(integral_wrt and fd_order is None, "fd_order must be specified for integral_wrt")
-        self.prohibit(integral_wrt and not bubbles_euler, "integral_wrt requires bubbles_euler to be enabled")
-
-    def check_hyperelasticity(self):
-        """Checks hyperelasticity constraints"""
-        hyperelasticity = self.get("hyperelasticity", "F") == "T"
-        pre_stress = self.get("pre_stress", "F") == "T"
-
-        self.prohibit(pre_stress and not hyperelasticity, "pre_stress requires hyperelasticity to be enabled")
-
-        if not hyperelasticity:
-            return
-
-        model_eqns = self.get("model_eqns")
-
-        self.prohibit(model_eqns == 1, "hyperelasticity is not supported for model_eqns = 1")
-        self.prohibit(model_eqns is not None and model_eqns > 3, "hyperelasticity is not supported for model_eqns > 3")
 
     # Pre-Process Specific Checks
 
@@ -1534,6 +2101,31 @@ class CaseValidator:
             num_patches > num_patches_max,
             f"num_patches must be <= {num_patches_max} (num_patches_max in m_constants.fpp)",
         )
+
+    def check_domain_extents(self):
+        """Checks that the physical extents of every active dimension are set (pre-process)
+
+        The grid generator needs (xyz)_domain%beg and (xyz)_domain%end for each
+        dimension that has cells. On a restart (old_grid = T) the mesh is read
+        from the existing grid files, so the extents are neither needed nor read.
+        """
+        if self.get("old_grid", "F") == "T":
+            return
+
+        m = self.get("m", 0)
+        if self._is_numeric(m) and m > 0:
+            self.prohibit(not self.is_set("x_domain%beg"), "x_domain%beg must be set when m > 0")
+            self.prohibit(not self.is_set("x_domain%end"), "x_domain%end must be set when m > 0")
+
+        n = self.get("n", 0)
+        if self._is_numeric(n) and n > 0:
+            self.prohibit(not self.is_set("y_domain%beg"), "y_domain%beg must be set when n > 0")
+            self.prohibit(not self.is_set("y_domain%end"), "y_domain%end must be set when n > 0")
+
+        p = self.get("p", 0)
+        if self._is_numeric(p) and p > 0:
+            self.prohibit(not self.is_set("z_domain%beg"), "z_domain%beg must be set when p > 0")
+            self.prohibit(not self.is_set("z_domain%end"), "z_domain%end must be set when p > 0")
 
     def check_qbmm_pre_process(self):
         """Checks QBMM constraints for pre-process"""
@@ -1647,6 +2239,39 @@ class CaseValidator:
         # inconsistent and the simulation NaNs. See MFlowCode/MFC#1470.
         self.prohibit(chemistry and num_fluids is not None and num_fluids != 1, "chemistry is only supported for single-component flows (num_fluids = 1)")
 
+        # Chemistry with Euler bubbles is not currently supported: the IBM image-point
+        # interpolation branch selects the bubbles/QBMM path before the chemistry path, so
+        # the species state is not carried when both are enabled. Disallow the combination
+        # until it is implemented.
+        bubbles_euler = self.get("bubbles_euler", "F") == "T"
+        qbmm = self.get("qbmm", "F") == "T"
+        self.prohibit(chemistry and (bubbles_euler or qbmm), "chemistry is not currently supported with Euler bubbles (bubbles_euler / qbmm)")
+
+        # Operator-split reaction sub-stepping. The Fortran defaults are
+        # reaction_substeps = reaction_substeps_max = 0 and adap_substeps = F, so an
+        # unset value is treated as 0 here to match.
+        igr = self.get("igr", "F") == "T"
+        adap_substeps = self.get("chem_params%adap_substeps", "F") == "T"
+        reaction_substeps = self.get("chem_params%reaction_substeps", 0) or 0
+        reaction_substeps_max = self.get("chem_params%reaction_substeps_max", 0) or 0
+
+        self.prohibit(
+            chemistry and reaction_substeps < 0,
+            "chem_params%reaction_substeps must be >= 0 (0 = reaction source in the flow RHS; > 0 = operator-split sub-stepping)",
+        )
+        self.prohibit(
+            chemistry and igr and reaction_substeps > 0,
+            "operator-split reaction sub-stepping (reaction_substeps > 0) is not supported with igr: the reactor reads the post-flow (rho, e, T) state, which the IGR update path does not guarantee",
+        )
+        self.prohibit(
+            chemistry and adap_substeps and reaction_substeps < 1,
+            "chem_params%adap_substeps requires reaction_substeps >= 1 (the operator-split floor)",
+        )
+        self.prohibit(
+            chemistry and adap_substeps and reaction_substeps_max < reaction_substeps,
+            "chem_params%reaction_substeps_max must be >= reaction_substeps when adap_substeps = T",
+        )
+
         # Define what constitutes a wall (-15 for slip, -16 for no-slip)
         wall_bcs = [-15, -16]
 
@@ -1680,7 +2305,62 @@ class CaseValidator:
                 tw_out = self.get(f"bc_{dir}%Twall_out")
                 self.prohibit(tw_out is None, f"Isothermal Out (bc_{dir}%isothermal_out) requires a wall temperature to be set (e.g., bc_{dir}%Twall_out).")
                 if tw_out is not None and self._is_numeric(tw_out):
-                    self.prohibit(tw_out <= 0.0, f"Wall temperature bc_{dir}%Tw_out must be strictly positive for thermodynamics (got {tw_out}).")
+                    self.prohibit(tw_out <= 0.0, f"Wall temperature bc_{dir}%Twall_out must be strictly positive for thermodynamics (got {tw_out}).")
+
+    def check_reactive_burn(self):
+        """Checks condensed-phase reactive-burn constraints"""
+        reactive_burn = self.get("reactive_burn", "F") == "T"
+        if not reactive_burn:
+            return
+        # These mirror Fortran checks that compared against the dflt_real / dflt_int
+        # sentinels, so an unset parameter was a violation there. A bare
+        # "is not None" guard would silently pass the unset case instead.
+        model_eqns = self.get("model_eqns")
+        # Supported on the 5-equation (pressure-equilibrium) and 6-equation multi-fluid models.
+        self.prohibit(model_eqns not in (2, 3), "reactive_burn requires model_eqns = 2 or 3 (5- or 6-equation multi-fluid model) to be set")
+
+        # Exactly two fluids (reactant = 1, product = 2) sharing the stiffened-gas EOS and
+        # differing only in qv; violating these silently corrupts the mass/energy balance.
+        self.prohibit(self.get("num_fluids") != 2, "reactive_burn requires num_fluids = 2 (reactant then product) to be set")
+        for prop in ("gamma", "pi_inf"):
+            v1 = self.get(f"fluid_pp(1)%{prop}")
+            v2 = self.get(f"fluid_pp(2)%{prop}")
+            if not self._is_numeric(v1) or not self._is_numeric(v2):
+                # Unset defaults to dflt_real in the solver, so a missing value is
+                # either a negative EOS or a mismatch against the fluid that is set.
+                self.prohibit(True, f"reactive_burn requires both fluid_pp(1)%{prop} and fluid_pp(2)%{prop} to be set (reactant and product share the EOS)")
+                continue
+            self.prohibit(
+                not math.isclose(v1, v2, rel_tol=1e-10),
+                f"reactive_burn requires fluid_pp(1)%{prop} == fluid_pp(2)%{prop} (reactant and product share the EOS)",
+            )
+        # qv defaults to 0 in the Fortran, so an unset value is treated as 0 here to match.
+        qv1 = self.get("fluid_pp(1)%qv", 0.0)
+        qv2 = self.get("fluid_pp(2)%qv", 0.0)
+        self.prohibit(
+            self._is_numeric(qv1) and self._is_numeric(qv2) and qv1 <= qv2,
+            "reactive_burn requires fluid_pp(1)%qv > fluid_pp(2)%qv (reactant releases energy on conversion to product)",
+        )
+        # The rate uses rburn%k, %pign, %pref, %n directly; an unset value defaults to a negative
+        # sentinel in the solver and silently corrupts the burn, so require each to be set.
+        rk = self.get("rburn%k")
+        self.prohibit(not self._is_numeric(rk) or rk <= 0, "reactive_burn requires rburn%k > 0 (rate coefficient [1/s])")
+        rpign = self.get("rburn%pign")
+        self.prohibit(
+            not self._is_numeric(rpign) or rpign <= 0,
+            "reactive_burn requires rburn%pign > 0 (ignition pressure threshold [Pa]); unset, or any " "non-positive value, ignites the reactant everywhere from t = 0",
+        )
+        rpref = self.get("rburn%pref")
+        self.prohibit(not self._is_numeric(rpref) or rpref <= 0, "reactive_burn requires rburn%pref > 0 (it normalizes the pressure drive and is used as a divisor)")
+        rn = self.get("rburn%n")
+        self.prohibit(not self._is_numeric(rn) or rn < 0, "reactive_burn requires rburn%n >= 0 (pressure-drive exponent)")
+        rta = self.get("rburn%ta")
+        self.prohibit(self._is_numeric(rta) and rta < 0, "reactive_burn requires rburn%ta >= 0 (activation temperature [K]; 0 disables the Arrhenius factor)")
+        cv1 = self.get("fluid_pp(1)%cv")
+        self.prohibit(
+            self._is_numeric(rta) and rta > 0 and (not self._is_numeric(cv1) or cv1 <= 0),
+            "reactive_burn with rburn%ta > 0 requires fluid_pp(1)%cv > 0 (the reactant temperature needs a physical heat capacity; cv = 0 silently disables the Arrhenius factor)",
+        )
 
     def check_misc_pre_process(self):
         """Checks miscellaneous pre-process constraints"""
@@ -2113,14 +2793,14 @@ class CaseValidator:
     def check_volume_fraction_sum(self):
         """Warns if volume fractions do not sum to 1 for multi-component models.
 
-        For model_eqns in [2, 3, 4], the mixture constraint sum(alpha_j) = 1
+        For model_eqns in [2, 3], the mixture constraint sum(alpha_j) = 1
         must hold. Skips patches with analytical expressions, alter_patch,
         hcid, bubbles_euler single-fluid cases (where alpha represents
         the void fraction, not a partition of unity), and bubbles_lagrange
         cases (where the Lagrangian phase is not tracked on the Euler grid).
         """
         model_eqns = self.get("model_eqns")
-        if model_eqns not in [2, 3, 4]:
+        if model_eqns not in [2, 3]:
             return
 
         num_patches = self.get("num_patches", 0)
@@ -2403,7 +3083,6 @@ class CaseValidator:
         self.check_qbmm_and_polydisperse()
         self.check_adv_n()
         self.check_hypoelasticity()
-        self.check_hyperelasticity()
         self.check_phase_change()
         self.check_ibm()
         self.check_stiffened_eos()
@@ -2411,6 +3090,7 @@ class CaseValidator:
         self.check_surface_tension()
         self.check_mhd()
         self.check_chemistry()
+        self.check_reactive_burn()
 
     def validate_simulation(self):
         """Validate simulation-specific parameters"""
@@ -2425,22 +3105,28 @@ class CaseValidator:
         self.check_model_eqns_simulation()
         self.check_bubbles_euler_simulation()
         self.check_body_forces()
+        self.check_synthetic_turbulence()
         self.check_viscosity()
         self.check_non_newtonian()
         self.check_mhd_simulation()
         self.check_igr_simulation()
         self.check_acoustic_source()
+        self.check_active_box()
+        self.check_amr()
+        self.check_sfc_partition()
+        self.check_load_balance()
         self.check_adaptive_time_stepping()
         self.check_alt_soundspeed()
         self.check_bubbles_lagrange()
         self.check_continuum_damage()
         self.check_grcbc()
-        self.check_probe_integral_output()
+        self.check_probe_output()
 
     def validate_pre_process(self):
         """Validate pre-process-specific parameters"""
         self.validate_common()
         self.check_restart()
+        self.check_domain_extents()
         self.check_qbmm_pre_process()
         self.check_parallel_io_pre_process()
         self.check_grid_stretching()

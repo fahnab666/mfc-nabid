@@ -140,6 +140,7 @@ is equivalent to `"riemann_solver": 2`. Defined names appear in each parameter's
 | ---:             |    :----:      |          :---                             |
 | `run_time_info`  | Logical        | Output run-time information               |
 | `rdma_mpi`       | Logical        | (GPUs) Enable RDMA for MPI communication. |
+| `active_box`     | Logical        | Enable causal-envelope active-box restriction of the RHS compute window. |
 | `case_dir`       | String         | Case directory path                       |
 | `old_grid`       | Logical        | Use grid from previous simulation         |
 | `old_ic`         | Logical        | Use initial conditions from previous simulation |
@@ -147,6 +148,7 @@ is equivalent to `"riemann_solver": 2`. Defined names appear in each parameter's
 | `n_start_old`    | Integer        | Starting index from previous simulation   |
 
 - `run_time_info` generates a text file that includes run-time information including the CFL number(s) at each time-step.
+- `active_box` enables the causal-envelope active-box optimization, restricting the RHS compute window to the region where the solution deviates from a uniform ambient state. Single-rank only: more than one MPI rank is rejected at input check. A single global active region would leave the ranks it does not cover idle, so multi-rank support is a load-balancing problem and is deferred. Requires WENO reconstruction (`recon_type = 1`) and SSP-RK3 time stepping (`time_stepper = 3`). Incompatible with immersed boundaries, acoustic sources, body forces, Euler-Euler and Lagrangian bubbles, phase change, and the IGR solver.
 - `rdma_mpi` optimizes data transfers between GPUs using Remote Direct Memory Access (RDMA).
 The underlying MPI implementation and communication infrastructure must support this
 feature, detecting GPU pointers and performing RDMA accordingly.
@@ -165,8 +167,6 @@ feature, detecting GPU pointers and performing RDMA accordingly.
 | `m`                      | Integer | Number of grid cells in the $x$-coordinate direction |
 | `n`                      | Integer | Number of grid cells in the $y$-coordinate direction |
 | `p`                      | Integer | Number of grid cells in the $z$-coordinate direction |
-| `pref`                   | Real    | Reference pressure                                   |
-| `rhoref`                 | Real    | Reference density                                    |
 
 The parameters define the boundaries of the spatial and temporal domains, and their discretization that are used in simulation.
 
@@ -302,10 +302,39 @@ The code provides three pre-built patches for dimensional extrusion of initial c
 - `case(170)`: Load 1D profile from data files
 - `case(270)`: Extrude 1D data to 2D domain
 - `case(370)`: Extrude 2D data to 3D domain
+- `case(273)`: Extrude 1D data to 2D domain, with the mom%%beg data column carrying the
+  extruded-axis (mom%%end) velocity profile instead of its own (zeroed) component. Used by
+  `examples/2D_reacting_mixing_layer` to give a temporally-evolving mixing layer a nonzero
+  streamwise velocity profile along the extruded axis, which `case(270)` cannot represent since
+  it always zeros that component.
+- `case(274)`: Load a full 2D `(x, y)` field with no extrusion -- one data file per variable,
+  `(m_glb+1)*(n_glb+1)` lines each in x-major order, covering all primitive variables
+  directly (unlike `case(270)`/`case(273)`, no component is zeroed or repurposed). Used by
+  `examples/2D_spatial_reacting_mixing_layer` for a spatially-evolving mixing layer, where
+  the cross-stream profile must vary with the streamwise coordinate too (via the
+  `bf_spatial_support` body force) so no single extrusion axis applies. The file's line
+  count, origin, and (uniform) cell spacing must match the run grid; a mismatched file is
+  rejected with a fatal error, so regenerate the IC whenever the grid changes.
 
 Setup: Only requires specifying `files_dir` and filename pattern via `file_extension`. The files are located, for example, at `examples/1D_flamelet/IC`, and their format is `prim.XX.YY.file_extension.dat`.
 Implementation: All variables and file handling are managed in the `case.py` file of the simulation.
 Usage: Ideal for initializing simulations from lower-dimensional solutions, enabling users to add perturbations or modifications to the base extruded fields for flow instability studies.
+
+The following parameters support hardcoded initial conditions that read interface data from files:
+
+| Parameter        | Type    | Description                                               |
+| ---:             | :---:   | :---                                                      |
+| `interface_file` | String  | Path to interface geometry data file                      |
+| `normFac`        | Real    | Interface normalization factor                            |
+| `normMag`        | Real    | Interface normal magnitude                                |
+| `g0_ic`          | Real    | Gravitational acceleration for the interfacial IC pressure field |
+| `p0_ic`          | Real    | Reference pressure at the interface                       |
+
+These parameters are only read by the file-based hardcoded-IC patches (`hcid = 304` and `305` in `src/common/include/3dHardcodedIC.fpp`); they are ignored otherwise.
+
+- `interface_file` gives the path to a text file that supplies the interface-position field \f$h(i,j)\f$ used to place the material interface. The run aborts if the file is not found.
+- `normMag` and `normFac` rescale and offset the raw interface data, \f$h \leftarrow \texttt{normMag}\,h + \texttt{normFac}\f$. Each is applied only when set (defaults leave the data unchanged).
+- `p0_ic` and `g0_ic` set the initial (hydrostatic) pressure field about the interface, \f$p = p_{0} + \rho\, g_{0}\,\big(h - x\big)\f$, where \f$x\f$ is the coordinate normal to the interface.
 
 #### Parameter Descriptions
 
@@ -418,7 +447,7 @@ Additional details on this specification can be found in [NACA airfoil](https://
 
 - `ib_coefficient_of_friction` is the coefficient of friction used in IB collisions.
 
-- `ib_neighborhood_radius` controls the size of the neighborhood size. This value defaults to 1, which indicates that any given rank is aware of IBs up to 1 ranks away. This parameter is required to strong-scale a case when IBs eventually grow to be larger than one full processor domain wide.
+- `ib_neighborhood_radius` controls the size of the neighborhood size. A value of $r$ indicates that any given rank is aware of IBs up to $r$ ranks away. This value defaults to 0, which leaves the radius unset so that it is selected automatically. This parameter is required to strong-scale a case when IBs eventually grow to be larger than one full processor domain wide.
 
 #### Particle Clouds
 
@@ -427,18 +456,25 @@ A particle cloud is a compact specification of a bed of identical circular (2D) 
 | Parameter         | Type    | Description |
 | ---:              | :----:  | :---        |
 | `x[y,z]_centroid` | Real    | Centre of the cloud region in the [x,y,z]-direction. |
-| `length_x[y,z]`   | Real    | Extent of the cloud region in the [x,y,z]-direction. |
+| `length_x[y,z]`   | Real    | Extent of the cloud region in the [x,y,z]-direction for `cloud_geometry = 1`; ignored by `cloud_geometry = 2`. |
 | `num_particles`   | Integer | Number of particles to place in the region. |
 | `radius`          | Real    | Radius of every particle in the cloud. |
 | `mass`            | Real    | Mass of every particle in the cloud. |
 | `min_spacing`     | Real    | Minimum surface-to-surface gap between particles (centres are `2*radius + min_spacing` apart). |
+| `cloud_geometry`  | Integer | Shape of the cloud region. |
+| `shell_inner_radius` | Real | Inner radius for hemisphere-shell clouds (`cloud_geometry = 2`). |
+| `shell_outer_radius` | Real | Outer radius for hemisphere-shell clouds (`cloud_geometry = 2`). |
 | `moving_ibm`      | Integer | Motion flag applied to every particle (see `patch_ib(j)%%moving_ibm`). |
 | `seed`            | Integer | Random seed for reproducible placement (used by `packing_method = 1`). |
 | `packing_method`  | Integer | Algorithm used to place the particles. |
 
+- `cloud_geometry` selects the cloud region:
+  - `1` (box) uses `x[y,z]_centroid` and `length_x[y,z]` to define the region.
+  - `2` uses `x[y,z]_centroid`, `shell_inner_radius`, and `shell_outer_radius` to define a half-annulus in 2D and a hemisphere shell in 3D. Particle centres are sampled between `shell_inner_radius + radius` and `shell_outer_radius - radius`, and the flat plane is kept clear by one particle radius. The flat face is fixed at `y_centroid` in 2D and `z_centroid` in 3D; the filled region opens toward positive `y` in 2D and positive `z` in 3D. The full shell extent (`x[y,z]_centroid +/- shell_outer_radius` on the open side, and one particle radius of clearance on the flat-face side) must lie inside the computational domain; a hemisphere shell also requires at least two dimensions (`n > 0`).
 - `packing_method` selects how the `num_particles` are positioned within the cloud region:
   - `1` (rejection sampling) draws random positions and rejects any that violate `min_spacing`, producing a disordered bed. `seed` makes the placement reproducible.
   - `2` (lattice) places the particles on the optimally dense lattice for the geometry — a triangular lattice in 2D and a face-centered cubic lattice in 3D. The lattice spacing is derived from the particle density (`num_particles` over the region area/volume); if that spacing is below the required `2*radius + min_spacing`, the region is too dense and the run aborts.
+  - Hemisphere-shell clouds currently support rejection sampling only; `cloud_geometry = 2` with `packing_method = 2` is rejected during input validation.
 
 ### 5. Fluid Materials {#sec-fluid-materials}
 
@@ -548,7 +584,7 @@ See @ref equations "Equations" for the mathematical models these parameters cont
 | `bc_[x,y,z]%%beg[end]`     | Integer | Beginning [ending] boundary condition in the $[x,y,z]$-direction (negative integer, see table [Boundary Conditions](#boundary-conditions)) |
 | `bc_[x,y,z]%%vb[1,2,3]`‡   | Real    | Velocity in the (x,1), (y, 2), (z,3) direction applied to `bc_[x,y,z]%%beg` |
 | `bc_[x,y,z]%%ve[1,2,3]`‡   | Real    | Velocity in the (x,1), (y, 2), (z,3) direction applied to `bc_[x,y,z]%%end` |
-| `model_eqns`               | Integer | Multicomponent model: [1] \f$\Gamma/\Pi_\infty\f$; [2] 5-equation; [3] 6-equation; [4] 4-equation |
+| `model_eqns`               | Integer | Multicomponent model: [1] \f$\Gamma/\Pi_\infty\f$; [2] 5-equation; [3] 6-equation |
 | `alt_soundspeed` *         | Logical | Alternate sound speed and \f$K \nabla \cdot u\f$ for 5-equation model |
 | `adv_n`   	               | Logical | Solving directly for the number density (in the method of classes) and compute void fraction from the number density |
 | `mpp_lim`	                 | Logical | Mixture physical parameters limits |
@@ -574,7 +610,8 @@ See @ref equations "Equations" for the mathematical models these parameters cont
 | `flux_lim`                 | Integer | Flux limiter for post-process: [1] minmod; [2] MUSCL; [3] OSPRE; [4] SUPERBEE |
 | `ic_eps`                   | Real    | Interface compression threshold (default: 1e-4) |
 | `ic_beta`                  | Real    | Interface compression sharpness parameter (default: 1.6) |
-| `riemann_solver`           | Integer | Riemann solver algorithm: [1] HLL*; [2] HLLC; [3] Exact*; [4] HLLD	(only for MHD) |
+| `riemann_solver`           | Integer | Riemann solver algorithm: [1] HLL*; [2] HLLC; [3] Exact*; [4] HLLD (MHD or hypoelasticity) |
+| `hll_u_interface`          | Logical | HLL Method 2 (u-interface) for volume fraction advection (default F) |
 | `low_Mach`                 | Integer | Low Mach number correction for HLLC Riemann solver: [0] None; [1] Pressure (\cite Chen22); [2] Velocity (\cite Thornber08)	 |
 | `avg_state`	               | Integer | Averaged state evaluation method: [1] Roe average*; [2] Arithmetic mean  |
 | `wave_speeds`              | Integer | Wave-speed estimation: [1] Direct (\cite Batten97); [2] Pressure-velocity* (\cite Toro09)	 |
@@ -595,7 +632,9 @@ See @ref equations "Equations" for the mathematical models these parameters cont
 | `surface_tension`          | Logical | Activate surface tension |
 | `viscous`                  | Logical | Activate viscosity |
 | `hypoelasticity`           | Logical | Activate hypoelasticity* |
-| `pre_stress`               | Logical | Enable pre-stress initialization for hypoelasticity |
+| `riemann_hypo_ADC`         | Logical | Enable hypo anti-diffusion correction for HLLC/HLLD (default F) |
+| `ADC_kappa`                | Real    | ADC sensor scaling parameter (default 1.0) |
+| `hypo_hll_interface_rhs`   | Logical | HLL uses interface-consistent hypo RHS (default F) |
 | `igr`                      | Logical | Enable solution via information geometric regularization (IGR) \cite Cao24 |
 | `igr_order`                | Integer | Order of reconstruction for IGR [3,5] |
 | `alf_factor`               | Real    | Alpha factor for IGR entropic pressure (default 10) |
@@ -629,7 +668,7 @@ Tangential velocities require viscosity, `weno_avg = T`, and `bc_[x,y,z]%%end = 
 The difference of the two models is assessed by (\cite Schmidmayer20).
 Note that some code parameters are only compatible with 5-equation model.
 
-- `alt_soundspeed` activates the source term in the advection equations for the volume fractions, \f$K\nabla\cdot \underline{u}\f$, that regularizes the speed of sound in the mixture region when the 5-equation model is used.
+- `alt_soundspeed` activates the source term in the advection equations for the volume fractions, \f$K\nabla\cdot \underline{u}\f$, that regularizes the speed of sound in the mixture region when the 5-equation model is used. Requires exactly two fluid components (\f$K\f$ is a two-fluid closure).
 The effect and use of the source term are assessed by \cite Schmidmayer20.
 
 - `adv_n` activates the direct computation of number density by the Riemann solver instead of computing number density from the void fraction in the method of classes.
@@ -675,7 +714,11 @@ Setting `muscl_eps = 0` gives textbook limiter behavior where limiters activate 
 
 - `riemann_solver` specifies the choice of the Riemann solver that is used in simulation by an integer from 1 through 4.
 `riemann_solver = 1`, `2`, and `3` correspond to HLL, HLLC, and Exact Riemann solver, respectively (\cite Toro09).
-`riemann_solver = 4` is only for MHD simulations. It resolves 5 of the full seven-wave structure of the MHD equations (\cite Miyoshi05).
+`riemann_solver = 4` is the HLLD solver for MHD or hypoelasticity simulations. For MHD it resolves 5 of the full seven-wave structure of the MHD equations (\cite Miyoshi05).
+
+- `hll_u_interface`: Selects between two HLL discretizations of volume fraction advection (`riemann_solver = 1`):
+  - **Default** (``'F'``): \f$\partial_t \alpha_k + u\,\partial_x \alpha_k = 0\f$
+  - **u-interface** (``'T'``, consistent with HLLC): \f$\partial_t \alpha_k + \partial_x(\alpha_k\, u) = \alpha_k\,\partial_x u\f$
 
 - `low_Mach` specifies the choice of the low Mach number correction scheme for the HLLC Riemann solver. `low_Mach = 0` is default value and does not apply any correction scheme. `low_Mach = 1` and `2` apply the anti-dissipation pressure correction method (\cite Chen22) and the improved velocity reconstruction method (\cite Thornber08). This feature requires `model_eqns = 2` or `3`. `low_Mach = 1` works for `riemann_solver = 1` and `2`, but `low_Mach = 2` only works for `riemann_solver = 2`.
 
@@ -695,7 +738,13 @@ This option requires `weno_Re_flux` to be true because cell boundary values are 
 
 - `viscous` activates viscosity when set to ``'T'``. Requires `Re(1)` and `Re(2)` to be set.
 
-- `hypoelasticity` activates elastic stress calculations for fluid-solid interactions. Requires `G` to be set in the fluid material's parameters.
+- `hypoelasticity` activates elastic stress calculations for fluid-solid interactions. Requires `G` to be set in `fluid_pp`, and `fd_order` to be set (1, 2, or 4). Compatible with HLL (`riemann_solver = 1`), HLLC (`riemann_solver = 2`), and HLLD (`riemann_solver = 4`). The Riemann solver choice determines how the elastic stress source term \f$\mathbf{S}^e\f$ is discretized:
+  - **HLL**: finite-difference velocity gradient (default), or interface-consistent velocity gradient when ``hypo_hll_interface_rhs = 'T'`` (matches HLLC).
+  - **HLLC**: interface-consistent velocity gradient from the Riemann solution.
+  - **HLLD**: dual-pass approach resolving the elastic wave structure. Requires 2D+ and exactly 2 fluid components.
+  - With hypoelastic HLLD, use characteristic boundary conditions (`bc_{x,y,z}%%beg/end` between -5 and -12) only where the domain boundary remains in a fluid region throughout the simulation. Keep material interfaces and solids out of the nearby cells used by the boundary calculation. A material present only at the numerical volume-fraction floor is allowed, even if it has nonzero `G`. These boundaries treat acoustic waves only. `alt_soundspeed` is supported.
+
+- `riemann_hypo_ADC`: Enables anti-diffusion correction (ADC) for hypoelastic HLLC or HLLD. Blends the HLLC/HLLD flux locally toward the more diffusive HLL flux where a jump sensor (total normal stress, tangential velocity, and tangential stress) detects a strong contact or material interface, improving robustness and reducing interfacial overshoots. This trades contact and shear resolution for robustness where the sensor activates. `ADC_kappa` (default 1.0) scales the reference jump the sensor is normalized by; smaller values blend more toward HLL (more diffusive and robust). Off by default and recommended off: in MFC's tested hypoelastic cases, including strong shock-interface interactions, HLLD is stable and accurate without ADC. The option is a robustness fallback intended for regimes with intense shocks and intense shear at material interfaces.
 
 #### Boundary Condition Patches {#boundary-condition-patches}
 
@@ -758,6 +807,27 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `file_per_process`      | Logical | Whether or not to write one IO file per process |
 | `cons_vars_wrt`         | Logical | Write conservative variables |
 | `prim_vars_wrt`         | Logical | Write primitive variables	|
+| `load_weight_wrt`       | Logical | Write per-cell load-weight diagnostic field |
+| `sfc_partition_wrt`     | Logical | Report SFC-weighted load-balance partition |
+| `rank_time_wrt`         | Logical | Report per-rank RHS compute-time imbalance (max/mean) |
+| `load_balance`          | Logical | (Experimental/diagnostic) Weighted static Cartesian decomposition at init (requires `parallel_io = T`, >1 rank). Measured gain is small on CPU (~5%) and can be slower on GPU due to the occupancy floor; equal decomposition is near-optimal for uniform-cost workloads. |
+| `amr`                   | Logical | (Experimental) Enable block-structured AMR: a 2:1 refined level-1 block with gradient-based dynamic regrid, optional dt/2 subcycling, and conservative coupling with refluxing. Requires WENO reconstruction, SSP-RK3, model_eqns=2 or 3; num_fluids > 1 requires mpp_lim; supports physical viscosity. |
+| `amr_block_beg(i)`      | Integer | Refined-block start cell index in direction $i$ (level-0 index space) |
+| `amr_block_end(i)`      | Integer | Refined-block end cell index in direction $i$ (level-0 index space) |
+| `amr_regrid_int`        | Integer | Steps between AMR regrid events (0 = static block, i.e. NO adaptivity). The tag sweep is per-cell and flat in block count, so a larger interval is cheap: 8 measured 1.39x faster than 2 in 3D. Raise it unless the refined feature moves quickly |
+| `amr_tag_eps`           | Real    | Relative density-gradient threshold for AMR refinement tagging (default 0.1) |
+| `amr_buf`               | Integer | Coarse-cell padding around tagged cells when regridding (default 3) |
+| `amr_subcycle`          | Logical | Advance the coarse level at the case dt and the fine level at dt/2 (two substeps; Berger-Colella refluxing). Requires `amr`; incompatible with `cfl_dt`. |
+| `amr_max_blocks`       | Integer | Upper bound on the GLOBAL refined-block count. Sizes replicated per-rank METADATA (~11 kB/block); block slots themselves are allocated lazily for blocks a rank owns, so this is not N x device memory. Exceeding it silently truncates the refined region (the clusterer warns). Must be >= 1 (default 1024) |
+| `amr_max_grid_size`    | Integer | Absolute cap on a refined block's coarse-cell extent per dimension, the AMReX max_grid_size concept; must be >= 2 when set (default 0). With 0 the cap is derived from the decomposition and so shrinks as ranks are added, which tiles a fixed feature into more blocks the further you scale and makes the box set depend on the rank count. Setting it pins the cap, so the box set is identical at every rank count. The value may exceed half a rank subdomain: the solver scratch is then sized to the cap rather than to the subdomain, so per-rank memory grows as the cap raised to the number of dimensions |
+| `amr_max_level`        | Integer | Maximum AMR refinement depth (number of refined levels above L0); must be >= 1 (default 1). Multi-level nesting (>= 2) is supported: static AMR (`amr_regrid_int = 0`) nests up to level 2, dynamic regrid (`amr_regrid_int > 0`) nests deeper (see @ref amr_multilevel) |
+| `amr_cluster_eff`       | Real    | Berger-Rigoutsos min tag efficiency a clustered block box reaches before splitting stops; must satisfy 0 < eff <= 1 (default 0.7) |
+| `amr_blocking_factor`   | Integer | Minimum block-box extent in coarse cells the Berger-Rigoutsos bisection may produce; raises the floor of 2 so clustering stops over-generating boxes that the min-separation merge then discards; must be >= 1 (default 1 = no minimum) |
+| `amr_ref_ratio`             | Integer | AMR refinement ratio between coarse and fine levels; must be 2 or 4 (default 2). Only amr_ref_ratio = 2 is supported with multi-level AMR or subcycling (v1). |
+| `l0_ntile`              | Integer | L0-as-blocks spike: tiles per dimension per rank the base grid is split into (0 = off, monolithic base grid; experimental) |
+| `l0_migrate_step`       | Integer | L0-as-blocks spike: time step at which a forced test migration moves the last tile to rank 0 (0 = off; experimental) |
+| `l0_rebalance_interval` | Integer | L0-as-blocks spike: steps between measured-cost rebalance events that migrate tiles to level load (0 = off; experimental) |
+| `partition_tile_size`   | Integer | Tile side for the SFC partitioner (default 8) |
 | `alpha_rho_wrt(i)`      | Logical | Add the partial density of the fluid $i$ to the database \|
 | `rho_wrt`               | Logical | Add the mixture density to the database	 |
 | `mom_wrt(i)`            | Logical | Add the $i$-direction momentum to the database	 |
@@ -780,8 +850,6 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `chem_wrt_T`            | Logical | Write temperature field for chemistry output |
 | `fft_wrt`               | Logical | Enable FFT output |
 | `sim_data`              | Logical | Write interface and energy data files (post_process) |
-| `integral_wrt`          | Logical | Write integral data |
-| `num_integrals`         | Integer | Number of integral regions |
 | `down_sample`           | Logical | Enable output downsampling |
 | `fd_order`              | Integer | Order of finite differences for computing the vorticity and the numerical Schlieren function [1,2,4] |
 | `schlieren_alpha(i)`    | Real    | Intensity of the numerical Schlieren computed via `alpha(i)` |
@@ -842,6 +910,199 @@ If `file_per_process` is true, then pre_process, simulation, and post_process mu
 This is useful for large domains where only a portion of the domain is of interest.
 It is not supported when `precision = 1` and `format = 1`.
 It also cannot be enabled with `flux_wrt`, `heat_ratio_wrt`, `pres_inf_wrt`, `c_wrt`, `omega_wrt`, `ib`, `schlieren_wrt`, `qm_wrt`, or 'liutex_wrt'.
+
+### 7.1. Adaptive Mesh Refinement (AMR) {#sec-amr}
+
+MFC supports block-structured AMR (Experimental) via up to `amr_max_blocks` 2:1 refined level-1 blocks
+that coexists with the base-level solve.
+The fine block is initialized from the base grid by piecewise-linear interpolation and
+remains continuously coupled to the base solve through conservative ghost-cell exchange
+and flux refluxing at the coarse–fine interface.
+
+**Restrictions.**
+AMR requires WENO reconstruction (`recon_type = 1`, any order), SSP-RK3 time-stepping
+(`time_stepper = 3`), and the 5- or 6-equation model (`model_eqns = 2` or `3`; for 6-eq the per-stage pressure relaxation also runs on each fine block).
+Multiple fluids (`num_fluids > 1`) are supported and additionally require `mpp_lim`,
+whose volume-fraction clamp+renormalize maintains coarse/fine alpha consistency; the
+per-fluid masses are refluxed exactly, and volume fractions are prolonged with a
+sum-preserving closure (fine-level volume fractions sum to one by construction).
+Physical viscosity (`viscous = T`) is supported: the viscous stress/work travels through
+the momentum- and energy-equation source fluxes, which are captured into the same
+coarse–fine flux registers as the advective fluxes, so the interface is refluxed against
+the matched *total* (advective + viscous) flux and energy — including viscous work — is
+conserved. Fine-ghost velocity gradients at the coarse–fine boundary are taken from the
+conservative-linear prolongation of the coarse state (no special gradient reconstruction);
+that interface inconsistency is bounded and conservation is enforced by the flux-register
+matching. The density-gradient regrid tagger does not sense shear or boundary layers well,
+so viscous features may need a static or generously buffered block (error-estimator taggers
+are future work).
+Euler-Euler bubbles (`bubbles_euler = T`) are supported, including non-polytropic
+(`polytropic = F`) and polydisperse (`nb > 1`) configurations: the bubble moments — radius,
+velocity, and, for non-polytropic, partial pressure and vapor mass, per R0 bin — are all
+flux-based conserved variables refluxed through the same registers, so no separate side-state
+is carried on the fine level. Prolongation floors every positive moment (radius, and the
+non-polytropic partial-pressure / vapor-mass moments) while leaving the signed velocity moment
+free, so the reconstructed radius, number density, internal pressure, and vapor mass stay
+non-negative (realizability). QBMM (`qbmm = T`) is supported for the polytropic model: each R0
+bin's bivariate six-moment set lives entirely in the conserved variables (the pb/mv quadrature
+arrays are inert stubs when `polytropic = T`), and the whole moment block is prolonged
+piecewise-constant so every fine/ghost cell inherits the coarse cell's realizable moment set
+(the CHyQMOM inversion needs the radius variance c20 = m20/m00 - (m10/m00)^2 to stay positive, which a
+per-component minmod slope could break); the moments still reflux and restrict on the standard
+conservative path. Non-polytropic QBMM (`polytropic = F`) is fully supported: each block carries its own
+per-quadrature-node internal pressure and vapor mass
+(pb/mv), prolonged piecewise-constant for realizability, advanced with the block's own rhs
+scratch, and restricted back with the moments; dynamic regrid and `amr_subcycle` are both supported.
+Phase change (`relax`) is supported: the cell-local, mass/energy-conserving relaxation
+runs on the fine solution before restriction (matching the coarse once-per-step timing).
+Chemistry (`chemistry = T`) is supported for reactions and advection: the species partial
+densities are flux-based conserved variables refluxed through the same registers, the
+cell-local reaction source runs on the fine block through the shared RHS (matching the
+coarse per-stage timing), and prolongation rescales the species so their sum equals the
+continuity density (`sum(Y_k) = 1`, `Y_k >= 0` on the fine level by construction). Chemistry
+AMR runs single- and multi-rank: the fine block's cons->prim conversion widens over the ghost
+shell, so the temperature (the reacting-EOS Newton guess) is halo-exchanged with the coarse
+state at rank seams (mirroring the diffusion path) — without it the seam-ghost guess is
+uninitialized and the conversion diverges to NaN. Species mass diffusion (`chem_params%%diffusion
+= T`) is also supported: the mixture-averaged species mass fluxes (and the thermal-conduction +
+enthalpy energy flux) travel through the source-flux array and are captured into the same coarse–fine
+registers as the advective fluxes — like the viscous stress fluxes — so element mass and total
+energy conserve across the block boundary through refluxed, subcycled, and regridded advances.
+Static immersed boundaries (`ib = T`) are supported: each fine block carries its own
+fine-grid IB state (markers, ghost points, levelset, image points, interpolation coefficients)
+computed from the body geometry at fine resolution once at initialization, and the fine
+advance applies the ghost-cell IB state correction on the block after each RK update (mirroring
+the coarse per-stage timing). A fixed body placed inside a static block is thus resolved on the
+refined level. The IB forcing is non-conservative by construction (the ghost-cell method injects
+mass/momentum/energy at the body), so the conservation defect is nonzero in the body region while
+the flux reflux still conserves to machine precision away from it. A body in prescribed motion
+(`moving_ibm = 1`) is also supported: the fine block's IB markers/ghost points are rebuilt each fine
+RK substage at the body's sub-time position (the same linear time interpolation the subcycle applies
+to the fluid ghosts), so the refined body tracks its prescribed trajectory. Supports one or more
+non-STL bodies, static or in prescribed motion; with dynamic regrid every candidate box expands
+to fully contain each body at its live position plus a margin, the fine IB state is rebuilt from
+geometry after each regrid, and a per-substage guard aborts if a moving body reaches its block
+boundary between regrids (reduce `amr_regrid_int` or increase `amr_buf`). Force-driven motion
+(`moving_ibm = 2`) and STL geometry are gated pending validation. Under MPI a body contained within one rank's
+subdomain is bit-exact across decompositions; a body spanning a rank seam is rejected at startup
+(the fine-IB image-point stencil across the seam is not yet decomposition-exact), so keep the body
+inside a single rank's subdomain (use fewer ranks or reposition it).
+Lagrangian bubbles are supported with the cloud excluded from fine blocks: two-way coupling
+lives on the coarse grid, regrid suppresses tags and clips boxes around the cloud's padded
+bounding box, EL volume fractions prolong without the sum-to-one closure (their sum is the
+local liquid fraction, not 1), and a per-stage guard aborts if the cloud reaches an active
+block (reduce `amr_regrid_int` or increase `amr_buf`).
+The IGR solver is supported with restriction-only coarse/fine coupling: the fine block runs
+its own fixed-iteration sigma solve seeded and Dirichlet-bounded by the converged coarse
+sigma; seam conservation is truncation-order (no reflux capture from the fused IGR flux
+kernels), free-stream preservation is exact, and `amr_subcycle` is gated under IGR.
+AMR is incompatible with surface tension, 3D cylindrical
+coordinates (2D axisymmetric IS supported), 2D/3D MHD (measured: the coarse/fine seam is a
+continuous div(B) source that GLM cleaning cannot remove; 1D MHD/RMHD IS supported since
+div(B) = 0 by construction there), and Riemann-extrapolation
+boundaries (bc = -4). `active_box` is supported (single-rank): blocks must sit strictly inside the growing active window (init abort + regrid clamp), and the fine advance treats its whole block as active.Nonuniform grids ARE supported (grid stretching and the axisymmetric axis half-cell): the fine
+ghost-shell coordinates extend by exact parent-cell bisection and the spacing-dependent WENO
+coefficients are recomputed for the active grid on every block swap/restore, armed automatically
+when the grid is detected nonuniform at startup.
+Acoustic sources are supported on the coarse grid only: the support must not overlap the initial
+block (startup abort) and dynamic regrid keeps its boxes clear of the support.
+Multi-rank runs are supported: each block has a single owner rank, assigned by
+Morton-ordered work balancing at every regrid (with state migration), and the
+coarse-side coupling moves through point-to-point coarse↔fine gather/scatter — so the
+block may span rank boundaries and move freely across them under dynamic regrid.
+The block may cover at most about half of the global extent per dimension (the fine
+advance reuses the rank-local solver scratch); wider features tile into adjacent blocks.
+
+**AMR + surface tension (unsupported).**
+Surface tension (`surface_tension = T`) is prohibited under AMR. *What works:* the capillary
+contribution is a face flux captured into the same coarse–fine registers as the advective
+flux, so it is refluxed conservatively — conservation is structural (mass and energy defects
+stay at machine precision regardless of the fine-side treatment). *What fails:* the capillary
+stress is normalized (∝ 1/|∇c|), so it depends on the interface-normal *direction*, not the
+gradient magnitude. Across a 2:1 coarse/fine boundary the conservative-linearly-prolonged fine
+ghost color cannot reproduce the coarse solver's interface normal, producing a growing spurious
+seam current. Every fine-block fix attempted failed: opening the capillary reflux gate alone
+(~540x baseline seam velocity, exponential), a smoothstep ramp suppressing the fine capillary
+force near the seam (~27x, bounded-linear, width-invariant), and a coarse-spacing gradient blend
+of the prolonged color (~556x, growing) — all leave a force imbalance from the inconsistent
+interface normal rather than a curvature spike that can be damped. *What might fix it:* capturing
+the native coarse-computed capillary force Ω in a per-block band during the coarse RHS, prolonging
+it to the fine boundary layer, and blending the force there — large and uncertain, and the
+diffuse-interface 2:1 normal inconsistency may be fundamental.
+
+**Static vs. dynamic block.**
+Setting `amr_regrid_int = 0` fixes the block at the initial `amr_block_beg`/`amr_block_end`
+position for the entire run (useful for convergence studies or GPU correctness testing).
+Setting `amr_regrid_int > 0` triggers dynamic regrid every that many coarse steps:
+cells whose normalized density gradient exceeds `amr_tag_eps` are tagged, then clustered
+by a Berger–Rigoutsos recursive bisection into a list of separated block boxes (each grown
+by `amr_buf` coarse cells of buffer padding). Boxes whose padded extents would come within a
+ghost-cell buffer width of each other are merged, so separated features get their own refined
+box while nearby ones stay a single box (guaranteeing no fine–fine adjacency). Splitting stops once a
+box's tag efficiency (tagged/total cells) reaches `amr_cluster_eff`; the number of blocks
+is capped at `amr_max_blocks`.
+A positive `amr_tag_eps` and `amr_buf >= 1` are required whenever regridding is active.
+
+**Subcycling.**
+`amr_subcycle = T` enables Berger–Colella dt/2 subcycling: the coarse level advances
+one full step at the case `dt`, while the fine level takes two half-steps at `dt/2` with
+time-interpolated ghost values at the intermediate stage.
+Accumulated fine-level fluxes are applied back to the coarse level (reflux correction)
+after each coarse step.
+`amr_subcycle` is incompatible with `cfl_dt` (variable time step) and requires `amr = T`.
+
+**Block slots.**
+`amr_max_blocks` (default 4) sets the number of fixed refined-block slots preallocated
+for the run. Each slot is sized to the maximum block extent, so `N` slots require roughly
+`N` times the device memory of a single block; the goal is the compute win of refining
+separated features independently, and memory efficiency (compact per-block pools) is a
+follow-up. Dynamic regrid clusters the tagged cells into up to `amr_max_blocks` separated
+boxes (`amr_cluster_eff` sets the min tag efficiency each box reaches before splitting stops).
+
+**Multi-level nesting.**
+`amr_max_level` (default 1) sets the maximum refinement depth. With `amr_max_level > 1`,
+blocks nest recursively: a level-`l` block refines a region of its parent level-(`l-1`)
+block by a further `amr_ref_ratio`, so refinement tracks a moving feature to arbitrary depth.
+Multi-level nesting requires `amr_ref_ratio = 2` (the default) and `amr_max_blocks >= 2`; static
+AMR (`amr_regrid_int = 0`) nests up to level 2, dynamic regrid (`amr_regrid_int > 0`) nests
+deeper. See @ref amr_multilevel for the nesting and reflux details.
+
+**Restart.**
+Each save step writes a fine-level AMR restart file alongside the level-0 restart data
+(whose format is unchanged): the current — possibly regridded — block box and the fine
+solution, per rank (an `amr_fine.dat` in each rank's step directory, or a single shared
+`amr_*.dat` next to the level-0 MPI-IO restart file when `parallel_io` is on).
+Restarting (`t_step_start > 0`) restores the saved box and fine state seamlessly; with
+`parallel_io` the fine blocks are repartitioned across any rank count, while the serial
+(per-rank-file) path requires the same rank count as the run that wrote the file. Both
+paths require the same physics configuration — the number of conserved variables, which
+depends on `num_fluids`, `model_eqns`, and the enabled bubble/chemistry models — and
+abort with a clear message otherwise.
+On restart the AMR block geometry (block count and boxes) is read from the AMR restart
+file, not from the `amr_block_beg`/`amr_block_end` case parameters — so editing those
+parameters for a restart run has no effect. To re-derive the blocks from parameters,
+start fresh (`t_step_start = 0`).
+If the AMR file is absent (e.g., data from an older run), the run proceeds with a
+warning and re-initializes the fine level by prolongation from the coarse restart data,
+losing the accumulated fine-level accuracy.
+Note that level-0 output already contains the restricted (coarse-resolution) fine
+solution over the block, so existing visualization works unchanged; fine-resolution
+visualization output is future work.
+
+| Parameter               | Type    | Description                                    |
+| ---:                    | :----:  |          :---                                  |
+| `amr`                   | Logical | Enable AMR (see prose above for requirements and restrictions) |
+| `amr_block_beg(i)`      | Integer | Initial refined-block start cell index in direction $i$ (level-0 index space) |
+| `amr_block_end(i)`      | Integer | Initial refined-block end cell index in direction \f$i\f$ (level-0 index space); must satisfy \f$2\,(e_i - b_i + 1) - 1 \le N_i\f$ |
+| `amr_regrid_int`        | Integer | Coarse steps between regrid events (0 = static block) |
+| `amr_tag_eps`           | Real    | Normalized density-gradient threshold for refinement tagging; must be > 0 when `amr_regrid_int > 0` (default 0.1) |
+| `amr_buf`               | Integer | Coarse-cell padding around tagged cells; must be >= 1 when `amr_regrid_int > 0` (default 3) |
+| `amr_subcycle`          | Logical | Advance fine level at dt/2 (two substeps per coarse step) with Berger–Colella refluxing |
+| `amr_max_blocks`       | Integer | Number of fixed refined-block slots preallocated (each max-block sized; ~N x device memory); must be >= 1 (default 4) |
+| `amr_max_grid_size`    | Integer | Absolute cap on a refined block's coarse-cell extent per dimension, the AMReX max_grid_size concept; must be >= 2 when set (default 0). With 0 the cap is derived from the decomposition and so shrinks as ranks are added, which tiles a fixed feature into more blocks the further you scale and makes the box set depend on the rank count. Setting it pins the cap, so the box set is identical at every rank count. The value may exceed half a rank subdomain: the solver scratch is then sized to the cap rather than to the subdomain, so per-rank memory grows as the cap raised to the number of dimensions |
+| `amr_max_level`        | Integer | Maximum AMR refinement depth (number of refined levels above L0); must be >= 1 (default 1). Multi-level nesting (>= 2) is supported: static AMR (`amr_regrid_int = 0`) nests up to level 2, dynamic regrid (`amr_regrid_int > 0`) nests deeper (see @ref amr_multilevel) |
+| `amr_cluster_eff`       | Real    | Berger-Rigoutsos min tag efficiency a clustered block box reaches before splitting stops; must satisfy 0 < eff <= 1 (default 0.7) |
+| `amr_blocking_factor`  | Integer | Minimum block-box extent in coarse cells the Berger-Rigoutsos bisection may produce; raises the floor of 2 so clustering stops over-generating boxes that the min-separation merge then discards; must be >= 1 (default 1 = no minimum) |
 
 ### 8. Acoustic Source {#sec-acoustic-source}
 
@@ -934,8 +1195,6 @@ Details of the transducer acoustic source model can be found in \cite Maeda17.
 | `Ca`               | Real    | Cavitation number |
 | `Web`              | Real    | Weber number |
 | `Re_inv`           | Real    | Inverse Reynolds number |
-| `pref`             | Real    | Reference pressure for bubble models |
-| `rhoref`           | Real    | Reference density for bubble models |
 | `fluid_rho`        | Real    | Reference fluid density |
 | `bub_pp%%R0ref`*†‡  | Real    | Reference bubble radius |
 | `bub_pp%%p0ref`*†‡  | Real    | Reference pressure |
@@ -1019,23 +1278,33 @@ When ``polytropic = 'F'``, the gas compression is modeled as non-polytropic due 
 
 #### 9.2 Volume-Averaged Bubble Model
 
-| Parameter             | Type    | Description                                               |
-| ---:                  | :---:   | :---                                                      |
-| `bubbles_lagrange`    | Logical | Lagrangian subgrid bubble model switch                    |
-| `nBubs_glb`           | Integer | Global number of bubbles                                  |
-| `solver_approach`     | Integer | 1: One-way coupling, 2: two-way coupling                  |
-| `cluster_type`        | Integer | Method to find p_inf                                      |
-| `pressure_corrector`  | Logical | Cell pressure correction term                             |
-| `smooth_type`         | Integer | Smoothing function. 1: Gaussian, 2:Delta 3x3              |
-| `heatTransfer_model`  | Logical | Activates the interface heat transfer model               |
-| `massTransfer_model`  | Logical | Activates the interface mass transfer model               |
-| `write_bubbles`       | Logical | Write files to track the bubble evolution each time step  |
-| `write_bubbles_stats` | Logical | Write the maximum and minimum radius of each bubble       |
-| `epsilonb`            | Real    | Standard deviation scaling for the gaussian function      |
-| `charwidth`           | Real    | Domain virtual depth (z direction, for 2D simulations)    |
-| `valmaxvoid`          | Real    | Maximum void fraction permitted                           |
+| Parameter             | Type    | Description                                                    |
+| ---:                  | :---:   | :---                                                           |
+| `bubbles_lagrange`    | Logical | Lagrangian subgrid bubble model switch                         |
+| `nBubs_glb`           | Integer | Global number of bubbles                                       |
+| `solver_approach`     | Integer | 1: One-way coupling, 2: two-way coupling                       |
+| `cluster_type`        | Integer | Method to find p_inf                                           |
+| `pressure_corrector`  | Logical | Cell pressure correction term                                  |
+| `smooth_type`         | Integer | Smoothing function. 1: Gaussian, 2:Delta 3x3                   |
+| `heatTransfer_model`  | Logical | Activates the interface heat transfer model                    |
+| `massTransfer_model`  | Logical | Activates the interface mass transfer model                    |
+| `write_bubbles`       | Logical | Write files to track the bubble evolution each time step       |
+| `write_bubbles_stats` | Logical | Write the maximum and minimum radius of each bubble            |
+| `write_void_evol`     | Logical | Write stats about the void fraction evolution over time        |
+| `epsilonb`            | Real    | Standard deviation scaling for the gaussian function           |
+| `charwidth`           | Real    | Domain virtual depth (z direction, for 2D simulations)         |
+| `charNz`              | Integer | Number of cells in the virtual depth direction                 |
+| `valmaxvoid`          | Real    | Maximum void fraction permitted                                |
+| `vel_model`           | Integer | Model for translational motion (default 0, disabled)           |
+| `drag_model`          | Integer | Model for drag force (default 0, disabled)                     |
+| `gravity_force`       | Logical | Enable gravity force (default false)                           |
+| `pressure_force`      | Logical | Enable pressure force (default true)                           |
+| `input_path`          | String  | Path to bubble input file (default: `./input/lag_bubbles.dat`) |
+| `kahan_summation`     | Logical | Use Kahan compensated summation when accumulating the void fraction |
 
-- `nBubs_glb` Total number of bubbles. Their initial conditions need to be specified in the ./input/lag_bubbles.dat file. See the example cases for additional information.
+- `nBubs_glb` Total number of bubbles. Their initial conditions are read from the file given by `input_path`.
+
+- `input_path` Path to the bubble input file (default `./input/lag_bubbles.dat`). Each row specifies the initial state of one bubble, with columns `xPosition/x0  yPosition/x0  zPosition/x0  xVel/c0  yVel/c0  zVel/c0  radius/x0  interfaceVelocity/c0`. See `examples/3D_lagrange_shbubcollapse/input/lag_bubbles.dat` for a checked-in example, or the other Lagrange example cases (e.g. `examples/2D_lagrange_bubblescreen/case.py`), which generate this file programmatically.
 
 - `solver_approach` Specifies the Euler-Lagrange coupling method: [1] enables a one-way coupling approach, where the bubbles do not influence the Eulerian field. [2] activates the two-way coupling approach based on \cite Maeda18, where the effect of the bubbles is added in the Eulerian field as source terms.
 
@@ -1046,6 +1315,14 @@ When ``polytropic = 'F'``, the gas compression is modeled as non-polytropic due 
 - `heatTransfer_model` Activates the heat transfer model at the bubble's interface based on (\cite Preston07).
 
 - `massTransfer_model` Activates the mass transfer model at the bubble's interface based on (\cite Preston07).
+
+- `vel_model` activates translational motion of the bubbles (\cite Wilfong26): [1] tracer bubbles, which are advected with the local carrier velocity \f$\underline{u}\f$ so that \f$\dot{\underline{x}}_b = \underline{u}(\underline{x}_b)\f$; [2] Newton's second law, which integrates \f$m_b \ddot{\underline{x}}_b = \underline{F}_D + \underline{F}_p + \underline{F}_g\f$, where \f$m_b\f$ is the bubble mass and the right-hand side collects the drag, pressure, and gravity forces below. The carrier velocity at the bubble is interpolated with a Lagrange polynomial of order set by `fd_order`, which must be specified when `vel_model > 0`.
+
+    - `drag_model` selects the drag force \f$\underline{F}_D\f$ acting on the slip velocity \f$\underline{u}_{\rm rel} = \underline{u}_b - \underline{u}\f$, with bubble radius \f$a\f$ and Reynolds number \f$Re\f$: [0] no drag (default); [1] free-slip drag (clean-interface creeping-flow limit, \cite Hadamard1911, \cite Rybczynski1911), \f$\underline{F}_D = -4\pi a\,\underline{u}_{\rm rel}/Re\f$; [2] no-slip Stokes drag (rigid sphere, \cite Stokes1851), \f$\underline{F}_D = -6\pi a\,\underline{u}_{\rm rel}/Re\f$; [3] Levich drag (clean bubble at high \f$Re\f$, \cite Levich1962), \f$\underline{F}_D = -12\pi a\,\underline{u}_{\rm rel}/Re\f$. See \cite Magnaudet2000 for a review of these bubble-drag regimes.
+    - `pressure_force` (default true) enables the pressure-gradient force \f$\underline{F}_p = -V_b\,\nabla p\f$, where \f$V_b = \frac{4}{3}\pi a^3\f$ is the bubble volume.
+    - `gravity_force` (default false) enables the body force \f$\underline{F}_g = m_b\,\underline{g}\f$, with \f$\underline{g}\f$ the acceleration set by the body-force parameters.
+
+- `kahan_summation` uses Kahan compensated summation when smearing the bubble contributions onto the Eulerian void fraction, reducing the round-off sensitivity of the accumulation to the summation order. It is not compatible with `--mixed` precision builds.
 
 ### 10. Velocity Field Setup {#sec-velocity-field-setup}
 
@@ -1110,13 +1387,14 @@ This parameter enables the use of true `pi_\infty` in bubble dynamics models whe
 
 ### 13. Body Forces {#body-forces}
 
-| Parameter         | Type    | Description                                |
-| ---:              | :---:   | :---                                       |
-| `bf_x[y,z]`       | Logical | Enable body forces in the x[y,z] direction |
-| `k_x[y,y]`        | Real    | Magnitude of oscillating acceleration      |
-| `w_x[y,z]`        | Real    | Frequency of oscillating acceleration      |
-| `p_x[y,z]`        | Real    | Phase shift of oscillating acceleration    |
-| `g_x[y,z]`        | Real    | Magnitude of background acceleration       |
+| Parameter            | Type    | Description                                                              |
+| ---:                 | :---:   | :---                                                                     |
+| `bf_x[y,z]`          | Logical | Enable body forces in the x[y,z] direction                               |
+| `k_x[y,z]`           | Real    | Magnitude of oscillating acceleration                                    |
+| `w_x[y,z]`           | Real    | Frequency of oscillating acceleration                                    |
+| `p_x[y,z]`           | Real    | Phase shift of oscillating acceleration                                  |
+| `g_x[y,z]`           | Real    | Magnitude of background acceleration                                     |
+| `bf_spatial_support` | Logical | Enable spatially supported body force (Wei & Freund, JFM 2005)           |
 
 `k_x[y,z]`, `w_x[y,z]`, `p_x[y,z]`, and `g_x[y,z]` define an oscillating acceleration in the `x[y,z]` direction with the form
 
@@ -1124,7 +1402,13 @@ This parameter enables the use of true `pi_\infty` in bubble dynamics models whe
 
 By convention, positive accelerations in the `x[y,z]` direction are in the positive `x[y,z]` direction.
 
-### 14. Magnetohydrodynamics (MHD) {#sec-mhd}
+When `bf_spatial_support` is enabled, the body force is given a localized spatial envelope following Wei & Freund (JFM, 2005), parameterized through the `spatial_bf` derived type with attributes `amp`, `x_centroid`, `y_centroid`, `conv_vel`, `sigma`, and per-mode arrays `freq(1:8)`, `phase(1:8)`.
+Unlike the domain-wide `k/w/p/g` forcing above, it seeds a downstream instability at a fixed streamwise location with a ladder of forcing frequencies.
+`x` is the streamwise direction by convention for this forcing: the `x` component advects with the mean flow via a `conv_vel*t` term, while the cross-stream (`y`) component does not.
+The source is constructed from a streamfunction, so it is divergence-free, and the corresponding `u*f` work term is added to the energy equation.
+This forcing is implemented for **2D cases only**; enabling it in 1D or 3D is rejected at startup.
+
+### 14. Magnetohydrodynamics (MHD)
 
 | Parameter                | Type    | Description                                              |
 | ---:                     | :---:   | :---                                                     |
@@ -1159,13 +1443,20 @@ Note: For relativistic flow, the conservative and primitive densities are differ
 | Parameter         | Type    | Description                                         |
 | ---:              | :---:   | :---                                                |
 | `hypoelasticity`  | Logical | Enable hypoelasticity simulation                    |
-| `hyperelasticity` | Logical | Enable hyperelasticity simulation                   |
 | `cont_damage`     | Logical | Enable continuum damage model                       |
 | `tau_star`        | Real    | Threshold stress for continuum damage model         |
 | `cont_damage_s`   | Real    | Power `s` for continuum damage model                |
 | `alpha_bar`       | Real    | Damage factor (rate) for continuum damage model     |
+| `reactive_burn`   | Logical | Enable condensed-phase reactive burn                |
+| `rburn%%k`         | Real    | Reactive-burn rate coefficient [1/s]                |
+| `rburn%%pign`      | Real    | Reactive-burn ignition pressure threshold [Pa]      |
+| `rburn%%pref`      | Real    | Reactive-burn reference pressure for the drive [Pa] |
+| `rburn%%n`         | Real    | Reactive-burn pressure-drive exponent               |
+| `rburn%%ta`        | Real    | Reactive-burn activation temperature [K] (0 = off)  |
 
 - `cont_damage` activates continuum damage model for solid materials. Requires `tau_star`, `cont_damage_s`, and `alpha_bar` to be set (empirically determined) (\cite Cao19).
+
+- `reactive_burn` converts a "reactant" fluid into a "product" fluid (`num_fluids = 2`, ``chemistry = 'F'``) via a programmed pressure burn `dlambda/dt = rburn%%k (1 - lambda) ((p - rburn%%pign)/rburn%%pref)^rburn%%n`. The two fluids share the same `gamma`/`pi_inf` and differ only in `qv`, so the conversion releases `qv` through the mixture EOS — a reactive-Euler/ZND detonation model on the diffuse-interface framework. It runs on the 5-equation (`model_eqns = 2`) and 6-equation (`model_eqns = 3`) multi-fluid models. Setting `rburn%%ta > 0` multiplies the rate by an Arrhenius factor `exp(-rburn%%ta/T)`, where `T` is the reactant phasic temperature, giving temperature-driven ignition instead of a pure pressure switch.
 
 ### 16. Cylindrical Coordinates
 
@@ -1192,9 +1483,14 @@ When ``cyl_coord = 'T'`` is set in 2D the following constraints must be met:
 | `chem_params%%reactions`       | Logical | Enable chemical reactions                                |
 | `chem_params%%gamma_method`    | Integer | Methodology for calculating the heat capacity ratio      |
 | `chem_params%%transport_model` | Integer | Methodology for calculating the diffusion coefficients   |
+| `chem_params%%reaction_substeps` | Integer | Sub-steps for operator-split reaction integration (0 = off) |
+| `chem_params%%adap_substeps`   | Logical | Per-rank adaptive sub-step count driven by local stiffness  |
+| `chem_params%%reaction_substeps_max` | Integer | Sub-step ceiling when `adap_substeps` is enabled       |
 | `cantera_file`                | String  | Cantera-format mechanism file (e.g., .yaml)              |
 
 - `chem_params%%transport_model` specifies the methodology for calculating diffusion coefficients and other transport properties, `1` for mixture-average, `2` for Unity-Lewis
+- `chem_params%%reaction_substeps` controls how the reaction source is integrated. With `0` (default) the net production rates are added to the flow right-hand side and advanced by the flow time stepper (fine for hydrogen). With a value `> 0`, the reaction is instead integrated by operator splitting after each flow update: every cell's constant-density, constant-internal-energy reactor is advanced over the timestep with that many sub-steps of an **α-QSS** (quasi-steady-state) integrator — a matrix-free, Jacobian-free predictor–corrector (Mott/CHEMEQ2) that splits the net rate into creation/destruction parts and applies a Padé α-weighting, so it stays stable on stiff mechanisms where an explicit source diverges. This decouples the (often much faster) chemical timescale from the flow timestep and is required for stiff mechanisms — e.g. hydrocarbons such as GRI-Mech methane, which otherwise diverge on the first step
+- `chem_params%%adap_substeps` (default `F`) makes each rank choose its α-QSS sub-step count per flow step from the largest chemical stiffness among its own cells: the count sits at `reaction_substeps` (the floor) in inert or burned gas and rises toward `reaction_substeps_max` (the ceiling) only across the reaction front. It uses no MPI collectives. When enabled, `reaction_substeps >= 1` and `reaction_substeps_max >= reaction_substeps` are required
 
 - `cantera_file` specifies the chemical mechanism file. If the file is part of the standard Cantera library, only the filename is required. Otherwise, the file must be located in the same directory as your `case.py` file
 
@@ -1375,14 +1671,14 @@ Boundary is at polar angle \f$\theta = \mathrm{atan2}(y - y_{\mathrm{centroid}},
 
 ### Immersed Boundary Patch Types {#immersed-boundary-patch-types}
 
-| #    | Name               | Dim.   |
-| ---: | :----:             | :---   |
-| 2    | 2D Circle          | 2      |
-| 3    | 2D Rectangle       | 2      |
-| 4    | 2D Airfoil         | 2      |
-| 8    | 3D Sphere          | 3      |
+| #    | Name               | Dim.   | Notes                                             |
+| ---: | :----:             | :---:  | :---                                              |
+| 2    | 2D Circle          | 2      |                                                   |
+| 3    | 2D Rectangle       | 2      |                                                   |
+| 4    | 2D Airfoil         | 2      |                                                   |
+| 8    | 3D Sphere          | 3      |                                                   |
 | 10   | 3D Cylinder        | 3      | `length_x` sets the axial length of the cylinder. |
-| 11   | 3D Airfoil         | 3      |
+| 11   | 3D Airfoil         | 3      |                                                   |
 
 ### Acoustic Supports {#acoustic-supports}
 

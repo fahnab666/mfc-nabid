@@ -4,6 +4,53 @@
 
 #:include 'macros.fpp'
 
+!> @brief Per-block fine-grid immersed-boundary state for single-body AMR (SP20 static, SP21 prescribed-motion). A SEPARATE module
+!! from m_ibm: declaring these non-declare-target derived-type allocatables inside m_ibm corrupts CCE's OpenMP declare-target
+!! descriptor table for m_ibm's ghost_points and aborts its @:ALLOCATE with "lib-4425: Uninitialized descriptor for ALLOCATE
+!! statement argument" (even for a non-AMR IBM run, which never touches this state). Keeps m_ibm's compiled image identical to the
+!! pre-AMR-IB baseline. Do not fold these declarations back into m_ibm.
+module m_ibm_fine
+
+    use m_derived_types
+
+    implicit none
+
+    !> Per-block fine IB state: each AMR slot keeps a HOST-side copy of its markers field, computed from the geometry at fine
+    !! resolution so the body is resolved on the fine block, then COPIED into m_ibm's declare-target ib_markers for the fine
+    !! advance's setup / per-substep moving recompute / correct-state and copied back. markers%sf is host-only parking storage (no
+    !! device mapping): the declare-target ib_markers is allocated once and NEVER reallocated/move_alloc'd/pointer-swapped, so the
+    !! swap syncs via GPU_UPDATE rather than churning the device present table (detach/attach/move_alloc of a declared array
+    !! corrupts it on Cray). Fine ghost-point lists park on-device in gp_park (below), not here; num_gps records each slot's
+    !! ghost-point count across a swap.
+    type ib_fine_state
+        type(integer_field) :: markers
+        integer             :: num_gps
+    end type ib_fine_state
+    type(ib_fine_state), allocatable :: ib_fine(:)
+    integer                          :: num_gps_save
+
+    !> Device-resident park for the coarse and fine ghost-point lists across an AMR fine swap; replaces the per-slot host
+    !! ib_fine%gps. The declare-target ghost_points and ALL its consumers run on-device, so the swap copies between gp_park and
+    !! ghost_points with on-device kernels (no host round-trip). Column j (1..nslots) parks fine slot j's list; column
+    !! ib_coarse_slot parks the coarse list. Mapped dynamically via move_alloc + GPU_ENTER_DATA (the amr_cg idiom) so the bare
+    !! derived-type allocatable gets a valid descriptor - a direct @:ALLOCATE aborts with lib-4425 on CCE OpenMP-offload.
+    type(ghost_point), allocatable :: gp_park(:,:)
+
+    !> The coarse ghost points AND coarse markers park (host copies) across a fine swap in an EXTRA ib_fine slot rather than
+    !! dedicated module variables: adding ANY new module-level derived-type allocatable here corrupts a sibling allocatable's
+    !! descriptor on CCE OpenMP-offload (the plain-IBM lib-4425 class), so reuse ib_fine's proven-safe storage. ib_coarse_slot
+    !! indexes that slot (= nslots+1).
+    integer :: ib_coarse_slot = 0
+
+    !> Fine-block ghost-point capacity (= buffered fine-block cell count), set by s_ibm_alloc_fine before s_ibm_setup sizes the
+    !! declare-target ghost_points once to hold the larger of the coarse and fine lists. 0 when AMR-IB is inactive.
+    integer(kind=8) :: fine_gps_cap = 0_8
+
+    !> Bounds for the ib_markers marker field, sized once to enclose BOTH coarse and fine blocks so the declare-target ib_markers
+    !! holds either without a reallocation/pointer-swap. Set by s_ibm_alloc_fine, read by s_ibm_setup.
+    integer :: mkr_lo(3) = 0, mkr_hi(3) = 0
+end module m_ibm_fine
+
 !> @brief Ghost-node immersed boundary method: locates ghost/image points, computes interpolation coefficients, and corrects the
 !! flow state
 module m_ibm
@@ -22,12 +69,19 @@ module m_ibm
     use m_model
     use m_patch_geometries
     use m_collisions
+    use m_thermochem, only: num_species, gas_constant, get_mixture_molecular_weight, get_mixture_energy_mass
+
+    ! Fine-IB AMR state (ib_fine/num_gps_save/mkr bounds) lives in a separate module, kept OUT of m_ibm's compiled image: on CCE
+    ! OpenMP-offload, declaring those derived-type allocatables here corrupts the declare-target descriptor for ghost_points and
+    ! aborts its @:ALLOCATE with lib-4425. See m_ibm_fine.
+    use m_ibm_fine
 
     implicit none
 
     private :: s_compute_image_points, s_compute_interpolation_coeffs, s_interpolate_image_point, s_find_ghost_points, &
         & s_find_num_ghost_points
-    ; public :: s_initialize_ibm_module, s_ibm_setup, s_ibm_correct_state, s_finalize_ibm_module
+    ; public :: ib_gbl_idx_lookup, s_initialize_ibm_module, s_ibm_setup, s_ibm_correct_state, s_finalize_ibm_module, &
+        & s_ibm_alloc_fine, s_ibm_setup_fine, s_ibm_swap_to_fine, s_ibm_restore_from_fine, num_gps
 
     type(integer_field), public :: ib_markers
     $:GPU_DECLARE(create='[ib_markers]')
@@ -59,7 +113,15 @@ contains
     !> Allocates memory for the variables in the IBM module
     impure subroutine s_initialize_ibm_module()
 
-        if (p > 0) then
+        if (amr .and. ib) then
+            ! Size the declare-target ib_markers for the DEEPEST fine level: it must hold an L2 (4x) block's markers
+            ! when swapped to a fine block and conform to the level-aware park slots (s_ibm_alloc_fine) the whole-array
+            ! park/restore copies assign to/from. ib_markers is device-mapped once here and never reallocated (Cray
+            ! present-table), so the widening must happen at this ALLOCATE. At amr_max_level = 1 the bounds reduce to
+            ! the plain coarse extents (byte-identical).
+            call s_ibm_marker_bounds()
+            @:ALLOCATE(ib_markers%sf(mkr_lo(1):mkr_hi(1), mkr_lo(2):mkr_hi(2), mkr_lo(3):mkr_hi(3)))
+        else if (p > 0) then
             @:ALLOCATE(ib_markers%sf(-buff_size:m+buff_size, -buff_size:n+buff_size, -buff_size:p+buff_size))
         else
             @:ALLOCATE(ib_markers%sf(-buff_size:m+buff_size, -buff_size:n+buff_size, 0:0))
@@ -86,17 +148,18 @@ contains
     !> Initializes the values of various IBM variables, such as ghost points and image points.
     impure subroutine s_ibm_setup()
 
-        integer         :: i, j, k
-        integer(kind=8) :: max_num_gps
+        integer                        :: i, j, k
+        integer(kind=8)                :: max_num_gps, fine_gps_est, total_gps
+        type(ghost_point), allocatable :: tmp_park(:,:)
 
         call nvtxStartRange("SETUP-IBM-MODULE")
 
         ! GPU routines require updated cell centers
-        $:GPU_UPDATE(device='[num_ibs, num_gbl_ibs, x_cc, y_cc, dx, dy, x_domain, y_domain, ib_bc_x%beg, ib_bc_y%beg]')
+        $:GPU_UPDATE(device='[num_ibs, num_gbl_ibs, x_cc, y_cc, dx, dy, ib_bc_x%beg, ib_bc_y%beg]')
         if (p /= 0) then
-            $:GPU_UPDATE(device='[z_cc, dz, z_domain, ib_bc_z%beg]')
+            $:GPU_UPDATE(device='[z_cc, dz, ib_bc_z%beg]')
         end if
-        $:GPU_UPDATE(device='[patch_ib(1:num_ibs)]')
+        $:GPU_UPDATE(device='[patch_ib(1:num_ibs), glb_bounds]')
 
         ! do all set up for moving immersed boundaries
         $:GPU_PARALLEL_LOOP(private='[i]')
@@ -138,14 +201,38 @@ contains
         else
             max_num_gps = int(num_gps, 8)
         end if
+        ! AMR-IB: the fine blocks swap their (larger) ghost-point list into this same declare-target ghost_points,
+        ! allocated ONCE here and never reallocated (a realloc/move_alloc of a declare-target allocatable corrupts
+        ! the Cray present table), so size it to hold the fine list too. fine_gps_cap (deepest block's buffered CELL
+        ! count, set by s_ibm_alloc_fine) is a volume bound; ghost points live in a gp_layers-thick shell at the body
+        ! surface, so refine it with a surface estimate: the fine list for any block is bounded by the whole-body
+        ! coarse count (global: a seam-spanning block's buffered marker region reaches into neighbor-owned surface)
+        ! scaled by the surface refinement factor amr_ref_ratio**(level*(num_dims-1)), x4 margin (discretization +
+        ! prescribed motion), floored for bodies under-resolved at the coarse spacing. min() with the volume bound so
+        ! capacity (and gp_park = cap x nslots+1 device words) never exceeds the previous sizing; the overflow
+        ! PROHIBITs at the swap/rebuild sites remain the hard backstop.
+        if (allocated(ib_fine)) then
+            call s_mpi_allreduce_integer_sum(int(num_gps, 8), total_gps)
+            fine_gps_est = min(fine_gps_cap, 4_8*total_gps*int(amr_ref_ratio, 8)**(amr_max_level*(num_dims - 1)) + 4096_8)
+            max_num_gps = max(max_num_gps, fine_gps_est)
+        end if
 
         ! set the size of the ghost point arrays to be the amount of points total, plus a factor of 2 buffer
         $:GPU_UPDATE(device='[num_gps]')
+        ! ghost_points is GPU_DECLARE'd and @:ALLOCATE establishes its device mapping; no explicit copyin (contents
+        ! are written by the device pipeline below) - an extra dynamic map on top of the declared entry corrupts
+        ! CCE-OMP's descriptor (lib-4425)
         @:ALLOCATE(ghost_points(1:max_num_gps))
-
-        $:GPU_ENTER_DATA(copyin='[ghost_points]')
+        ! AMR-IB: device-resident park for the coarse/fine ghost-point swap (replaces host ib_fine%gps). move_alloc +
+        ! GPU_ENTER_DATA (the amr_cg idiom) gives the bare derived-type allocatable a valid descriptor and device
+        ! mapping; a direct @:ALLOCATE of it aborts with lib-4425 on CCE OpenMP-offload.
+        if (allocated(ib_fine)) then
+            allocate (tmp_park(1:max_num_gps,1:ib_coarse_slot))
+            call move_alloc(tmp_park, gp_park)
+            $:GPU_ENTER_DATA(create='[gp_park]')
+        end if
         ! Ghost-cell IBM, Tseng & Ferziger JCP (2003), Mittal & Iaccarino ARFM (2005)
-        call s_find_ghost_points(ghost_points)
+        call s_find_ghost_points()
         call s_apply_levelset(ghost_points, num_gps)
 
         call s_compute_image_points(ghost_points)
@@ -181,13 +268,17 @@ contains
             real(wp), dimension(3)  :: r_IP, v_IP, pb_IP, mv_IP
             real(wp), dimension(18) :: nmom_IP
             real(wp), dimension(12) :: presb_IP, massv_IP
+            real(wp), dimension(10) :: Ys_IP
         #:else
-            real(wp), dimension(num_fluids) :: Gs
-            real(wp), dimension(num_fluids) :: alpha_rho_IP, alpha_IP
-            real(wp), dimension(nb)         :: r_IP, v_IP, pb_IP, mv_IP
-            real(wp), dimension(nb*nmom)    :: nmom_IP
-            real(wp), dimension(nb*nnode)   :: presb_IP, massv_IP
+            real(wp), dimension(num_fluids)  :: Gs
+            real(wp), dimension(num_fluids)  :: alpha_rho_IP, alpha_IP
+            real(wp), dimension(nb)          :: r_IP, v_IP, pb_IP, mv_IP
+            real(wp), dimension(nb*nmom)     :: nmom_IP
+            real(wp), dimension(nb*nnode)    :: presb_IP, massv_IP
+            real(wp), dimension(num_species) :: Ys_IP
         #:endif
+        real(wp) :: T_IP, mw_IP, e_IP  !< Image-point temperature, mixture MW, and mass-specific internal energy (chemistry)
+        real(wp) :: v_blow_eff         !< Effective surface blowing speed (after any pressure-coupled burn-rate scaling)
         ! Primitive variables at the image point associated with a ghost point, interpolated from surrounding fluid cells.
 
         real(wp), dimension(3) :: norm               !< Normal vector from GP to IP
@@ -210,7 +301,13 @@ contains
                         call s_decode_patch_periodicity(patch_id, patch_id_temp)
                         call s_get_neighborhood_idx(patch_id_temp, patch_id)
                         if (patch_id > 0) then
-                            q_prim_vf(eqn_idx%E)%sf(j, k, l) = 1._wp
+                            ! Placeholder low pressure inside the IB solid. Skip it with
+                            ! chemistry on: it would force an unphysical temperature
+                            ! (P=1 Pa at the ambient density -> T~0.01 K), which the
+                            ! Cantera temperature/transport evaluation (run grid-wide
+                            ! before the IB mask is applied) cannot handle -> NaN/hang.
+                            ! The interior is masked from the RHS regardless.
+                            if (.not. chemistry) q_prim_vf(eqn_idx%E)%sf(j, k, l) = 1._wp
                             rho = 0._wp
                             do i = 1, num_fluids
                                 rho = rho + q_prim_vf(eqn_idx%cont%beg + i - 1)%sf(j, k, l)
@@ -330,19 +427,17 @@ contains
                                         q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_mix_jwl + dyn_pres
                                     else
                                     #:endif
-                                    if (elasticity) then
-                                        call s_convert_species_to_mixture_variables_acc(rho, gamma, pi_inf, qv_K, alpha_IP, &
+                                    if (hypoelasticity) then
+                                        call s_convert_species_to_mixture_variables_kernel(rho, gamma, pi_inf, qv_K, alpha_IP, &
                                             & alpha_rho_IP, Re_K, G_K, fluid_pp(:)%G)
                                     else
-                                        call s_convert_species_to_mixture_variables_acc(rho, gamma, pi_inf, qv_K, alpha_IP, &
+                                        call s_convert_species_to_mixture_variables_kernel(rho, gamma, pi_inf, qv_K, alpha_IP, &
                                             & alpha_rho_IP, Re_K)
                                     end if
                                     if (bubbles_euler) then
                                         q_cons_vf(eqn_idx%E)%sf(j, k, l) = (1._wp - alpha_IP(1))*(gamma*pres_IP + pi_inf + dyn_pres)
-                                    else if (model_eqns /= model_eqns_4eq) then
-                                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + dyn_pres
                                     else
-                                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = 0._wp
+                                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + dyn_pres
                                     end if
                                     #:if not MFC_CASE_OPTIMIZATION or jwl_active
                                     end if
@@ -373,7 +468,7 @@ contains
             $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, vel_g, vel_norm_IP, &
                                 & r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, G_K, Gs, gp, &
                                 & innerp, norm, buf, radial_vector, rotation_velocity, j, k, l, q, qv_K, c_IP, nbub, patch_id, &
-                                & Y_jwl, e_mix_jwl, b_IP, lam_IP]')
+                                & Ys_IP, T_IP, mw_IP, e_IP, v_blow_eff]')
             do i = 1, num_gps
                 gp = ghost_points(i)
                 j = gp%loc(1)
@@ -391,23 +486,30 @@ contains
                 ! Interpolate primitive variables at image point associated w/ GP
                 if (bubbles_euler .and. .not. qbmm) then
                     call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, r_IP, v_IP, &
-                                                   & pb_IP, mv_IP)
+                                                   & pb_IP, mv_IP, b_IP=b_IP, lam_IP=lam_IP)
                 else if (qbmm .and. polytropic) then
                     call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, r_IP, v_IP, &
-                                                   & pb_IP, mv_IP, nmom_IP)
+                                                   & pb_IP, mv_IP, nmom_IP, b_IP=b_IP, lam_IP=lam_IP)
                 else if (qbmm .and. .not. polytropic) then
                     call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, r_IP, v_IP, &
-                                                   & pb_IP, mv_IP, nmom_IP, pb_in, mv_in, presb_IP, massv_IP)
-                    #:if not MFC_CASE_OPTIMIZATION or jwl_active
-                    else if (jwl_idx > 0 .and. (jwl_afterburn .or. jwl_reactive)) then
-                        ! Reaction-progress variables are material scalars: the rigid-wall condition
-                        ! is zero normal flux, so the ghost value is the image-point value (same
-                        ! constant-extrapolation treatment as alpha; Fedkiw et al., JCP 154, 1999).
-                        call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, b_IP=b_IP, &
-                                                       & lam_IP=lam_IP)
-                    #:endif
+                                                   & pb_IP, mv_IP, nmom_IP, pb_in, mv_in, presb_IP, massv_IP, b_IP=b_IP, lam_IP=lam_IP)
+                else if (chemistry) then
+                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, Ys_IP=Ys_IP, b_IP=b_IP, lam_IP=lam_IP)
                 else
-                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP)
+                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, b_IP=b_IP, lam_IP=lam_IP)
+                end if
+
+                ! Injecting (burning) surface: replace the mirrored ghost composition with pure
+                ! injected fuel at the local pressure and the ambient (image-point) temperature.
+                ! Setting a consistent injected density here (rather than reusing the heavy ambient
+                ! rho) keeps the light fuel at a physical temperature and feeds the surface flame.
+                if (chemistry .and. patch_ib(patch_id)%inj_species > 0) then
+                    call get_mixture_molecular_weight(Ys_IP, mw_IP)
+                    T_IP = pres_IP*mw_IP/(alpha_rho_IP(1)*gas_constant)
+                    Ys_IP = 0._wp
+                    Ys_IP(patch_ib(patch_id)%inj_species) = 1._wp
+                    call get_mixture_molecular_weight(Ys_IP, mw_IP)
+                    alpha_rho_IP(1) = pres_IP*mw_IP/(T_IP*gas_constant)
                 end if
 
                 dyn_pres = 0._wp
@@ -437,25 +539,23 @@ contains
                     end do
                 end if
 
-                if (model_eqns /= model_eqns_4eq) then
-                    ! If in simulation, use acc mixture subroutines
-                    if (elasticity) then
-                        call s_convert_species_to_mixture_variables_acc(rho, gamma, pi_inf, qv_K, alpha_IP, alpha_rho_IP, Re_K, &
-                            & G_K, Gs)
-                    else
-                        call s_convert_species_to_mixture_variables_acc(rho, gamma, pi_inf, qv_K, alpha_IP, alpha_rho_IP, Re_K)
-                    end if
+                ! If in simulation, use acc mixture subroutines
+                if (hypoelasticity) then
+                    call s_convert_species_to_mixture_variables_kernel(rho, gamma, pi_inf, qv_K, alpha_IP, alpha_rho_IP, Re_K, &
+                        & G_K, Gs)
+                else
+                    call s_convert_species_to_mixture_variables_kernel(rho, gamma, pi_inf, qv_K, alpha_IP, alpha_rho_IP, Re_K)
                 end if
 
                 if (patch_ib(patch_id)%moving_ibm /= 0) then
                     ! get the vector that points from the centroid to the ghost
                     radial_vector(1) = physical_loc(1) - (patch_ib(patch_id)%x_centroid + real(ghost_points(i)%x_periodicity, &
-                                  & wp)*(x_domain%end - x_domain%beg))
+                                  & wp)*(glb_bounds(1)%end - glb_bounds(1)%beg))
                     radial_vector(2) = physical_loc(2) - (patch_ib(patch_id)%y_centroid + real(ghost_points(i)%y_periodicity, &
-                                  & wp)*(y_domain%end - y_domain%beg))
+                                  & wp)*(glb_bounds(2)%end - glb_bounds(2)%beg))
                     radial_vector(3) = 0._wp
                     if (num_dims == 3) radial_vector(3) = physical_loc(3) - (patch_ib(patch_id)%z_centroid &
-                        & + real(ghost_points(i)%z_periodicity, wp)*(z_domain%end - z_domain%beg))
+                        & + real(ghost_points(i)%z_periodicity, wp)*(glb_bounds(3)%end - glb_bounds(3)%beg))
                 end if
 
                 ! Calculate velocity of ghost cell
@@ -488,6 +588,24 @@ contains
                     end if
                 end if
 
+                ! Burning/injecting surface: superimpose wall-normal (outward) blowing on the
+                ! ghost velocity so the immersed surface transpires/injects gas into the flow.
+                if (patch_ib(patch_id)%v_blow > 0._wp) then
+                    v_blow_eff = patch_ib(patch_id)%v_blow
+                    ! Pressure-coupled burn rate (Vieille's law r_dot ~ p^n): the local surface
+                    ! pressure scales the blowing speed, giving chamber-pressure feedback (internal
+                    ! ballistics) in a closed chamber. Off (constant) when burn_rate_pref <= 0.
+                    if (patch_ib(patch_id)%burn_rate_pref > 0._wp) then
+                        ! max(pres_IP, 0) guards the fractional power against a transient negative
+                        ! interpolated pressure, which would otherwise return NaN and poison the field.
+                        v_blow_eff = v_blow_eff*(max(pres_IP, &
+                                                 & 0._wp)/patch_ib(patch_id)%burn_rate_pref)**patch_ib(patch_id)%burn_rate_exp
+                    end if
+                    norm(1:3) = gp%levelset_norm
+                    buf = sqrt(sum(norm**2))
+                    if (buf > 0._wp) vel_g = vel_g + v_blow_eff*norm/buf
+                end if
+
                 ! Set momentum
                 $:GPU_LOOP(parallelism='[seq]')
                 do q = eqn_idx%mom%beg, eqn_idx%mom%end
@@ -508,40 +626,25 @@ contains
                 end if
 
                 ! Set Energy
-                #:if not MFC_CASE_OPTIMIZATION or jwl_active
-                    if (jwl_idx > 0) then
-                        ! JWL ghost cell: rebuild energy through the JWL closure so near-body
-                        ! pressure and loads match the interior EOS, not the stiffened-gas relation.
-                        ! Reaction-progress ghost values take the image-point value (zero normal
-                        ! gradient at the wall), clamped like every other Y/lambda consumer; the
-                        ! reactive lambda also enters the energy inverse via the delta_e offset.
-                        if (jwl_afterburn) then
-                            b_IP = min(max(b_IP, 0._wp), 1._wp)
-                            q_cons_vf(eqn_idx%abn)%sf(j, k, l) = b_IP
-                            q_prim_vf(eqn_idx%abn)%sf(j, k, l) = b_IP
-                        end if
-                        Y_jwl = alpha_rho_IP(jwl_idx)/max(rho, sgm_eps)
-                        if (jwl_reactive) then
-                            lam_IP = min(max(lam_IP, 0._wp), 1._wp)
-                            q_cons_vf(eqn_idx%rxn)%sf(j, k, l) = lam_IP
-                            q_prim_vf(eqn_idx%rxn)%sf(j, k, l) = lam_IP
-                            call s_jwl_mix_energy_pr(rho, pres_IP, Y_jwl, jwl_idx, e_mix_jwl, lam_IP)
-                        else
-                            call s_jwl_mix_energy_pr(rho, pres_IP, Y_jwl, jwl_idx, e_mix_jwl)
-                        end if
-                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_mix_jwl + dyn_pres
-                    else if (bubbles_euler) then
-                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = (1 - alpha_IP(1))*(gamma*pres_IP + pi_inf + dyn_pres)
-                    else
-                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + dyn_pres
-                    end if
-                #:else
-                    if (bubbles_euler) then
-                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = (1 - alpha_IP(1))*(gamma*pres_IP + pi_inf + dyn_pres)
-                    else
-                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + dyn_pres
-                    end if
-                #:endif
+                if (chemistry) then
+                    ! Mirror the reacting-mixture state at the ghost point: interpolated species,
+                    ! plus a thermodynamically consistent conserved energy from the mixture EOS.
+                    ! (The gamma*pres_IP closure below is only valid for a calorically perfect gas
+                    ! and yields an out-of-range temperature when inverted against the Cantera model.)
+                    mw_IP = 0._wp
+                    call get_mixture_molecular_weight(Ys_IP, mw_IP)
+                    T_IP = pres_IP*mw_IP/(rho*gas_constant)
+                    call get_mixture_energy_mass(T_IP, Ys_IP, e_IP)
+                    $:GPU_LOOP(parallelism='[seq]')
+                    do q = 1, num_species
+                        q_cons_vf(eqn_idx%species%beg + q - 1)%sf(j, k, l) = rho*Ys_IP(q)
+                    end do
+                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_IP + dyn_pres
+                else if (bubbles_euler) then
+                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = (1 - alpha_IP(1))*(gamma*pres_IP + pi_inf + dyn_pres)
+                else
+                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + dyn_pres
+                end if
                 ! Set bubble vars
                 if (bubbles_euler .and. .not. qbmm) then
                     call s_comp_n_from_prim(alpha_IP(1), r_IP, nbub, weight)
@@ -675,7 +778,7 @@ contains
                                 print *, [x_cc(i), y_cc(j), z_cc(k)]
                             end if
                             print *, "We are searching in dimension ", dim, " for image point at ", ghost_points_in(q)%ip_loc(:)
-                            print *, "Domain size: ", [x_cc(-buff_size), y_cc(-buff_size), z_cc(-buff_size)]
+                            print *, "Domain size: "
                             print *, "x: ", x_cc(-buff_size), " to: ", x_cc(m + buff_size - 1)
                             print *, "y: ", y_cc(-buff_size), " to: ", y_cc(n + buff_size - 1)
                             if (p /= 0) print *, "z: ", z_cc(-buff_size), " to: ", z_cc(p + buff_size - 1)
@@ -718,7 +821,7 @@ contains
         if (p == 0) gp_layers_z = 0
 
         $:GPU_PARALLEL_LOOP(private='[i, j, k, ii, jj, kk, is_gp]', copy='[num_gps_local]', firstprivate='[gp_layers, &
-                            & gp_layers_z]', collapse=3)
+                            & gp_layers_z]', copyin='[ib_markers%sf]', collapse=3)
         do i = 0, m
             do j = 0, n
                 do k = 0, p
@@ -751,14 +854,19 @@ contains
     end subroutine s_find_num_ghost_points
 
     !> Locate all ghost points in the domain
-    subroutine s_find_ghost_points(ghost_points_in)
+    subroutine s_find_ghost_points()
 
-        type(ghost_point), dimension(num_gps), intent(inout) :: ghost_points_in
-        integer                                              :: i, j, k, ii, jj, kk, gp_layers_z  !< Iterator variables
-        integer                                              :: xp, yp, zp                        !< periodicities
-        integer                                              :: count, count_i, local_idx
-        integer                                              :: patch_id, encoded_patch_id, neighborhood_patch_id
-        logical                                              :: is_gp
+        ! Operates on the declare-target module-global ghost_points directly, not a dummy argument: the on-device parallel loop
+        ! writes it and the on-device sort below reorders it, both under the SAME declare-target name on the device, so nothing
+        ! ever crosses host<->device here.
+        integer           :: i, j, k, ii, jj, kk, gp_layers_z  !< Iterator variables
+        integer           :: xp, yp, zp                        !< periodicities
+        integer           :: count, count_i, local_idx
+        integer           :: patch_id, encoded_patch_id, neighborhood_patch_id
+        logical           :: is_gp
+        integer           :: a, b                              !< insertion-sort indices
+        logical           :: less                              !< lexicographic comparison result
+        type(ghost_point) :: tmp                               !< insertion-sort scratch element
 
         count = 0
         count_i = 0
@@ -766,7 +874,7 @@ contains
         if (p == 0) gp_layers_z = 0
 
         $:GPU_PARALLEL_LOOP(private='[i, j, k, ii, jj, kk, is_gp, local_idx, patch_id, encoded_patch_id, neighborhood_patch_id, &
-                            & xp, yp, zp]', copyin='[count, count_i, x_domain, y_domain, z_domain]', firstprivate='[gp_layers, &
+                            & xp, yp, zp]', copyin='[count, count_i, glb_bounds, ib_markers%sf]', firstprivate='[gp_layers, &
                             & gp_layers_z]', collapse=3)
         do i = 0, m
             do j = 0, n
@@ -791,44 +899,73 @@ contains
                             local_idx = count
                             $:END_GPU_ATOMIC_CAPTURE()
 
-                            ghost_points_in(local_idx)%loc = [i, j, k]
+                            ghost_points(local_idx)%loc = [i, j, k]
                             encoded_patch_id = ib_markers%sf(i, j, k)
                             call s_decode_patch_periodicity(encoded_patch_id, patch_id, xp, yp, zp)
                             call s_get_neighborhood_idx(patch_id, neighborhood_patch_id)
-                            ghost_points_in(local_idx)%ib_patch_id = neighborhood_patch_id
-                            ghost_points_in(local_idx)%x_periodicity = xp
-                            ghost_points_in(local_idx)%y_periodicity = yp
-                            ghost_points_in(local_idx)%z_periodicity = zp
-                            ghost_points_in(local_idx)%slip = patch_ib(neighborhood_patch_id)%slip
+                            ghost_points(local_idx)%ib_patch_id = neighborhood_patch_id
+                            ghost_points(local_idx)%x_periodicity = xp
+                            ghost_points(local_idx)%y_periodicity = yp
+                            ghost_points(local_idx)%z_periodicity = zp
+                            ghost_points(local_idx)%slip = patch_ib(neighborhood_patch_id)%slip
 
-                            if ((x_cc(i) - dx(i)) < x_domain%beg) then
-                                ghost_points_in(local_idx)%DB(1) = -1
-                            else if ((x_cc(i) + dx(i)) > x_domain%end) then
-                                ghost_points_in(local_idx)%DB(1) = 1
+                            if ((x_cc(i) - dx(i)) < glb_bounds(1)%beg) then
+                                ghost_points(local_idx)%DB(1) = -1
+                            else if ((x_cc(i) + dx(i)) > glb_bounds(1)%end) then
+                                ghost_points(local_idx)%DB(1) = 1
                             else
-                                ghost_points_in(local_idx)%DB(1) = 0
+                                ghost_points(local_idx)%DB(1) = 0
                             end if
 
-                            if ((y_cc(j) - dy(j)) < y_domain%beg) then
-                                ghost_points_in(local_idx)%DB(2) = -1
-                            else if ((y_cc(j) + dy(j)) > y_domain%end) then
-                                ghost_points_in(local_idx)%DB(2) = 1
+                            if ((y_cc(j) - dy(j)) < glb_bounds(2)%beg) then
+                                ghost_points(local_idx)%DB(2) = -1
+                            else if ((y_cc(j) + dy(j)) > glb_bounds(2)%end) then
+                                ghost_points(local_idx)%DB(2) = 1
                             else
-                                ghost_points_in(local_idx)%DB(2) = 0
+                                ghost_points(local_idx)%DB(2) = 0
                             end if
 
                             if (p /= 0) then
-                                if ((z_cc(k) - dz(k)) < z_domain%beg) then
-                                    ghost_points_in(local_idx)%DB(3) = -1
-                                else if ((z_cc(k) + dz(k)) > z_domain%end) then
-                                    ghost_points_in(local_idx)%DB(3) = 1
+                                if ((z_cc(k) - dz(k)) < glb_bounds(3)%beg) then
+                                    ghost_points(local_idx)%DB(3) = -1
+                                else if ((z_cc(k) + dz(k)) > glb_bounds(3)%end) then
+                                    ghost_points(local_idx)%DB(3) = 1
                                 else
-                                    ghost_points_in(local_idx)%DB(3) = 0
+                                    ghost_points(local_idx)%DB(3) = 0
                                 end if
                             end if
                         end if
                     end if
                 end do
+            end do
+        end do
+        $:END_GPU_PARALLEL_LOOP()
+
+        ! The atomic capture above assigns array slots in thread-completion order, so the ghost-point LIST order is nondeterministic
+        ! on the GPU and differs from the CPU's serial order. An order-sensitive consumer downstream (e.g. the surface-force
+        ! reduction) then produces a backend-dependent result, which the discrete image-point stencil amplifies -> the moving
+        ! AMR-IB golden diverges across backends. Reorder into deterministic lexicographic (i,j,k) order with a single-thread
+        ! ON-DEVICE insertion sort (num_gps ~ O(1e2); the single-trip outer loop pins it to one thread). Sorting on the device is
+        ! deliberate: a host round-trip here needs a GPU_UPDATE of the declare-target ghost_points, which fails Cray OpenACC's
+        ! present-table lookup and aborts CCE OpenMP-offload with lib-4425 in the AMR fine path (this routine runs mid-swap, see
+        ! s_ibm_swap_to_fine). Only moving AMR-IB rebuilds the list on-device per substep, so only it needs the ordering; non-AMR
+        ! runs keep the original (unsorted) order.
+        if (.not. amr) return
+        $:GPU_PARALLEL_LOOP(private='[a, b, tmp, less]')
+        do local_idx = 1, 1
+            do a = 2, num_gps
+                tmp = ghost_points(a)
+                b = a - 1
+                do
+                    if (b < 1) exit
+                    less = tmp%loc(1) < ghost_points(b)%loc(1) .or. (tmp%loc(1) == ghost_points(b)%loc(1) .and. (tmp%loc(2) &
+                                   & < ghost_points(b)%loc(2) .or. (tmp%loc(2) == ghost_points(b)%loc(2) .and. tmp%loc(3) &
+                                   & < ghost_points(b)%loc(3))))
+                    if (.not. less) exit
+                    ghost_points(b + 1) = ghost_points(b)
+                    b = b - 1
+                end do
+                ghost_points(b + 1) = tmp
             end do
         end do
         $:END_GPU_PARALLEL_LOOP()
@@ -849,7 +986,8 @@ contains
         integer                                              :: patch_id
         logical                                              :: is_cell_center
 
-        $:GPU_PARALLEL_LOOP(private='[q, i, j, k, ii, jj, kk, dist, buf, gp, interp_coeffs, eta, alpha, patch_id, is_cell_center]')
+        $:GPU_PARALLEL_LOOP(private='[q, i, j, k, ii, jj, kk, dist, buf, gp, interp_coeffs, eta, alpha, patch_id, &
+                            & is_cell_center]', copyin='[ib_markers%sf]')
         do q = 1, num_gps
             gp = ghost_points_in(q)
             ! Get the interpolation points
@@ -942,8 +1080,7 @@ contains
 
     !> Interpolate primitive variables to a ghost point's image point using bilinear or trilinear interpolation
     subroutine s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, r_IP, v_IP, pb_IP, mv_IP, &
-                                         & nmom_IP, pb_in, mv_in, presb_IP, massv_IP, b_IP, lam_IP)
-
+                                         & nmom_IP, pb_in, mv_in, presb_IP, massv_IP, Ys_IP, b_IP, lam_IP)
         $:GPU_ROUTINE(parallelism='[seq]')
 
         type(scalar_field), dimension(sys_size), intent(in) :: q_prim_vf  !< Primitive Variables
@@ -960,8 +1097,9 @@ contains
         real(wp), optional, dimension(:), intent(inout) :: r_IP, v_IP, pb_IP, mv_IP
         real(wp), optional, dimension(:), intent(inout) :: nmom_IP
         real(wp), optional, dimension(:), intent(inout) :: presb_IP, massv_IP
-        real(wp), optional, intent(inout)               :: b_IP, lam_IP            !< JWL reaction-progress at the image point
-        integer                                         :: i, j, k, l, q           !< Iterator variables
+        real(wp), optional, dimension(:), intent(inout) :: Ys_IP  !< Interpolated species mass fractions (chemistry)
+        real(wp), optional, intent(inout)               :: b_IP, lam_IP  !< JWL reaction progress at the image point
+        integer                                         :: i, j, k, l, q  !< Iterator variables
         integer                                         :: i1, i2, j1, j2, k1, k2  !< Iterator variables
         real(wp)                                        :: coeff
 
@@ -978,6 +1116,8 @@ contains
         alpha_IP = 0._wp
         pres_IP = 0._wp
         vel_IP = 0._wp
+
+        if (chemistry) Ys_IP = 0._wp
 
         if (surface_tension) c_IP = 0._wp
 
@@ -1028,16 +1168,12 @@ contains
                         c_IP = c_IP + coeff*q_prim_vf(eqn_idx%c)%sf(i, j, k)
                     end if
 
-                    #:if not MFC_CASE_OPTIMIZATION or jwl_active
-                        ! eqn_idx%abn/%rxn are only assigned under their model flags, so gate on
-                        ! the flag (not just presence) to keep the index access in bounds.
-                        if (present(b_IP)) then
-                            if (jwl_afterburn) b_IP = b_IP + coeff*q_prim_vf(eqn_idx%abn)%sf(i, j, k)
-                        end if
-                        if (present(lam_IP)) then
-                            if (jwl_reactive) lam_IP = lam_IP + coeff*q_prim_vf(eqn_idx%rxn)%sf(i, j, k)
-                        end if
-                    #:endif
+                    if (chemistry) then
+                        $:GPU_LOOP(parallelism='[seq]')
+                        do q = 1, num_species
+                            Ys_IP(q) = Ys_IP(q) + coeff*q_prim_vf(eqn_idx%species%beg + q - 1)%sf(i, j, k)
+                        end do
+                    end if
 
                     if (bubbles_euler .and. .not. qbmm) then
                         $:GPU_LOOP(parallelism='[seq]')
@@ -1077,12 +1213,40 @@ contains
 
     !> Resets the current indexes of immersed boundaries and replaces them after updating
     !> the position of each moving immersed boundary
-    impure subroutine s_update_mib(num_ibs)
+    impure subroutine s_update_mib(num_ibs, th)
 
         integer, intent(in) :: num_ibs
-        integer             :: i, j, k, z_gp_layers
+        !> AMR subcycling: fine sub-time fraction in [0,1] of the coarse step. When present and >= 0 the moving body is snapshotted
+        !! to the linear interpolation between its coarse t^n position (step_*) and t^{n+1} position (current) - matching the
+        !! fluid-ghost lerp the subcycle applies - and restored afterwards. Absent/negative => current position.
+        real(wp), intent(in), optional :: th
+        integer                        :: i, j, k, z_gp_layers
+        logical                        :: snap
+        real(wp)                       :: sc(3, num_ibs), sa(3, num_ibs)  !< body centroids/angles saved across the snapshot
 
         call nvtxStartRange("UPDATE-MIBM")
+
+        snap = .false.
+        if (present(th)) then
+            if (th >= 0._wp) snap = .true.
+        end if
+        if (snap) then
+            ! The body position/angles were just updated on device by the RK body-motion loop (m_time_steppers);
+            ! sync to host before the host-side sub-time interpolation reads them, else the fine block is built at
+            ! the stale t^n position on GPU (host stays current on CPU, so this only bites GPU).
+            $:GPU_UPDATE(host='[patch_ib(1:num_ibs)]')
+            do i = 1, num_ibs
+                sc(1, i) = patch_ib(i)%x_centroid; sc(2, i) = patch_ib(i)%y_centroid; sc(3, i) = patch_ib(i)%z_centroid
+                sa(:,i) = patch_ib(i)%angles
+                if (patch_ib(i)%moving_ibm /= 0) then
+                    patch_ib(i)%x_centroid = (1._wp - th)*patch_ib(i)%step_x_centroid + th*sc(1, i)
+                    patch_ib(i)%y_centroid = (1._wp - th)*patch_ib(i)%step_y_centroid + th*sc(2, i)
+                    patch_ib(i)%z_centroid = (1._wp - th)*patch_ib(i)%step_z_centroid + th*sc(3, i)
+                    patch_ib(i)%angles = (1._wp - th)*patch_ib(i)%step_angles + th*sa(:,i)
+                end if
+            end do
+            $:GPU_UPDATE(device='[patch_ib(1:num_ibs)]')
+        end if
 
         ! Clears the existing immersed boundary indices
         z_gp_layers = 0; if (p /= 0) z_gp_layers = gp_layers + 1
@@ -1117,7 +1281,16 @@ contains
         call nvtxStartRange("COMPUTE-GHOST-POINTS")
         ! recalculate the ghost point locations and coefficients
         call s_find_num_ghost_points(num_gps)
-        call s_find_ghost_points(ghost_points)
+        ! the ghost_points capacity (a setup-time heuristic) can be outgrown when the moving surface's discrete cell count increases
+        ! (body entering the domain, bodies separating, rotating non-convex geometry); the fill below has no bound check, so
+        ! overflow would be a silent device out-of-bounds write. size(ghost_points) is the ACTIVE array's capacity: the coarse
+        ! list here, or the fine slot's own (larger) list when the AMR advance has swapped it in.
+        @:PROHIBIT(num_gps > size(ghost_points), &
+                   & "moving IB: the ghost-point count outgrew the ghost-point array capacity; the body's surface-cell count increased beyond the setup-time sizing")
+        ! num_gps is GPU_DECLARE'd and the on-device insertion sort (and any kernel reading it) uses the
+        ! device copy - mirror the init path's update or a changed count leaves the device one step stale
+        $:GPU_UPDATE(device='[num_gps]')
+        call s_find_ghost_points()
         call nvtxEndRange
 
         call nvtxStartRange("COMPUTE-IMAGE-POINTS")
@@ -1125,6 +1298,15 @@ contains
         call s_compute_image_points(ghost_points)
         call s_compute_interpolation_coeffs(ghost_points)
         call nvtxEndRange
+
+        if (snap) then
+            do i = 1, num_ibs
+                patch_ib(i)%x_centroid = sc(1, i); patch_ib(i)%y_centroid = sc(2, i); patch_ib(i)%z_centroid = sc(3, i)
+                patch_ib(i)%angles = sa(:,i)
+                if (patch_ib(i)%moving_ibm /= 0) call s_update_ib_rotation_matrix(i)
+            end do
+            $:GPU_UPDATE(device='[patch_ib(1:num_ibs)]')
+        end if
 
         call nvtxEndRange
 
@@ -1175,11 +1357,13 @@ contains
                         call s_get_neighborhood_idx(ib_idx_temp, ib_idx)  ! global patch ID -> local index
                         if (ib_idx > 0) then
                             ! get the vector pointing to the grid cell from the IB centroid
-                            radial_vector(1) = x_cc(i) - (patch_ib(ib_idx)%x_centroid + real(xp, wp)*(x_domain%end - x_domain%beg))
-                            radial_vector(2) = y_cc(j) - (patch_ib(ib_idx)%y_centroid + real(yp, wp)*(y_domain%end - y_domain%beg))
+                            radial_vector(1) = x_cc(i) - (patch_ib(ib_idx)%x_centroid + real(xp, &
+                                          & wp)*(glb_bounds(1)%end - glb_bounds(1)%beg))
+                            radial_vector(2) = y_cc(j) - (patch_ib(ib_idx)%y_centroid + real(yp, &
+                                          & wp)*(glb_bounds(2)%end - glb_bounds(2)%beg))
                             radial_vector(3) = 0._wp
                             if (num_dims == 3) radial_vector(3) = z_cc(k) - (patch_ib(ib_idx)%z_centroid + real(zp, &
-                                & wp)*(z_domain%end - z_domain%beg))
+                                & wp)*(glb_bounds(3)%end - glb_bounds(3)%beg))
 
                             local_force_contribution(:) = 0._wp
 
@@ -1414,19 +1598,19 @@ contains
         $:GPU_PARALLEL_LOOP(private='[patch_id]')
         do patch_id = 1, num_ibs
             ! check domain wraps in x, y,
-            #:for X, ID in [('x', 1), ('y', 2), ('z', 3)]
-                if (num_dims >= ${ID}$) then
+            #:for X, DIR in [('x', 1), ('y', 2), ('z', 3)]
+                if (num_dims >= ${DIR}$) then
                     ! check for periodicity
                     if (ib_bc_${X}$%beg == BC_PERIODIC) then
                         ! check if the boundary has left the domain, and then correct
-                        if (patch_ib(patch_id)%${X}$_centroid < ${X}$_domain%beg) then
+                        if (patch_ib(patch_id)%${X}$_centroid < glb_bounds(${DIR}$)%beg) then
                             ! if the boundary exited "left", wrap it back around to the "right"
-                            patch_ib(patch_id)%${X}$_centroid = patch_ib(patch_id)%${X}$_centroid + (${X}$_domain%end &
-                                     & - ${X}$_domain%beg)
-                        else if (patch_ib(patch_id)%${X}$_centroid > ${X}$_domain%end) then
+                            patch_ib(patch_id)%${X}$_centroid = patch_ib(patch_id)%${X}$_centroid + (glb_bounds(${DIR}$)%end &
+                                     & - glb_bounds(${DIR}$)%beg)
+                        else if (patch_ib(patch_id)%${X}$_centroid > glb_bounds(${DIR}$)%end) then
                             ! if the boundary exited "right", wrap it back around to the "left"
-                            patch_ib(patch_id)%${X}$_centroid = patch_ib(patch_id)%${X}$_centroid - (${X}$_domain%end &
-                                     & - ${X}$_domain%beg)
+                            patch_ib(patch_id)%${X}$_centroid = patch_ib(patch_id)%${X}$_centroid - (glb_bounds(${DIR}$)%end &
+                                     & - glb_bounds(${DIR}$)%beg)
                         end if
                     end if
                 end if
@@ -1730,6 +1914,183 @@ contains
 
     end subroutine s_update_ib_lookup
 
+    !> Compute the deepest-level marker-field bounds into the module mkr_lo/mkr_hi. Encloses BOTH the coarse block (m/n/p with
+    !! ghosts) AND the deepest fine block a rank can own (level amr_max_level). A level-l block has amr_ref_ratio**l * base_ext - 1
+    !! interior cells per active dim, base_ext = amr_block_end(d) - amr_block_beg(d) + 1 (the user-specified footprint in coarse
+    !! cells). The max() keeps the coarse extent as the floor so the coarse layout is never shrunk. At amr_max_level = 1,
+    !! amr_ref_ratio gives the correct sizing for any supported refinement ratio. Called from s_initialize_ibm_module (to size the
+    !! declare-target ib_markers before the device map) and s_ibm_alloc_fine.
+    impure subroutine s_ibm_marker_bounds()
+
+        mkr_lo(1) = -buff_size
+        mkr_hi(1) = max(m, amr_ref_ratio**amr_max_level*(amr_block_end(1) - amr_block_beg(1) + 1) - 1) + buff_size
+        mkr_lo(2) = -buff_size
+        if (n_glb > 0) then
+            mkr_hi(2) = max(n, amr_ref_ratio**amr_max_level*(amr_block_end(2) - amr_block_beg(2) + 1) - 1) + buff_size
+        else
+            mkr_hi(2) = n + buff_size
+        end if
+        if (p > 0) then
+            mkr_lo(3) = -buff_size
+            mkr_hi(3) = max(p, amr_ref_ratio**amr_max_level*(amr_block_end(3) - amr_block_beg(3) + 1) - 1) + buff_size
+        else
+            mkr_lo(3) = 0; mkr_hi(3) = 0
+        end if
+
+    end subroutine s_ibm_marker_bounds
+
+    !> Allocate the per-slot fine-IB marker fields (static-body AMR). One integer field per AMR slot, sized to the max buffered fine
+    !! extents (mirrors the coarse ib_markers bounds); ghost-point lists start empty, filled by s_ibm_setup_fine. No-op unless amr
+    !! .and. ib.
+    impure subroutine s_ibm_alloc_fine(nslots, f1_lo, f1_hi, f2_lo, f2_hi, f3_lo, f3_hi)
+
+        integer, intent(in) :: nslots, f1_lo, f1_hi, f2_lo, f2_hi, f3_lo, f3_hi
+        integer             :: islot
+
+        call s_ibm_marker_bounds()
+        @:PROHIBIT(f1_hi > mkr_hi(1) .or. f2_hi > mkr_hi(2) .or. (p > 0 .and. f3_hi > mkr_hi(3)), &
+                   & "AMR fine IB: fine block extent exceeds the deepest-level ib_markers bounds; the copy-based fine-marker swap needs ib_markers sized to enclose the fine block")
+
+        ! ghost-point capacity: upper bound for the deepest fine block = its buffered cell count. Computed from the widened mkr
+        ! bounds so it matches ib_markers (the declare-target never reallocated on Cray GPU). s_ibm_setup reads this to size the
+        ! shared declare-target ghost_points.
+        fine_gps_cap = int(mkr_hi(1) - mkr_lo(1) + 1, 8)*int(mkr_hi(2) - mkr_lo(2) + 1, 8)*int(max(mkr_hi(3) - mkr_lo(3) + 1, 1), 8)
+
+        ! Extra slot (nslots+1) parks the coarse markers during a fine swap - reusing an ib_fine slot avoids adding a new
+        ! module-level derived-type allocatable (which corrupts descriptors on CCE OpenMP, lib-4425). markers%sf is HOST-only park
+        ! storage (no ACC_SETUP / device map); the declare-target ib_markers holds the active data and the swap copies to/from it.
+        ! The fine ghost-point lists park on-device in gp_park (sized here via fine_gps_cap, allocated in s_ibm_setup).
+        ib_coarse_slot = nslots + 1
+        allocate (ib_fine(1:ib_coarse_slot))
+        do islot = 1, ib_coarse_slot
+            allocate (ib_fine(islot)%markers%sf(mkr_lo(1):mkr_hi(1),mkr_lo(2):mkr_hi(2),mkr_lo(3):mkr_hi(3)))
+            ib_fine(islot)%markers%sf = 0
+            ib_fine(islot)%num_gps = 0
+        end do
+
+    end subroutine s_ibm_alloc_fine
+
+    !> Swap the module IB globals (ib_markers/ghost_points/num_gps) to fine slot islot's stored state; the coarse state parks in the
+    !! save slot (host copies of markers and ghost points). MUST be paired with s_ibm_restore_from_fine. Grid globals must already
+    !! be swapped to the fine block.
+    impure subroutine s_ibm_swap_to_fine(islot, gps_on_device)
+
+        integer, intent(in) :: islot
+        logical, intent(in) :: gps_on_device  !< fine ghost points already present on device (per-stage correct path)
+        integer             :: n_c, n_f, csl, fsl, a
+
+        ! ib_markers: declare-target field, allocated once and device-resident; NEVER pointer-swapped or detach-attach'd (that
+        ! corrupts the Cray present table and leaves the device descriptor pointing at the stale coarse array). Park the coarse
+        ! markers as a host copy, then on the correct/moving path copy this slot's fine markers in and push to device. On the setup
+        ! path s_ibm_setup_fine rebuilds the fine markers directly in ib_markers.
+
+        $:GPU_UPDATE(host='[ib_markers%sf]')
+        ib_fine(ib_coarse_slot)%markers%sf = ib_markers%sf
+        if (gps_on_device) then
+            ib_markers%sf = ib_fine(islot)%markers%sf
+            $:GPU_UPDATE(device='[ib_markers%sf]')
+        end if
+
+        ! ghost_points and gp_park are both device-resident and NEVER move_alloc'd/reallocated after setup (that corrupts the Cray
+        ! present table). Park the coarse list into gp_park's coarse column, then on the correct/moving path pull this slot's fine
+        ! list in - both via on-device kernels, no host round-trip (all ghost_points consumers run on-device). This also removes
+        ! the whole-array ghost_points GPU_UPDATE that amdflang lowered to a per-element custom mapper (ROCm HSA OUT_OF_RESOURCES
+        ! abort). On the setup path the fine list does not exist yet - s_ibm_setup_fine fills ghost_points in place next. These
+        ! swap/restore kernels carry an AMD-only defaultmap(present:allocatable): AMD's default='present' emits no defaultmap, so
+        ! flang otherwise generates a map ENTRY for these device-resident allocatable derived-type arrays (ghost_points/gp_park)
+        ! that it lowers to a per-element custom mapper - the offload runtime then busy-loops for minutes recursing through
+        ! targetDataBegin/targetDataEnd (same amdflang per-element-mapper failure as the removed whole-array GPU_UPDATE above).
+        ! defaultmap(present:allocatable) asserts them present with NO map entry, so no mapper is generated. CCE gets this via its
+        ! default='present'.
+        n_c = num_gps
+        @:PROHIBIT(int(n_c, 8) > size(gp_park, dim=1, kind=8), "AMR fine IB: coarse ghost-point count exceeds the gp_park capacity")
+        csl = ib_coarse_slot
+        $:GPU_PARALLEL_LOOP(private='[a]', firstprivate='[n_c, csl]', &
+                            & extraOmpArgs=("defaultmap(present:allocatable)" if MFC_COMPILER == "LLVMFlang" else None))
+        do a = 1, n_c
+            gp_park(a, csl) = ghost_points(a)
+        end do
+        $:END_GPU_PARALLEL_LOOP()
+        num_gps_save = num_gps
+        num_gps = ib_fine(islot)%num_gps
+        if (gps_on_device) then
+            n_f = num_gps
+            fsl = islot
+            $:GPU_PARALLEL_LOOP(private='[a]', firstprivate='[n_f, fsl]', &
+                                & extraOmpArgs=("defaultmap(present:allocatable)" if MFC_COMPILER == "LLVMFlang" else None))
+            do a = 1, n_f
+                ghost_points(a) = gp_park(a, fsl)
+            end do
+            $:END_GPU_PARALLEL_LOOP()
+        end if
+        $:GPU_UPDATE(device='[num_gps]')
+
+    end subroutine s_ibm_swap_to_fine
+
+    !> Restore the coarse IB globals saved by s_ibm_swap_to_fine, parking the (possibly updated) fine state back in slot islot.
+    impure subroutine s_ibm_restore_from_fine(islot)
+
+        integer, intent(in) :: islot
+        integer             :: n_c, n_f, csl, fsl, a
+
+        ! Mirror s_ibm_swap_to_fine: save this slot's (freshly computed / motion-updated) fine markers back to its host store, then
+        ! copy the parked coarse markers into the device-resident ib_markers. The fine and coarse ghost-point lists are
+        ! parked/restored via on-device kernels between gp_park and ghost_points. No pointer-swap/detach/move_alloc of the declared
+        ! arrays.
+
+        $:GPU_UPDATE(host='[ib_markers%sf]')
+        ib_fine(islot)%markers%sf = ib_markers%sf
+        ib_markers%sf = ib_fine(ib_coarse_slot)%markers%sf
+        $:GPU_UPDATE(device='[ib_markers%sf]')
+
+        n_f = num_gps
+        fsl = islot
+        $:GPU_PARALLEL_LOOP(private='[a]', firstprivate='[n_f, fsl]', &
+                            & extraOmpArgs=("defaultmap(present:allocatable)" if MFC_COMPILER == "LLVMFlang" else None))
+        do a = 1, n_f
+            gp_park(a, fsl) = ghost_points(a)
+        end do
+        $:END_GPU_PARALLEL_LOOP()
+        ib_fine(islot)%num_gps = num_gps
+        num_gps = num_gps_save
+        n_c = num_gps
+        csl = ib_coarse_slot
+        $:GPU_PARALLEL_LOOP(private='[a]', firstprivate='[n_c, csl]', &
+                            & extraOmpArgs=("defaultmap(present:allocatable)" if MFC_COMPILER == "LLVMFlang" else None))
+        do a = 1, n_c
+            ghost_points(a) = gp_park(a, csl)
+        end do
+        $:END_GPU_PARALLEL_LOOP()
+        $:GPU_UPDATE(device='[num_gps]')
+
+    end subroutine s_ibm_restore_from_fine
+
+    !> Compute the fine-grid IB state (markers, ghost points, levelset, image points, interpolation coeffs) for the current block.
+    !! The grid globals must be swapped to the fine block AND the IB globals swapped to this slot (s_ibm_swap_to_fine) first: the
+    !! pipeline writes into the module globals, which then hold this slot's fine state. Mirrors the static-body portion of
+    !! s_ibm_setup at fine resolution.
+    impure subroutine s_ibm_setup_fine()
+
+        ib_markers%sf = 0
+        $:GPU_UPDATE(device='[ib_markers%sf]')
+        call s_apply_ib_patches(ib_markers)
+        $:GPU_UPDATE(host='[ib_markers%sf]')
+
+        call s_find_num_ghost_points(num_gps)
+        $:GPU_UPDATE(device='[num_gps]')
+        ! ghost_points is allocated once (s_ibm_setup, sized to the fine-block cell-count cap) and filled in place; never
+        ! reallocated here (a realloc/move_alloc of the declare-target array corrupts the Cray present table). The cap bounds any
+        ! block's ghost-point count, so this cannot overflow.
+        @:PROHIBIT(int(num_gps, 8) > size(ghost_points, kind=8), &
+                   & "AMR fine IB: ghost-point count exceeds the ghost_points capacity sized at s_ibm_setup")
+
+        call s_find_ghost_points()
+        call s_apply_levelset(ghost_points, num_gps)
+        call s_compute_image_points(ghost_points)
+        call s_compute_interpolation_coeffs(ghost_points)
+
+    end subroutine s_ibm_setup_fine
+
     !> Finalize the IBM module
     impure subroutine s_finalize_ibm_module()
 
@@ -1749,6 +2110,19 @@ contains
         end if
         if (allocated(ghost_points)) then
             @:DEALLOCATE(ghost_points)
+        end if
+        ! gp_park is device-mapped (GPU_ENTER_DATA); @:DEALLOCATE unmaps and frees it (amr_cg idiom).
+        if (allocated(gp_park)) then
+            @:DEALLOCATE(gp_park)
+        end if
+        if (allocated(ib_fine)) then
+            do i = 1, size(ib_fine)
+                ! markers%sf is host-only parking storage (no device mapping) - plain deallocate
+                if (associated(ib_fine(i)%markers%sf)) then
+                    deallocate (ib_fine(i)%markers%sf)
+                end if
+            end do
+            deallocate (ib_fine)
         end if
         if (collision_model > 0) call s_finalize_collisions_module()
 #ifdef MFC_MPI

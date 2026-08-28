@@ -14,9 +14,8 @@
 
 ! Caution: This macro requires the use of a binding script to set CUDA_VISIBLE_DEVICES, such that we have one GPU device per MPI
 ! rank. That's because for both cudaMemAdvise (preferred location) and cudaMemPrefetchAsync we use location = device_id = 0. For an
-! example see misc/nvidia_uvm/bind.sh. NVIDIA unified memory page placement hint
+! example see misc/nvidia_uvm/bind.sh.
 #:def PREFER_GPU(*args)
-#ifdef MFC_SIMULATION
 #ifdef __NVCOMPILER_GPU_UNIFIED_MEM
     block
         ! NVIDIA CUDA Fortran 25.3+: uses submodules (cuda_runtime_api, gpu_reductions, sort) See
@@ -51,7 +50,6 @@
             #:endfor
         end if
     end block
-#endif
 #endif
 #:enddef
 
@@ -118,6 +116,26 @@
             if (associated(${arg}$%sf)) then
                 $:GPU_ENTER_DATA(copyin=('[' + arg + '%sf]'))
             end if
+        #:endfor
+    end block
+#endif
+#:enddef
+
+! Cray-specific GPU pointer teardown for scalar fields - exact inverse of ACC_SETUP_SFs. Removes the
+! present-table entries ACC_SETUP_SFs added (the scalar_field descriptor and its %sf copyin). REQUIRED when
+! an ACC_SETUP'd field is freed MID-RUN (e.g. AMR slot free on regrid/restart): Cray 'exit data delete'
+! decrements the reference counter, so the lone @:DEALLOCATE(arg%sf) only undoes the @:ALLOCATE create ref
+! and leaves the descriptor + the ACC_SETUP %sf copyin dangling. Call BEFORE @:DEALLOCATE(arg%sf).
+#:def ACC_TEARDOWN_SFs(*args)
+#ifdef _CRAYFTN
+    block
+        @:LOG({'@:ACC_TEARDOWN_SFs(${', '.join(args)}$)'})
+
+        #:for arg in args
+            if (associated(${arg}$%sf)) then
+                $:GPU_EXIT_DATA(delete=('[' + arg + '%sf]'))
+            end if
+            $:GPU_EXIT_DATA(delete=('[' + arg + ']'))
         #:endfor
     end block
 #endif

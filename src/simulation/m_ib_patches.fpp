@@ -23,7 +23,7 @@ module m_ib_patches
     implicit none
 
     private; public :: s_apply_ib_patches, s_update_ib_rotation_matrix, s_instantiate_STL_models, s_decode_patch_periodicity, &
-        & s_encode_patch_periodicity, s_initialize_ib_airfoils, s_get_periodicities
+        & s_encode_patch_periodicity, s_initialize_ib_airfoils, s_get_periodicities, s_get_ib_bound
 
 contains
 
@@ -57,15 +57,15 @@ contains
                 do yp = yp_lower, yp_upper
                     do zp = zp_lower, zp_upper
                         do patch_id = 1, num_ibs
-                            center(1) = patch_ib(patch_id)%x_centroid + real(xp, wp)*(x_domain%end - x_domain%beg)
-                            center(2) = patch_ib(patch_id)%y_centroid + real(yp, wp)*(y_domain%end - y_domain%beg)
-                            center(3) = patch_ib(patch_id)%z_centroid + real(zp, wp)*(z_domain%end - z_domain%beg)
+                            center(1) = patch_ib(patch_id)%x_centroid + real(xp, wp)*(glb_bounds(1)%end - glb_bounds(1)%beg)
+                            center(2) = patch_ib(patch_id)%y_centroid + real(yp, wp)*(glb_bounds(2)%end - glb_bounds(2)%beg)
+                            center(3) = patch_ib(patch_id)%z_centroid + real(zp, wp)*(glb_bounds(3)%end - glb_bounds(3)%beg)
 
                             ! encode the periodicity information into the patch_id
                             call s_encode_patch_periodicity(patch_ib(patch_id)%gbl_patch_id, xp, yp, zp, encoded_patch_id)
 
                             ! find the indices to the left and right of the IB in i, j, k
-                            call get_bounding_indices(patch_ib(patch_id), center, il, ir, jl, jr, kl, kr)
+                            call s_get_bounding_indices(patch_ib(patch_id), center, il, ir, jl, jr, kl, kr)
 
                             ! skip patches whose bounding box does not overlap this rank's domain
                             if (ir < il .or. jr < jl .or. kr < kl) cycle
@@ -129,15 +129,15 @@ contains
             do xp = xp_lower, xp_upper
                 do yp = yp_lower, yp_upper
                     do patch_id = 1, num_ibs
-                        center(1) = patch_ib(patch_id)%x_centroid + real(xp, wp)*(x_domain%end - x_domain%beg)
-                        center(2) = patch_ib(patch_id)%y_centroid + real(yp, wp)*(y_domain%end - y_domain%beg)
+                        center(1) = patch_ib(patch_id)%x_centroid + real(xp, wp)*(glb_bounds(1)%end - glb_bounds(1)%beg)
+                        center(2) = patch_ib(patch_id)%y_centroid + real(yp, wp)*(glb_bounds(2)%end - glb_bounds(2)%beg)
                         center(3) = 0._wp
 
                         ! encode the periodicity information into the patch_id
                         call s_encode_patch_periodicity(patch_ib(patch_id)%gbl_patch_id, xp, yp, 0, encoded_patch_id)
 
                         ! find the indices to the left and right of the IB in i, j, k
-                        call get_bounding_indices(patch_ib(patch_id), center, il, ir, jl, jr, kl, kr)
+                        call s_get_bounding_indices(patch_ib(patch_id), center, il, ir, jl, jr, kl, kr)
 
                         ! skip patches whose bounding box does not overlap this rank's domain
                         if (ir < il .or. jr < jl) cycle
@@ -210,15 +210,15 @@ contains
                         $:GPU_PARALLEL_LOOP(private='[i, il, ir, j, jl, jr, k, kl, kr, xyz_local, length, radius, patch_id, &
                                             & airfoil_id, model_id, encoded_patch_id, center, eta]', copyin='[xp, yp, zp]')
                         do patch_id = 1, num_ibs
-                            center(1) = patch_ib(patch_id)%x_centroid + real(xp, wp)*(x_domain%end - x_domain%beg)
-                            center(2) = patch_ib(patch_id)%y_centroid + real(yp, wp)*(y_domain%end - y_domain%beg)
-                            center(3) = patch_ib(patch_id)%z_centroid + real(zp, wp)*(z_domain%end - z_domain%beg)
+                            center(1) = patch_ib(patch_id)%x_centroid + real(xp, wp)*(glb_bounds(1)%end - glb_bounds(1)%beg)
+                            center(2) = patch_ib(patch_id)%y_centroid + real(yp, wp)*(glb_bounds(2)%end - glb_bounds(2)%beg)
+                            center(3) = patch_ib(patch_id)%z_centroid + real(zp, wp)*(glb_bounds(3)%end - glb_bounds(3)%beg)
 
                             ! encode the periodicity information into the patch_id
                             call s_encode_patch_periodicity(patch_ib(patch_id)%gbl_patch_id, xp, yp, zp, encoded_patch_id)
 
                             ! find the indices to the left and right of the IB in i, j, k
-                            call get_bounding_indices(patch_ib(patch_id), center, il, ir, jl, jr, kl, kr)
+                            call s_get_bounding_indices(patch_ib(patch_id), center, il, ir, jl, jr, kl, kr)
 
                             do k = kl, kr
                                 do j = jl, jr
@@ -279,15 +279,15 @@ contains
                     $:GPU_PARALLEL_LOOP(private='[i, il, ir, j, jl, jr, xyz_local, length, radius, patch_id, airfoil_id, &
                                         & model_id, encoded_patch_id, center, eta]', copyin='[xp, yp]')
                     do patch_id = 1, num_ibs
-                        center(1) = patch_ib(patch_id)%x_centroid + real(xp, wp)*(x_domain%end - x_domain%beg)
-                        center(2) = patch_ib(patch_id)%y_centroid + real(yp, wp)*(y_domain%end - y_domain%beg)
+                        center(1) = patch_ib(patch_id)%x_centroid + real(xp, wp)*(glb_bounds(1)%end - glb_bounds(1)%beg)
+                        center(2) = patch_ib(patch_id)%y_centroid + real(yp, wp)*(glb_bounds(2)%end - glb_bounds(2)%beg)
                         center(3) = 0._wp
 
                         ! encode the periodicity information into the patch_id
                         call s_encode_patch_periodicity(patch_ib(patch_id)%gbl_patch_id, xp, yp, 0, encoded_patch_id)
 
                         ! find the indices to the left and right of the IB in i, j, k
-                        call get_bounding_indices(patch_ib(patch_id), center, il, ir, jl, jr, kl, kr)
+                        call s_get_bounding_indices(patch_ib(patch_id), center, il, ir, jl, jr, kl, kr)
 
                         do j = jl, jr
                             do i = il, ir
@@ -458,7 +458,54 @@ contains
 
     end subroutine s_update_ib_rotation_matrix
 
-    subroutine get_bounding_indices(patch, center, il, ir, jl, jr, kl, kr)
+    subroutine s_get_ib_bound(patch, bound)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        type(ib_patch_parameters), intent(in) :: patch
+        real(wp), intent(out)                 :: bound
+        real(wp), dimension(2)                :: lx, ly, lz
+
+        if (patch%geometry == 2 .or. patch%geometry == 8) then
+            ! circle and sphere geometries
+            bound = patch%radius
+        else if (patch%geometry == 3) then
+            bound = 0.5_wp*sqrt(patch%length_x**2 + patch%length_y**2)
+        else if (patch%geometry == 4 .or. patch%geometry == 11) then
+            ! rectangular geometries
+            bound = ib_airfoil(patch%airfoil_id)%c
+        else if (patch%geometry == 5) then
+            ! STL model geometry
+            lx(1) = stl_bounding_boxes(patch%model_id, 1, 1)
+            lx(2) = stl_bounding_boxes(patch%model_id, 1, 3)
+            ly(1) = stl_bounding_boxes(patch%model_id, 2, 1)
+            ly(2) = stl_bounding_boxes(patch%model_id, 2, 3)
+
+            bound = 0.5_wp*sqrt((lx(2) - lx(1))**2 + (ly(2) - ly(1))**2)
+        else if (patch%geometry == 6) then
+            ! ellipse geometry
+            bound = 0.5_wp*max(patch%length_x, patch%length_y)
+        else if (patch%geometry == 9) then
+            ! cuboid geometries
+            bound = 0.5_wp*sqrt(patch%length_x**2 + patch%length_y**2 + patch%length_z**2)
+        else if (patch%geometry == 10) then
+            ! cylinder geometry
+            bound = sqrt(patch%radius**2 + patch%length_x**2)
+        else if (patch%geometry == 12) then
+            ! Local-space bounding box extents (min=1, max=2 in the third index)
+            lx(1) = stl_bounding_boxes(patch%model_id, 1, 1) + patch%centroid_offset(1)
+            lx(2) = stl_bounding_boxes(patch%model_id, 1, 3) + patch%centroid_offset(1)
+            ly(1) = stl_bounding_boxes(patch%model_id, 2, 1) + patch%centroid_offset(2)
+            ly(2) = stl_bounding_boxes(patch%model_id, 2, 3) + patch%centroid_offset(2)
+            lz(1) = stl_bounding_boxes(patch%model_id, 3, 1) + patch%centroid_offset(3)
+            lz(2) = stl_bounding_boxes(patch%model_id, 3, 3) + patch%centroid_offset(3)
+
+            bound = 0.5_wp*sqrt((lx(2) - lx(1))**2 + (ly(2) - ly(1))**2 + (lz(2) - lz(1))**2)
+        end if
+
+    end subroutine s_get_ib_bound
+
+    subroutine s_get_bounding_indices(patch, center, il, ir, jl, jr, kl, kr)
 
         $:GPU_ROUTINE(parallelism='[seq]')
 
@@ -467,22 +514,11 @@ contains
         integer, intent(out)                  :: il, ir, jl, jr, kl, kr
         real(wp), dimension(3)                :: bbox_min, bbox_max, local_corner, world_corner
         real(wp), dimension(2)                :: lx, ly, lz
+        real(wp)                              :: bound
         integer                               :: cx, cy, cz
         logical                               :: outside_domain
 
-        if (patch%geometry == 2 .or. patch%geometry == 8) then
-            ! circle and sphere geometries
-            bbox_min = center - patch%radius
-            bbox_max = center + patch%radius
-        else if (patch%geometry == 3) then
-            ! rectangular geometries
-            bbox_min = center - 0.5_wp*sqrt(patch%length_x**2 + patch%length_y**2)
-            bbox_max = center + 0.5_wp*sqrt(patch%length_x**2 + patch%length_y**2)
-        else if (patch%geometry == 4 .or. patch%geometry == 11) then
-            ! airfoil geometries TODO :: This can be better optimized, since airfoils are typically very long in one dimension
-            bbox_min = center - ib_airfoil(patch%airfoil_id)%c
-            bbox_max = center + ib_airfoil(patch%airfoil_id)%c
-        else if (patch%geometry == 5) then
+        if (patch%geometry == 5) then
             ! STL model geometry
             lx(1) = stl_bounding_boxes(patch%model_id, 1, 1) + patch%centroid_offset(1)
             lx(2) = stl_bounding_boxes(patch%model_id, 1, 3) + patch%centroid_offset(1)
@@ -502,18 +538,6 @@ contains
                     bbox_max(2) = max(bbox_max(2), world_corner(2))
                 end do
             end do
-        else if (patch%geometry == 6) then
-            ! ellipse geometry
-            bbox_min = center - 0.5_wp*max(patch%length_x, patch%length_y)
-            bbox_max = center + 0.5_wp*max(patch%length_x, patch%length_y)
-        else if (patch%geometry == 9) then
-            ! cuboid geometries
-            bbox_min = center - 0.5_wp*sqrt(patch%length_x**2 + patch%length_y**2 + patch%length_z**2)
-            bbox_max = center + 0.5_wp*sqrt(patch%length_x**2 + patch%length_y**2 + patch%length_z**2)
-        else if (patch%geometry == 10) then
-            ! cylinder geometry
-            bbox_min = center - sqrt(patch%radius**2 + patch%length_x**2)
-            bbox_max = center + sqrt(patch%radius**2 + patch%length_x**2)
         else if (patch%geometry == 12) then
             ! Local-space bounding box extents (min=1, max=2 in the third index)
             lx(1) = stl_bounding_boxes(patch%model_id, 1, 1) + patch%centroid_offset(1)
@@ -540,6 +564,11 @@ contains
                     end do
                 end do
             end do
+        else
+            ! All other IBs
+            call s_get_ib_bound(patch, bound)
+            bbox_min = center - bound
+            bbox_max = center + bound
         end if
 
         ! completely skip patches whose bounding box does not overlap this rank's domain
@@ -566,7 +595,7 @@ contains
         call get_indices_from_bounds(bbox_min(2), bbox_max(2), y_cc, jl, jr)
         if (num_dims == 3) call get_indices_from_bounds(bbox_min(3), bbox_max(3), z_cc, kl, kr)
 
-    end subroutine get_bounding_indices
+    end subroutine s_get_bounding_indices
 
     subroutine get_indices_from_bounds(left_bound, right_bound, cell_centers, left_index, right_index)
 

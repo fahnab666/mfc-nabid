@@ -39,15 +39,13 @@ module m_jwl
     public :: s_initialize_jwl_module, s_finalize_jwl_module, s_jwl_mix_state_er, s_jwl_mix_energy_pr, s_jwl_mix_sound_speed, &
         & s_jwl_mix_energy_sound_speed_pr, jwl_idx
 
-    ! Simulation builds use m_global_parameters tables.
-#ifndef MFC_SIMULATION
+    ! JWL coefficient tables are owned by this module in both pre-process and simulation builds.
     real(wp), allocatable, public, dimension(:) :: jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, jwl_E0s
     real(wp), allocatable, public, dimension(:) :: jwl_air_e0s, jwl_air_rho0s, jwl_air_gammas, jwl_ej_rho_refs, jwl_air_pi_infs
     real(wp), allocatable, public, dimension(:) :: jwl_delta_es
     $:GPU_DECLARE(create='[jwl_As, jwl_Bs, jwl_R1s, jwl_R2s, jwl_omegas, jwl_rho0s, jwl_E0s]')
     $:GPU_DECLARE(create='[jwl_air_e0s, jwl_air_rho0s, jwl_air_gammas, jwl_ej_rho_refs, jwl_air_pi_infs]')
     $:GPU_DECLARE(create='[jwl_delta_es]')
-#endif
 
     integer  :: jwl_idx                  !< JWL fluid index.
     real(wp) :: jwl_cv_prod, jwl_cv_air  !< Products/air specific heats.

@@ -11,9 +11,8 @@ module m_checker
     use m_global_parameters
     use m_mpi_proxy
     use m_helper
-    use m_helper_basic
-    use m_constants, only: recon_type_weno, recon_type_muscl, muscl_order_first_order, eos_jwl, wave_speeds_pressure, &
-        & BC_CHAR_SLIP_WALL, BC_CHAR_SUP_OUTFLOW, model_eqns_5eq, bubble_model_gilmore
+    use m_constants, only: recon_type_weno, recon_type_muscl, time_stepper_rk3, BC_RIEMANN_EXTRAP, BC_CHAR_SLIP_WALL, &
+        & BC_CHAR_SUP_OUTFLOW
 
     implicit none
 
@@ -36,84 +35,94 @@ contains
             end if
         end if
 
-        call s_check_inputs_time_stepping
-
-        ! Paths that evaluate stiffened-gas gamma/pi_inf mixture relations, which are
-        ! meaningless for a JWL fluid: the pressure-based wave-speed shock-Mach
-        ! correction, characteristic (CBC) boundary treatments, the alternative
-        ! (Wood-like) sound speed, and the elastic pressure recovery.
-        if (any(fluid_pp(1:num_fluids)%eos == eos_jwl)) then
-            @:PROHIBIT(wave_speeds == wave_speeds_pressure, &
-                       & "wave_speeds = 2 (pressure-based) is not supported with eos_jwl; use wave_speeds = 1")
-            @:PROHIBIT(any((/bc_x%beg, bc_x%end, bc_y%beg, bc_y%end, bc_z%beg, bc_z%end/) <= BC_CHAR_SLIP_WALL .and. (/bc_x%beg, &
-                       & bc_x%end, bc_y%beg, bc_y%end, bc_z%beg, bc_z%end/) >= BC_CHAR_SUP_OUTFLOW), &
-                       & "characteristic (CBC) boundary conditions are not supported with eos_jwl")
-            @:PROHIBIT(alt_soundspeed, "alt_soundspeed is not supported with eos_jwl")
-            @:PROHIBIT(hypoelasticity .or. hyperelasticity, "elasticity is not supported with eos_jwl")
-            ! These solver paths compute pressure from stiffened-gas relations and
-            ! bypass the JWL closure entirely, so JWL cells would be silently wrong.
-            @:PROHIBIT(igr, "igr is not supported with eos_jwl (IGR evaluates stiffened-gas pressure on JWL cells)")
-            @:PROHIBIT(bubbles_euler .or. mhd .or. chemistry, &
-                       & "bubbles_euler, mhd, and chemistry are not supported with eos_jwl (their pressure paths bypass the JWL closure)")
-
-            ! ib is compatible: ghost/fresh cells (including %rxn/%abn) are rebuilt through
-            ! the JWL closure in m_ibm, and reaction sources are gated off solid cells.
-        else
-            @:PROHIBIT(jwl_afterburn .or. prog_burn .or. jwl_reactive, &
-                       & "jwl_afterburn, prog_burn, and jwl_reactive require a fluid with eos_jwl")
+        if (active_box) then
+            ! Declared limitation rather than a silent runtime downgrade: the active box is a single global region, so under
+            ! decomposition the ranks whose subdomain it misses would idle while the covering ranks do all the work. Making it
+            ! multi-rank is a load-balance problem, not a geometry one, and is deferred. Fail closed so a production multi-rank
+            ! run cannot quietly get full-domain compute plus a warning line.
+            ! lint: runtime-check num_procs is the MPI rank count, not a case-file value
+            @:PROHIBIT(num_procs > 1, &
+                       & "active_box supports a single MPI rank only: a single global active region leaves the " &
+                       & // "ranks it does not cover idle, so multi-rank support needs load balancing and is not yet " &
+                       & // "implemented. Unset active_box or run on one rank.")
         end if
 
-        if (jwl_reactive) then
-            @:PROHIBIT(riemann_solver /= 2, "jwl_reactive requires riemann_solver = 2 (HLLC)")
-            @:PROHIBIT(prog_burn, "jwl_reactive and prog_burn are mutually exclusive detonation models")
-            @:PROHIBIT(f_is_default(jwl_G) .or. jwl_G <= 0._wp, "jwl_reactive requires positive jwl_G")
-            @:PROHIBIT(f_is_default(jwl_b_exp) .or. jwl_b_exp <= 0._wp, "jwl_reactive requires positive jwl_b_exp")
+        ! lint: runtime-check num_procs is the MPI rank count, not a case-file value
+        @:PROHIBIT(load_balance .and. num_procs == 1, "load_balance requires more than one MPI rank")
+
+        if (amr) then
+            ! Euler-Euler bubbles disabled under amr (2026-08-25): the mpp_lim pre-conversion rescale
+            ! and the pb/mv quadrature side-state force per-block special cases through the batched
+            ! advance (Phase 2); the support was retired rather than carried. qbmm requires
+            ! bubbles_euler, so this also gates all AMR QBMM paths.
+            ! 6-equation: internal-energy equations prolong/restrict on the generic conservative
+            ! path; cell-local per-stage pressure relaxation also runs per fine block, mirroring
+            ! the coarse stage order.
+            ! Riemann-extrapolation BCs modify the WENO coefficient rows near the domain boundary;
+            ! the fine advance reuses or block-locally recomputes those arrays, and neither form
+            ! carries the coarse boundary special-casing onto an interior block correctly.
+            ! The s_cbc call sites key on the bc value alone: during the fine advance they would apply the
+            ! characteristic treatment at fine-block edges in the DOMAIN INTERIOR, against CBC scratch sized to
+            ! the coarse subdomain. Support needs an advance-aware gate, not inheritance.
+            ! hypoelasticity supported: stress components prolong via the generic conservative-linear
+            ! path; the swap/restore recomputes the spacing-dependent FD coefficients per grid.
+            ! MHD gated ON MEASURED EVIDENCE: B/psi ride the generic conservative machinery, but the
+            ! per-component prolongation/reflux is not divergence-preserving - on a magnetized 2D
+            ! Brio-Wu the c/f seam is a continuous O(1) monopole source GLM cleaning spreads but
+            ! cannot remove (max|divB| 0.53 block-interior, 0.36 far-field vs the no-AMR 1.4e-3
+            ! cleaning background; HLLD, with no GLM coupling, NaNs outright). MHD needs
+            ! divergence-preserving (constrained-transport class) prolongation and reflux for B.
+            ! 1D MHD/RMHD is exempt: div(B) = d(Bx)/dx and 1D evolves only By/Bz (Bx is the uniform
+            ! Bx0 parameter), so div(B) is IDENTICALLY zero - the failure mode is structurally
+            ! absent and By/Bz reflux/restrict as ordinary conserved scalars.
+            ! IGR supported with restriction-only coarse/fine coupling (stage 1): the fine block runs
+            ! its own fixed-iteration sigma solve, seeded and Dirichlet-bounded by the converged
+            ! coarse sigma; Berger-Colella reflux is not yet captured from the fused IGR flux
+            ! kernels, so seam conservation is truncation-order, not exact.
+            ! The fine block's sigma Dirichlet seed is injected from the OWNER's LOCAL coarse jac
+            ! (s_amr_igr_swap_sigma), clamped to the owner's buffer bounds - unlike q_cons it is NOT
+            ! P2P-gathered, so a block whose footprint or ghost shell crosses a rank boundary reads
+            ! clamped edge values, not the neighbour's sigma. Fail-closed at np>1.
+            ! lint: runtime-check num_procs is the MPI rank count, not a case-file value
+            @:PROHIBIT(igr .and. num_procs > 1, &
+                       & "amr with the IGR solver is only supported at num_procs = 1: the fine block's sigma (jac) Dirichlet seed is injected from the owner's LOCAL coarse jac (not P2P-gathered like q_cons), so a block crossing a rank boundary would read clamped edge values")
+            ! Lagrangian bubbles supported with the cloud EXCLUDED from fine blocks (two-way coupling
+            ! lives on the coarse grid): regrid suppresses tags and clips boxes around the cloud's
+            ! padded bbox; a per-stage guard aborts if the cloud reaches a block.
+            ! 2D axisymmetric supported: geometric sources read the live grid arrays the fine swap
+            ! replaces, and the axis-singularity viscous treatment is skipped on fine blocks (blocks
+            ! cannot touch the axis - the domain-edge clamp keeps them buff_size inside).
+            ! 3D cylindrical gated: its per-stage azimuthal Fourier filter is a global operation
+            ! incompatible with the block-local fine advance.
+            ! 2D axisymmetric conservation (radius-weighted restriction + area-weighted reflux) is
+            ! implemented for the L0/L1 coarse frame only. Multi-level folds/refluxes in the
+            ! PARENT-FINE frame (host-only per-block coords) are not radius-weighted - fail-closed
+            ! under cyl_coord.
+            ! static-body IB AMR (SP20) + prescribed-motion moving bodies (SP21): fixed or
+            ! analytically-moving (moving_ibm==1) bodies resolved on a static fine block. Multi-body
+            ! (num_ibs>1) supported - every body shares the one static block and reuses the
+            ! multi-body-capable core IB setup. Force/torque-driven motion (moving_ibm==2) and STL
+            ! geometry remain gated (unvalidated).
+            ! dynamic regrid with bodies (static or prescribed-motion): candidate boxes expand to
+            ! fully contain every body at its LIVE position (partial coverage is untested),
+            ! overlapping expansions merge, and the fine IB state is rebuilt from the geometry after
+            ! every regrid. Between regrids a moving body's containment is guarded per substage
+            ! (abort if it reaches the block boundary).
+            ! active_box supported (np=1 by active_box's own gate): blocks must sit strictly inside
+            ! the monotonically-growing active window (init check + regrid clamp; the windowed coarse
+            ! update would drop reflux corrections at faces outside it), and the fine advance disables
+            ! the coarse-indexed windowing on the swapped block grid.
+            ! no acoustic_source gate: acoustic sources act on the coarse grid only (spatial support
+            ! precomputed as coarse cell indices). A startup check aborts if the support overlaps the
+            ! user-placed initial block; dynamic regrid keeps its boxes clear of the support (tags
+            ! suppressed, candidate boxes clipped), so the source region stays coarse.
+            ! lint: runtime-check num_procs is the MPI rank count, not a case-file value
+            @:PROHIBIT(amr_max_level > 1 .and. ib .and. num_procs > 1, &
+                       & "multi-level AMR (amr_max_level > 1) with immersed boundaries is only supported at num_procs = 1 (the fine-IB image-point stencil is not decomposition-exact across a rank seam)")
         end if
 
-        if (jwl_afterburn) then
-            @:PROHIBIT(riemann_solver /= 2, "jwl_afterburn requires riemann_solver = 2 (HLLC)")
-            @:PROHIBIT(jwl_ab_model /= 1 .and. jwl_ab_model /= 2, "jwl_ab_model must be 1 (mixing-rate) or 2 (Arrhenius)")
-            @:PROHIBIT(f_is_default(jwl_q_ab) .or. jwl_q_ab <= 0._wp, "jwl_afterburn requires positive jwl_q_ab")
-            @:PROHIBIT(jwl_ab_model == 1 .and. (f_is_default(jwl_ab_tau) .or. jwl_ab_tau <= 0._wp), &
-                       & "jwl_ab_model = 1 requires positive jwl_ab_tau")
-            @:PROHIBIT(jwl_ab_model == 2 .and. (f_is_default(jwl_ab_A) .or. jwl_ab_A <= 0._wp .or. f_is_default(jwl_ab_theta) &
-                       & .or. jwl_ab_theta <= 0._wp), "jwl_ab_model = 2 requires positive jwl_ab_A and jwl_ab_theta")
-            ! Afterburn is oxygen combustion with air; a stiffened (liquid) ambient has none.
-            @:PROHIBIT(any(fluid_pp(1:num_fluids)%eos /= eos_jwl .and. fluid_pp(1:num_fluids)%pi_inf > 0._wp), &
-                       & "jwl_afterburn requires an ideal-gas ambient fluid")
-        end if
-
-        if (prog_burn) then
-            @:PROHIBIT(f_is_default(pb_D_cj) .or. pb_D_cj <= 0._wp, "prog_burn requires positive pb_D_cj")
-            @:PROHIBIT(f_is_default(pb_width) .or. pb_width <= 0._wp, "prog_burn requires positive pb_width")
-            ! In 3D cylindrical coordinates z is the azimuthal angle, so the Cartesian
-            ! front distance sqrt(dx^2 + dy^2 + dz^2) would mix radians into meters.
-            @:PROHIBIT(cyl_coord .and. p > 0, "prog_burn is not supported in 3D cylindrical coordinates")
-            ! The burn front advances pb_D_cj*dt per step; if that exceeds the band
-            ! width, annuli of cells are never swept and detonation energy is lost.
-            @:PROHIBIT(.not. cfl_dt .and. .not. f_is_default(pb_D_cj) .and. .not. f_is_default(pb_width) &
-                       & .and. pb_D_cj*dt > pb_width, &
-                       & "prog_burn requires pb_D_cj*dt <= pb_width so the front advances at most one band width per step")
-        end if
-
-        ! Gilmore radial dynamics assume a barotropic Tait liquid (f_H/f_cgas in
-        ! m_bubbles.fpp): the 5-equation model supplies no Tait constants (mirrors
-        ! case_validator.py), and the Euler-Lagrange path passes dummy ntait/Btait
-        ! that are never assigned, so Gilmore is invalid there for any flow model.
-        @:PROHIBIT(bubbles_euler .and. model_eqns == model_eqns_5eq .and. bubble_model == bubble_model_gilmore, &
-                   & "The 5-equation bubbly flow model does not support bubble_model = 1 (Gilmore)")
-        @:PROHIBIT(bubbles_lagrange .and. bubble_model == bubble_model_gilmore, &
-                   & "bubbles_lagrange does not support bubble_model = 1 (Gilmore); use 2 (Keller-Miksis) or 3 (Rayleigh-Plesset)")
-
-        @:PROHIBIT(ib_state_wrt .and. .not. ib, "ib_state_wrt requires ib to be enabled")
-        @:PROHIBIT(many_ib_patch_parallelism .and. .not. ib, "many_ib_patch_parallelism requires ib to be enabled")
-
-        if (num_particle_clouds > 0) then
-            call s_check_inputs_particle_clouds
-        end if
-
-        if (synthetic_turbulence) then
-            call s_check_inputs_synthetic_turbulence
+        if (ib .and. chemistry) then
+            call s_check_inputs_ib_injection
         end if
 
     end subroutine s_check_inputs
@@ -133,11 +142,14 @@ contains
         character(len=5) :: numStr  !< for int to string conversion
 
         call s_int_to_str(num_stcls_min*weno_order, numStr)
+        ! lint: runtime-check m/n/p are per-rank extents after MPI decomposition, not the case-file values
         @:PROHIBIT(m + 1 < num_stcls_min*weno_order, &
                    & "m must be greater than or equal to (num_stcls_min*weno_order - 1), whose value is " // trim(numStr))
+        ! lint: runtime-check per-rank n
         @:PROHIBIT(n + 1 < min(1, n)*num_stcls_min*weno_order, &
                    & "For 2D simulation, n must be greater than or equal to (num_stcls_min*weno_order - 1), whose value is " &
                    & // trim(numStr))
+        ! lint: runtime-check per-rank p
         @:PROHIBIT(p + 1 < min(1, p)*num_stcls_min*weno_order, &
                    & "For 3D simulation, p must be greater than or equal to (num_stcls_min*weno_order - 1), whose value is " &
                    & // trim(numStr))
@@ -150,27 +162,19 @@ contains
         character(len=5) :: numStr  !< for int to string conversion
 
         call s_int_to_str(num_stcls_min*muscl_order, numStr)
+        ! lint: runtime-check m/n/p are per-rank extents after MPI decomposition, not the case-file values
         @:PROHIBIT(m + 1 < num_stcls_min*muscl_order, &
                    & "m must be greater than or equal to (num_stcls_min*muscl_order - 1), whose value is " // trim(numStr))
+        ! lint: runtime-check per-rank n
         @:PROHIBIT(n + 1 < min(1, n)*num_stcls_min*muscl_order, &
                    & "For 2D simulation, n must be greater than or equal to (num_stcls_min*muscl_order - 1), whose value is " &
                    & // trim(numStr))
+        ! lint: runtime-check per-rank p
         @:PROHIBIT(p + 1 < min(1, p)*num_stcls_min*muscl_order, &
                    & "For 3D simulation, p must be greater than or equal to (num_stcls_min*muscl_order - 1), whose value is " &
                    & // trim(numStr))
-        @:PROHIBIT(muscl_order == muscl_order_first_order .and. int_comp > 0, &
-                   & "int_comp requires muscl_order >= 2 (muscl_order=1 leaves the reconstruction workspace uninitialised)")
 
     end subroutine s_check_inputs_muscl
-
-    !> Checks constraints on time stepping parameters
-    impure subroutine s_check_inputs_time_stepping
-
-        if (.not. cfl_dt) then
-            @:PROHIBIT(dt <= 0)
-        end if
-
-    end subroutine s_check_inputs_time_stepping
 
     !> Validate NVIDIA unified virtual memory configuration parameters
     impure subroutine s_check_inputs_nvidia_uvm
@@ -184,43 +188,18 @@ contains
 
     end subroutine s_check_inputs_nvidia_uvm
 
-    !> Checks that each active particle cloud has a valid packing_method specified
-    impure subroutine s_check_inputs_particle_clouds
+    !> Validates that each burning immersed-boundary patch injects a species index within the mechanism. inj_species indexes the
+    !! image-point mass-fraction array Ys_IP(1:num_species) in m_ibm; an out-of-range value is an out-of-bounds write (silent
+    !! corruption). Only reachable with chemistry.
+    impure subroutine s_check_inputs_ib_injection
 
-        integer          :: i
-        character(len=5) :: idxStr
+        integer :: i
 
-        do i = 1, num_particle_clouds
-            call s_int_to_str(i, idxStr)
-            @:PROHIBIT(particle_cloud(i)%packing_method == dflt_int, &
-                       & "particle_cloud("//trim(idxStr) &
-                       & //")%packing_method must be specified (1 = rejection sampling, 2 = lattice)")
-            @:PROHIBIT(particle_cloud(i)%packing_method /= 1 .and. particle_cloud(i)%packing_method /= 2, &
-                       & "particle_cloud("//trim(idxStr) //")%packing_method must be 1 (rejection sampling) or 2 (lattice)")
+        do i = 1, num_ibs
+            @:PROHIBIT(patch_ib(i)%inj_species > num_species, &
+                       & "patch_ib inj_species must be <= num_species (it indexes the image-point species mass fractions; an out-of-range value writes out of bounds)")
         end do
 
-    end subroutine s_check_inputs_particle_clouds
-
-    !> Checks that each active synthetic-turbulence forcing zone has a fully specified position and a positive size in every active
-    !! dimension
-    impure subroutine s_check_inputs_synthetic_turbulence
-
-        integer          :: i, d
-        character(len=5) :: idxStr
-
-        @:PROHIBIT(num_turbulent_sources <= 0, "num_turbulent_sources must be > 0 when synthetic_turbulence is enabled")
-
-        do i = 1, num_turbulent_sources
-            call s_int_to_str(i, idxStr)
-            do d = 1, num_dims
-                @:PROHIBIT(f_is_default(turb_pos(i, d)), &
-                           & "turb_pos("//trim(idxStr) &
-                           & //",:) must be specified for all num_dims when synthetic_turbulence is enabled")
-                @:PROHIBIT(f_is_default(synth_L(i, d)) .or. synth_L(i, d) <= 0._wp, &
-                           & "synth_L("//trim(idxStr)//",:) must be positive for all num_dims when synthetic_turbulence is enabled")
-            end do
-        end do
-
-    end subroutine s_check_inputs_synthetic_turbulence
+    end subroutine s_check_inputs_ib_injection
 
 end module m_checker

@@ -19,8 +19,37 @@ covered in `docs/documentation/contributing.md`.
   `contxb`/`momxb` shorthands are gone. Index positions depend on `model_eqns` and
   enabled features — changing either moves ALL indices; never hard-code one.
 
+## AMR levels (silent-index traps)
+
+- **A level-`l` block's fine extent is `amr_ref_ratio**l * (coarse-region width) - 1`, NOT
+  `amr_ref_ratio*width`.** The `amr_ref_ratio*width` form is correct only for the level-1 initial
+  block; nested boxes compound by `amr_ref_ratio` per level (`amr_ref_ratio**level`). Every
+  fine-extent computation uses `amr_ref_ratio**amr_block_level` — geometry
+  (`s_set_amr_fine_geometry`), the restart-reader extent check, load-weight, `fmul`.
+  Assuming `amr_ref_ratio*width` rejects level≥2 blocks as corrupt (the exact bug that bit the
+  multi-level restart reader).
+- **"coarse" in the AMR coupling routines means the block's PARENT level (`l-1`), not the
+  base grid (level 0).** For a level-1 block the parent IS L0; for level≥2 the block folds
+  to/from its parent block's fine array. `s_amr_gather_coarse_patch`,
+  `s_interpolate_coarse_to_fine`, and the restrict/reflux path all operate in the
+  parent-fine frame — assuming L0 silently corrupts level≥2 coupling.
+- **The fine advance SWAPS the coarse grid globals (`m/n/p`, `idwint/idwbuff`, coords,
+  `acoustic_source`, `ab_active`) to a fine block and restores them after — see the SWAP
+  CONTRACT block at the `sw_*` declarations in `m_amr.fpp`.** Any module-level variable
+  DERIVED from the grid that a kernel reads during the fine advance must be swapped there or
+  refreshed per fine call at its use site; if it is `GPU_DECLARE`'d, its DEVICE copy must be
+  refreshed too. A stale device copy of coarse bounds reads out of range on the fine grid
+  under **CCE OpenACC only** (NVHPC/CCE-omp evaluate bounds host-side) — this was the `ab_int`
+  regression, fixed by an unconditional `GPU_UPDATE` in `s_compute_rhs`. `amr_rvw` (cyl_coord
+  radius weights) is the next candidate, currently safe only via a `m_checker.fpp` gate.
+  A CPU-only or NVHPC-acc pass proves NOTHING here; this class is CCE-acc-specific.
+
 ## GPU
 
+- NEVER put a `GPU_PARALLEL_LOOP` inside a Fortran `block` construct: amdflang compiles
+  it clean but silently DROPS the region from the device image — the first launch dies
+  with `HSA_STATUS_ERROR_INVALID_SYMBOL_NAME` naming an `__omp_offloading_*` symbol.
+  Hoist the kernel into its own module subroutine.
 - WARNING: do NOT wrap `GPU_LOOP` in `GPU_PARALLEL` for spatial loops — `GPU_LOOP` emits
   empty directives on Cray and AMD, causing silent serial execution. Spatial loops always
   use `GPU_PARALLEL_LOOP`/`END_GPU_PARALLEL_LOOP`. Macro API:
@@ -36,6 +65,15 @@ covered in `docs/documentation/contributing.md`.
 - `@:ACC_SETUP_VFs(...)`/`@:ACC_SETUP_SFs(...)` GPU pointer setup compiles only under
   Cray. Around MPI: `GPU_UPDATE(host=...)` before send, `GPU_UPDATE(device=...)` after
   receive.
+- **Never `GPU_UPDATE` a NON-CONTIGUOUS array section.** `GPU_UPDATE(device='[q%sf(a:b,
+  c:d, e:f)]')` on a sub-box emits correct OpenMP, but AMD flang copies it as
+  `size(section)` CONTIGUOUS elements starting at the first: only the leading run lands
+  where it is named and the rest overwrites neighbouring cells with stale data — no error,
+  no warning. A leading section (`arr(1:n)`, or a fixed trailing index like
+  `freg(d)%lo(:,:,:,k)`) IS contiguous and safe; anything that strides is not. To move a
+  sub-box, pack/unpack it with a device kernel (`s_l0_pack_unpack_block`,
+  `s_amr_restrict_pack_device`) — that is why those exist. Measured: 10 of 60 covered
+  cells delivered in the AMR cross-rank restrict, mass off 1.4e-5 per regrid.
 
 ## Parameters
 
@@ -59,16 +97,35 @@ covered in `docs/documentation/contributing.md`.
   Gotcha: ADDING a new file under `toolchain/mfc/params/` needs one reconfigure
   (the custom command's DEPENDS list is globbed at configure time). Under `--case-optimization` the baked-in constants are dropped from the
   namelist, so changing one needs a *rebuild*, not a case edit.
+- Derived-type params (`chem_params`, `lag_params`, `rburn`) are NOT auto-broadcast:
+  `generated_bcast.fpp` covers namelist *scalars* only. Each type needs a hand-written
+  `_emit_<name>` in `toolchain/mfc/params/generators/fortran_gen.py` plus its call site in
+  the `target == "sim"` block, and — if it is read on device — an explicit
+  `$:GPU_UPDATE(device='[name]')` in BOTH `m_global_parameters.fpp` and `m_start_up.fpp`
+  (`GPU_DECLARE` alone does not make it device-resident). Regrouping scalars into a derived
+  type silently drops their broadcast, so every non-root rank keeps the `dflt_real`
+  sentinel; single-rank goldens cannot see this, so pair such a change with a `ppn=2` test
+  and confirm it fails without the emitter.
+- A `patch_ib` member that any `m_ibm` ghost-point code reads must ALSO be set in
+  `s_add_cloud_particle` (`src/simulation/m_particle_cloud.fpp`): `particle_cloud_ibs` is
+  `allocate`d without default initialization, and `s_reduce_ib_patch_array` copies the whole
+  struct into `patch_ib`, overwriting the defaults from
+  `s_assign_default_values_to_user_inputs`. Anything left unset reaches the solver as
+  uninitialized memory, and only where the allocation is not already zero-filled — a
+  garbage `v_blow` failed Frontier AMD with `ICFL is NaN` while every NVIDIA lane and all
+  local CPU/GPU runs passed. A platform-only NaN is the signature of this class.
 - Shared-state pattern: namelist declarations (`#:include 'generated_decls.fpp'`), the
-  `eqn_idx`/`sys_size`/`b_size`/`tensor_size` state variables, and the common defaults
+  `eqn_idx`/`sys_size` state variables, and the common defaults
   core all live in `src/common/m_global_parameters_common.fpp`. Each per-target
   `m_global_parameters.fpp` does `use m_global_parameters_common` (default-public), so
   `use m_global_parameters` continues to work for all downstream modules without change.
-  Sim-only declarations (GPU_DECLARE, Re_idx allocation) stay in
-  `m_global_parameters_common` behind `#ifdef MFC_SIMULATION`. Generated includes
-  (`generated_decls.fpp`, `generated_bcast.fpp`, `generated_case_opt_decls.fpp`) must exist for every target — the build
-  emits stubs where the content is sim-only, so a common file that includes one will
-  compile for pre/post too.
+  `src/common/` carries no `MFC_PRE_PROCESS`/`MFC_SIMULATION`/`MFC_POST_PROCESS` guards:
+  stage-varying behavior is passed in as an explicit argument or initialization policy, and
+  device residency for generated simulation scalars is emitted from `SIM_GPU_DECL_VARS`
+  (`toolchain/mfc/params/generators/fortran_gen.py`). Generated includes
+  (`generated_decls.fpp`, `generated_bcast.fpp`, `generated_case_opt_decls.fpp`) must exist for every target — pre/post
+  get the common computed scalars (`num_dims`, `num_vels`, `weno_polyn`, `muscl_polyn`), so
+  a common file that includes one will compile for pre/post too.
 - Runtime checks (`@:PROHIBIT`) go where they run: shared →
   `src/common/m_checker_common.fpp`; simulation-only → `src/simulation/m_checker.fpp`;
   pre/post-only → `src/{pre,post}_process/m_checker.fpp` (their `s_check_inputs` are

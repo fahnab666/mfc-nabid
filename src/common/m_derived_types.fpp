@@ -140,7 +140,6 @@ module m_derived_types
         type(idx_bounds_info) :: adv      !< Volume fractions (advection equations)
         type(idx_bounds_info) :: bub      !< Bubble equation range (beg/end only)
         type(idx_bounds_info) :: stress   !< Stress tensor components
-        type(idx_bounds_info) :: xi       !< Reference map equations
         type(idx_bounds_info) :: B        !< Magnetic field components
         type(idx_bounds_info) :: int_en   !< Internal energy equations
         type(idx_bounds_info) :: species  !< Chemistry species equations
@@ -359,6 +358,10 @@ module m_derived_types
         real(wp) :: radius  !< Dimensions of the patch. radius.
         logical :: slip
         integer :: moving_ibm  !< 0 for no moving, 1 for moving, 2 for moving on forced path
+        real(wp) :: v_blow  !< Wall-normal surface blowing speed (burning/transpiring IB surface); 0 = impermeable
+        integer :: inj_species  !< Injected species index at a blowing surface (chemistry); 0 = mirror ambient
+        real(wp) :: burn_rate_exp  !< Pressure exponent n in v_blow*(p/p_ref)^n (Vieille's law); 0 = constant blowing
+        real(wp) :: burn_rate_pref  !< Reference pressure p_ref for the pressure-coupled burn rate; 0 = coupling off
         real(wp) :: mass, moment  !< mass and moment of inertia of object used to compute forces in 2-way coupling
         real(wp), dimension(1:3) :: force, torque  !< vectors for the computed force and torque values applied to an IB
         real(wp), dimension(1:3) :: vel
@@ -374,9 +377,13 @@ module m_derived_types
         real(wp) :: radius  !< Particle radius
         real(wp) :: mass  !< Particle mass
         real(wp) :: min_spacing  !< Minimum surface-to-surface gap (particle centers are 2*radius + min_spacing apart)
+        real(wp) :: shell_inner_radius  !< Inner radius for shell packing
+        real(wp) :: shell_outer_radius  !< Outer radius for shell packing
         integer  :: moving_ibm  !< Motion flag: 0=static, 1=moving (forces), 2=forced path
         integer  :: seed  !< Random seed for reproducible placement
+        integer  :: cloud_geometry  !< Cloud region geometry: 1=box, 2=hemisphere shell
         integer  :: packing_method  !< Packing algorithm: 1=rejection sampling, 2=lattice
+        integer  :: periodic  !< Periodic overlap flag for box rejection packing: 0=off, 1=on
     end type particle_cloud_parameters
 
     !> Derived type annexing the physical parameters (PP) of the fluids. These include the specific heat ratio function and liquid
@@ -442,15 +449,16 @@ module m_derived_types
         type(vec3_dt), allocatable, dimension(:) :: var
     end type mpi_io_airfoil_ib_var
 
-    !> Derived type annexing integral regions
-    type integral_parameters
-        real(wp) :: xmin  !< Min. boundary first coordinate direction
-        real(wp) :: xmax  !< Max. boundary first coordinate direction
-        real(wp) :: ymin  !< Min. boundary second coordinate direction
-        real(wp) :: ymax  !< Max. boundary second coordinate direction
-        real(wp) :: zmin  !< Min. boundary third coordinate direction
-        real(wp) :: zmax  !< Max. boundary third coordinate direction
-    end type integral_parameters
+    !> Parameters for body force with spatial support
+    type spbf_parameters
+        real(wp)               :: amp
+        real(wp)               :: x_centroid
+        real(wp)               :: y_centroid
+        real(wp)               :: conv_vel
+        real(wp)               :: sigma
+        real(wp), dimension(8) :: freq
+        real(wp), dimension(8) :: phase
+    end type spbf_parameters
 
     !> Acoustic source parameters
     type acoustic_parameters
@@ -519,23 +527,51 @@ module m_derived_types
         !> gamma_method = 2: c_p / c_v where c_p, c_v are specific heats.
         integer :: gamma_method
         integer :: transport_model
+        !> reaction_substeps > 0 integrates the reaction source with operator splitting: after the
+        !> flow update, each cell's constant-(rho,e) reactor ODE is advanced with this many alpha-QSS
+        !> sub-steps. Stabilizes stiff mechanisms (e.g. methane). 0 = off (reaction source is added to
+        !> the RHS and integrated by the flow time stepper, the default behavior).
+        integer :: reaction_substeps
+        !> adap_substeps = T: adapt the alpha-QSS sub-step count per rank each step from a local
+        !> stiffness estimate, ranging in [reaction_substeps (floor), reaction_substeps_max (ceiling)].
+        !> Zero MPI: each rank sizes its own work from its own cells. Default F = fixed reaction_substeps.
+        logical :: adap_substeps
+        integer :: reaction_substeps_max
     end type chemistry_parameters
+
+    !> Condensed-phase reactive-burn (programmed pressure detonation) parameters. The rate is
+    !> dlambda/dt = k (1 - lambda) ((p - pign)/pref)^n, optionally scaled by exp(-ta/T) when ta > 0.
+    type reactive_burn_parameters
+        real(wp) :: k     !< Rate coefficient [1/s]
+        real(wp) :: pign  !< Ignition pressure threshold [Pa]
+        real(wp) :: pref  !< Reference pressure for the pressure drive [Pa]
+        real(wp) :: n     !< Pressure-drive exponent
+        real(wp) :: ta    !< Activation temperature [K] (0 = pure pressure-driven; > 0 adds exp(-ta/T))
+    end type reactive_burn_parameters
 
     !> Lagrangian bubble parameters
     type bubbles_lagrange_parameters
 
-        integer  :: solver_approach      !< 1: One-way coupling, 2: two-way coupling
-        integer  :: cluster_type         !< Cluster model to find p_inf
-        logical  :: pressure_corrector   !< Cell pressure correction term
-        integer  :: smooth_type          !< Smoothing function. 1: Gaussian, 2:Delta 3x3
-        logical  :: heatTransfer_model   !< Activate HEAT transfer model at the bubble-liquid interface
-        logical  :: massTransfer_model   !< Activate MASS transfer model at the bubble-liquid interface
-        logical  :: write_bubbles        !< Write files to track the bubble evolution each time step
-        logical  :: write_bubbles_stats  !< Write the maximum and minimum radius of each bubble
-        integer  :: nBubs_glb            !< Global number of bubbles
-        real(wp) :: epsilonb             !< Standard deviation scaling for the gaussian function
-        real(wp) :: charwidth            !< Domain virtual depth (z direction, for 2D simulations)
-        real(wp) :: valmaxvoid           !< Maximum void fraction permitted
+        integer                    :: solver_approach  !< 1: One-way coupling, 2: two-way coupling
+        integer                    :: cluster_type  !< Cluster model to find p_inf
+        logical                    :: pressure_corrector  !< Cell pressure correction term
+        integer                    :: smooth_type  !< Smoothing function. 1: Gaussian, 2:Delta 3x3
+        logical                    :: heatTransfer_model  !< Activate HEAT transfer model at the bubble-liquid interface
+        logical                    :: massTransfer_model  !< Activate MASS transfer model at the bubble-liquid interface
+        logical                    :: write_void_evol  !< Write files to track evolution of void fraction at each time step
+        logical                    :: write_bubbles  !< Write files to track the bubble evolution each time step
+        logical                    :: write_bubbles_stats  !< Write the maximum and minimum radius of each bubble
+        integer                    :: nBubs_glb  !< Global number of bubbles
+        integer                    :: vel_model  !< Particle velocity model
+        integer                    :: drag_model  !< Particle drag model
+        logical                    :: pressure_force  !< Include pressure force translational motion
+        logical                    :: gravity_force  !< Include gravity force in translational motion
+        logical                    :: kahan_summation  !< Use Kahan summation for void fraction accumulation (improves precision)
+        character(LEN=pathlen_max) :: input_path  !< Path to lag_bubbles.dat
+        real(wp)                   :: epsilonb  !< Standard deviation scaling for the gaussian function
+        real(wp)                   :: charwidth  !< Domain virtual depth (z direction, for 2D simulations)
+        integer                    :: charNz  !< Number of grid cells in characteristic depth
+        real(wp)                   :: valmaxvoid  !< Maximum void fraction permitted
     end type bubbles_lagrange_parameters
 
     !> Max and min number of cells in a direction of each combination of x-,y-, and z-
@@ -554,4 +590,11 @@ module m_derived_types
         real(wp), dimension(1:num_fluids_max)   :: perturb_dens_scale
         real(wp), dimension(1:num_fluids_max,3) :: perturb_dens_offset
     end type simplex_noise_params
+
+    !> An index-space rectangle in global cell indices. In v1, one t_box = one rank's subdomain. Flat leaf: no allocatable/pointer
+    !! components, host-only, never namelist/broadcast.
+    type t_box
+        integer :: lo(3)  !< global low cell index per axis (x,y,z)
+        integer :: hi(3)  !< global high cell index per axis
+    end type t_box
 end module m_derived_types

@@ -11,6 +11,7 @@ DOCS = [
     "docs/documentation/gpuParallelization.md",
     "docs/documentation/running.md",
     "docs/documentation/case.md",
+    "docs/documentation/amr.md",
     "docs/documentation/equations.md",
     "docs/documentation/testing.md",
     "docs/documentation/getting-started.md",
@@ -435,7 +436,9 @@ def check_physics_docs_coverage(repo_root: Path) -> list[str]:
         "check_bc_patches",  # boundary patch geometry
         "check_grid_stretching",  # grid stretching parameters
         "check_qbmm_pre_process",  # QBMM pre-process settings
-        "check_probe_integral_output",  # probe/integral output settings
+        "check_sfc_partition",  # tile-size divide-by-zero guard (no physics meaning)
+        "check_load_balance",  # I/O and rank-count infrastructure guard (no physics meaning)
+        "check_probe_output",  # probe output settings
         "check_finite_difference",  # fd_order value validation
         "check_flux_limiter",  # output dimension requirements
         "check_liutex_post",  # output dimension requirements
@@ -453,7 +456,6 @@ def check_physics_docs_coverage(repo_root: Path) -> list[str]:
         "check_body_forces",
         "check_continuum_damage",
         "check_grcbc",
-        "check_hyperelasticity",
         "check_interface_compression",
         "check_ibm",
         "check_igr_simulation",
