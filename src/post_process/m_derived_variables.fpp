@@ -107,7 +107,8 @@ contains
                         ! JWL closure sound speed (squared here; the shared sqrt below recovers c).
                         lambda_jwl = 1._wp
                         if (jwl_reactive) lambda_jwl = min(max(q_prim_vf(eqn_idx%rxn)%sf(i, j, k), 0._wp), 1._wp)
-                        call s_jwl_mix_sound_speed(rho_sf(i, j, k), q_prim_vf(eqn_idx%E)%sf(i, j, k), q_prim_vf(jwl_idx)%sf(i, j, k)/max(rho_sf(i, j, k), sgm_eps), jwl_idx, q_sf(i, j, k), lambda_jwl)
+                        call s_jwl_mix_sound_speed(rho_sf(i, j, k), q_prim_vf(eqn_idx%E)%sf(i, j, k), q_prim_vf(jwl_idx)%sf(i, j, &
+                                                   & k)/max(rho_sf(i, j, k), sgm_eps), jwl_idx, q_sf(i, j, k), lambda_jwl)
                         q_sf(i, j, k) = q_sf(i, j, k)**2._wp
                     else if (alt_soundspeed .neqv. .true.) then
                         q_sf(i, j, k) = (((gamma_sf(i, j, k) + 1._wp)*q_prim_vf(eqn_idx%E)%sf(i, j, k) + pi_inf_sf(i, j, &

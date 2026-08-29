@@ -492,11 +492,14 @@ contains
                                                    & pb_IP, mv_IP, nmom_IP, b_IP=b_IP, lam_IP=lam_IP)
                 else if (qbmm .and. .not. polytropic) then
                     call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, r_IP, v_IP, &
-                                                   & pb_IP, mv_IP, nmom_IP, pb_in, mv_in, presb_IP, massv_IP, b_IP=b_IP, lam_IP=lam_IP)
+                                                   & pb_IP, mv_IP, nmom_IP, pb_in, mv_in, presb_IP, massv_IP, b_IP=b_IP, &
+                                                   & lam_IP=lam_IP)
                 else if (chemistry) then
-                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, Ys_IP=Ys_IP, b_IP=b_IP, lam_IP=lam_IP)
+                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, Ys_IP=Ys_IP, &
+                                                   & b_IP=b_IP, lam_IP=lam_IP)
                 else
-                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, b_IP=b_IP, lam_IP=lam_IP)
+                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, b_IP=b_IP, &
+                                                   & lam_IP=lam_IP)
                 end if
 
                 ! Injecting (burning) surface: replace the mirrored ghost composition with pure

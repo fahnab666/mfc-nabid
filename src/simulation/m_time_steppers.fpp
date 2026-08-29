@@ -962,8 +962,8 @@ contains
         real(wp), dimension(2) :: Re       !< Cell-avg. Reynolds numbers
         real(wp)               :: max_dt
         real(wp)               :: dt_local
-        integer                :: j, k, l     !< Generic loop iterators
-        integer                :: fl          !< Fluid loop iterator
+        integer                :: j, k, l  !< Generic loop iterators
+        integer                :: fl       !< Fluid loop iterator
 
         if (.not. igr) then
             call s_convert_conservative_to_primitive_variables(q_cons_ts(1)%vf, q_T_sf, q_prim_vf, idwint)

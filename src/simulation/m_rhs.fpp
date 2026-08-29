@@ -1873,8 +1873,8 @@ contains
                     do k = 0, n
                         do j = 0, m
                             rhs_vf(eqn_idx%abn)%sf(j, k, l) = rhs_vf(eqn_idx%abn)%sf(j, k, &
-                                   & l) + 1._wp/dx(j)*q_prim_vf(eqn_idx%abn)%sf(j, k, l)*(flux_src_rsx_vf(j, k, &
-                                   & l, eqn_idx%adv%beg) - flux_src_rsx_vf(j - 1, k, l, eqn_idx%adv%beg))
+                                   & l) + 1._wp/dx(j)*q_prim_vf(eqn_idx%abn)%sf(j, k, l)*(flux_src_rsx_vf(j, k, l, &
+                                   & eqn_idx%adv%beg) - flux_src_rsx_vf(j - 1, k, l, eqn_idx%adv%beg))
                         end do
                     end do
                 end do
@@ -1887,8 +1887,8 @@ contains
                     do k = 0, n
                         do j = 0, m
                             rhs_vf(eqn_idx%rxn)%sf(j, k, l) = rhs_vf(eqn_idx%rxn)%sf(j, k, &
-                                   & l) + 1._wp/dx(j)*q_prim_vf(eqn_idx%rxn)%sf(j, k, l)*(flux_src_rsx_vf(j, k, &
-                                   & l, eqn_idx%adv%beg) - flux_src_rsx_vf(j - 1, k, l, eqn_idx%adv%beg))
+                                   & l) + 1._wp/dx(j)*q_prim_vf(eqn_idx%rxn)%sf(j, k, l)*(flux_src_rsx_vf(j, k, l, &
+                                   & eqn_idx%adv%beg) - flux_src_rsx_vf(j - 1, k, l, eqn_idx%adv%beg))
                         end do
                     end do
                 end do
@@ -2081,8 +2081,8 @@ contains
                     do k = 0, n
                         do j = 0, m
                             rhs_vf(eqn_idx%abn)%sf(j, k, l) = rhs_vf(eqn_idx%abn)%sf(j, k, &
-                                   & l) + 1._wp/dz(l)*q_prim_vf(eqn_idx%abn)%sf(j, k, l)*(flux_src_rsx_vf(j, k, &
-                                   & l, eqn_idx%adv%beg) - flux_src_rsx_vf(j, k, l - 1, eqn_idx%adv%beg))
+                                   & l) + 1._wp/dz(l)*q_prim_vf(eqn_idx%abn)%sf(j, k, l)*(flux_src_rsx_vf(j, k, l, &
+                                   & eqn_idx%adv%beg) - flux_src_rsx_vf(j, k, l - 1, eqn_idx%adv%beg))
                         end do
                     end do
                 end do
@@ -2095,8 +2095,8 @@ contains
                     do k = 0, n
                         do j = 0, m
                             rhs_vf(eqn_idx%rxn)%sf(j, k, l) = rhs_vf(eqn_idx%rxn)%sf(j, k, &
-                                   & l) + 1._wp/dz(l)*q_prim_vf(eqn_idx%rxn)%sf(j, k, l)*(flux_src_rsx_vf(j, k, &
-                                   & l, eqn_idx%adv%beg) - flux_src_rsx_vf(j, k, l - 1, eqn_idx%adv%beg))
+                                   & l) + 1._wp/dz(l)*q_prim_vf(eqn_idx%rxn)%sf(j, k, l)*(flux_src_rsx_vf(j, k, l, &
+                                   & eqn_idx%adv%beg) - flux_src_rsx_vf(j, k, l - 1, eqn_idx%adv%beg))
                         end do
                     end do
                 end do

@@ -146,6 +146,10 @@ module m_amr
     !! where each node's whole signature lands on every rank. Under S3.2's sparse per-depth exchange a rank touches only the shared
     !! nodes its own subdomain OVERLAPS, so these count that subset -- the quantity that has to be sublinear in P for W4.
     integer(8) :: amr_cl_me_nodes_r = 0, amr_cl_me_rb_r = 0
+    !> S3.2b-2b: bytes this rank ACTUALLY received settling the clustering tree -- the wide batch (which every rank receives in
+    !! full) plus only the narrow slices addressed to it. amr_cl_me_rb_r is a PREDICTION of what scoping should cost; this is the
+    !! measurement, and the two agreeing is what says the exchange delivers what the design claims.
+    integer(8) :: amr_cl_wire_r = 0
     !> TRACK T (T0b gate): regrid migration volume. An old block is ISENT to EVERY new-owner rank whose box overlaps it, so the cost
     !! is fan-out x block bytes, not one send per block. amr_mig_blk counts blocks that had to move at all, amr_mig_snd counts the
     !! sends, amr_gb_mig the bytes. fan-out = snd/blk is the reducible quantity: if it is ~1 the volume is inherent and hysteresis
@@ -155,8 +159,11 @@ module m_amr
     public :: amr_cl_maxdep, amr_cl_maxdep_leaf, amr_cl_lmax, amr_cl_ldepth, amr_cl_nodes, amr_cl_rb, amr_cl_rb_now
     public :: amr_cl_shr_nodes, amr_cl_shr_rb, amr_cl_loc_nodes, amr_cl_loc_rb, amr_cl_shr_maxdep
     public :: amr_cl_shr_nodes_r, amr_cl_shr_rb_r, amr_cl_loc_nodes_r, amr_cl_loc_rb_r, amr_cl_shr_maxdep_r
-    public :: amr_cl_me_nodes_r, amr_cl_me_rb_r
+    public :: amr_cl_me_nodes_r, amr_cl_me_rb_r, amr_cl_wire_r
     public :: s_amr_ranks_overlapping  !< exported for the S3.2a scope measurement in m_amr_regrid
+    public :: f_amr_overlap_count, f_amr_rank_overlaps  !< S3.2b-2b: node width and membership without the O(P) enumeration
+    public :: amr_my_blk, amr_n_my, s_amr_refresh_my_blocks  !< S3.3c: the regrid pass-1 scan needs the owned-block list too
+    public :: s_amr_fw_szi  !< S3.2b-2: the clusterer's per-depth signature batch grows with the same doubling helper
     public :: amr_gb_mig, amr_mig_snd, amr_mig_blk
     integer :: amr_loc_nfree = 0  !< depth of the recycle stack
 
@@ -191,7 +198,13 @@ module m_amr
     !! docs/documentation/amr_block_batching.md). One block-shaped scalar_field array bridges instead: load it from the store, call,
     !! store it back. All four dummies are intent(inout) - s_compute_rhs writes the buffer region through
     !! s_populate_variables_buffers - so BOTH directions are required at every crossing.
+    !> DEVICE-DECLARED because `@:ALLOCATE` expands to `allocate` FOLLOWED BY `GPU_ENTER_DATA(create=)`, i.e. an `omp target enter
+    !! data map` on the variable itself. Mapping a module allocatable that was never `declare target` has no device descriptor to
+    !! attach to: Cray CCE aborts at runtime with `lib-4425 UNRECOVERABLE library error: Unitialized descriptor for ALLOCATE
+    !! statement argument`, while amdflang's runtime tolerates it and creates the mapping implicitly. Every other `@:ALLOCATE`d
+    !! module array here is declared the same way.
     type(scalar_field), allocatable :: amr_cons_br(:)
+    $:GPU_DECLARE(create='[amr_cons_br]')
     !> Batched-bridge geometry. amr_br_w is one block's buffered k-width; block loc of a batch sits at k-offset (loc-1)*amr_br_w,
     !! carrying its own ghost shell, so consecutive blocks are separated by TWO ghost shells and no block's stencil can reach
     !! another's interior - the property the batched advance's correctness rests on.
@@ -202,6 +215,9 @@ module m_amr
     !! libomptarget retention plateau). Same shared-scratch pattern as amr_rhs_pb_f/amr_cg. L0 tile slots are the exception and keep
     !! per-slot arrays (see s_amr_alloc_slot).
     type(scalar_field), allocatable :: amr_scr_prim(:), amr_scr_rhs(:)
+    !> Device-declared for the same reason as amr_cons_br above: `@:ALLOCATE` issues a target enter-data map, which needs a
+    !! declare-target descriptor to attach to. `amr_scr_prim` is where Frontier's CCE build aborted (m_amr.fpp:8379).
+    $:GPU_DECLARE(create='[amr_scr_prim, amr_scr_rhs]')
     !> True only while the REGRID path is inside s_amr_gather_coarse_patch, so the WAITALL bracket attributes to rb:wait rather than
     !! mixing in the per-step gather that shares this routine.
     logical :: amr_rg_gather = .false.
@@ -230,8 +246,11 @@ module m_amr
     !! cannot use m_amr); it is use-associated here and re-exported, so importers of m_amr are unchanged.
     !! per-family plan message tag bases (families F1..F7, amr_plan_based_exchange.md): amr_max_blocks + 100*f keeps
     !! the plan tag space disjoint from the legacy per-box space (tags in [1..amr_max_blocks]) while families convert;
-    !! the epoch is folded in as base + mod(amr_mesh_epoch, 100). The init MPI_TAG_UB assert is the scale tripwire: it caps
-    !! GLOBAL blocks near 2**21/1 ~ 2.1e6, i.e. about 28k ranks at ~75 boxes/rank, which is the SECOND scaling wall after W4.
+    !! the epoch is folded in as base + mod(amr_mesh_epoch, 100). The init MPI_TAG_UB assert is the scale tripwire, and its
+    !! headroom is an implementation property that must be MEASURED, not assumed: this comment previously asserted a 2**21 ceiling
+    !! (~2.1e6 blocks, ~28k ranks) and called it the second scaling wall after W4. Measured 2026-08-28: Open MPI 4.1.8 reports
+    !! MPI_TAG_UB = 2**31 - 1 and Frontier's Cray MPICH reports 2**29 - 1 = 536870911, i.e. ~537e6 global blocks or ~7.2e6 ranks at
+    !! ~75 boxes/rank -- about 95x headroom over Frontier's ~75k GCDs. So the tag space is NOT a wall on either MPI we target.
     !! The amr_max_blocks term can only go once NO family uses per-box tags. Verified 2026-08-27: 19 of 41 AMR p2p call sites
     !! still tag per box (F1's unconverted path uses amr_cur, migration uses the column index), and the subcycle sites are an
     !! EXPLICIT deferral to increment I8, not I7 -- I7's own boundary is that any family left per-box keeps its tables.
@@ -243,6 +262,19 @@ module m_amr
     !! their owner skip), so iterating a list reproduces the replaced per-call 0..num_procs-1 scan's MPI send/recv order exactly.
     !> (max-overlap, amr_max_blocks); sized in s_amr_build_seam_pairs
     integer, allocatable :: amr_ovl_gather(:,:), amr_ovl_scatter(:,:)
+    !> W1a: the block indices THIS rank owns, ascending. The stage-path waves used to scan the whole GLOBAL block list (`do k = 1,
+    !! amr_num_blocks`) and filter to their own ~75 -- ~48 such scans per step under RK3, so ~360 M predicate evaluations per rank
+    !! per step at 1e5 ranks, linear in P while the real work is fixed. Iterating this list instead is O(local). Built ASCENDING in
+    !! s_amr_assign_block_owners, which is the single authority for ownership (regrid, init and both restart paths all route through
+    !! it), so skipping the non-owned blocks a converted loop would have `cycle`d anyway leaves the iteration ORDER identical --
+    !! which the paired MPI_SENDRECVs depend on.
+    integer, allocatable :: amr_my_blk(:)
+    integer              :: amr_n_my = 0
+    !> Set wherever amr_block_owner is WRITTEN. s_amr_assign_block_owners is NOT the only writer -- a tiled level-2 block inherits
+    !! its parent's owner (s_amr_add_l2_tile), and the restart/migration paths assign directly -- so a list built only in the
+    !! assigner goes stale and a converted loop then visits the wrong blocks. Caught by the tiled-L2 multi-level dynamic-regrid
+    !! golden, which is the one test that exercises the inherit path.
+    logical              :: amr_myblk_dirty = .true.
     integer, allocatable :: amr_ovl_gather_n(:), amr_ovl_scatter_n(:)  !< per-block list lengths
     !> Rebuild gather PLAN (gather-batching step 1): the whole rebuild's gather message set, derived up front by
     !! s_amr_build_gather_plan from the replicated caches. Per level-1 slot: contributor count/ranks/message sizes (owner excluded,
@@ -2292,6 +2324,22 @@ contains
 
     end subroutine s_amr_ranks_overlapping
 
+    !> S3.2b-2b: does rank r's subdomain overlap coarse box [blo:bhi]? Answers membership WITHOUT enumerating the overlap set, which
+    !! s_amr_ranks_overlapping must do and which costs O(num_procs) writes on a box spanning the machine -- the clusterer asks this
+    !! of every node it walks, the root included, so the enumeration was itself an O(P) term.
+    pure logical function f_amr_rank_overlaps(blo, bhi, r) result(hit)
+
+        integer, intent(in) :: blo(3), bhi(3), r
+        integer             :: clo(3), chi(3), c(3)
+
+        call s_amr_coord_range(blo, bhi, clo, chi)
+        c(1) = r/(num_procs_y*num_procs_z)  ! same coord -> rank map the enumeration uses: r = cx*(Py*Pz) + cy*Pz + cz
+        c(2) = mod(r/num_procs_z, num_procs_y)
+        c(3) = mod(r, num_procs_z)
+        hit = all(c >= clo) .and. all(c <= chi)
+
+    end function f_amr_rank_overlaps
+
     !> Overlap count only (allocation sizing), = product of the per-dim coord-range widths.
     pure integer function f_amr_overlap_count(blo, bhi) result(nr)
 
@@ -2773,7 +2821,13 @@ contains
                         call MPI_IRECV(freg(${D}$)%lo(:,:,:,amr_reg_cur), cnt, mpi_p, amr_block_owner(k), tq, MPI_COMM_WORLD, &
                                        & amr_fw_req(nreq), ierr)
 #ifdef MFC_DEBUG
-                    else
+                        ! amr_reg_cur is 0 when this rank holds NO register for the block (s_amr_select_slot's unmapped
+                        ! sentinel). There is then no buffer to poison, and nothing that could read one. Only this DEBUG
+                        ! branch ever met that case -- the receives above are posted under s_lo/s_hi, which are false for a
+                        ! block this rank has no register for -- so release builds never indexed freg with 0 and only the
+                        ! reldebug lane failed, with `Index '0' of dimension 4 of array 'freg'` (Intel reported the same
+                        ! defect as `corrupted size vs. prev_size`). Predates the S3.2b/S3.3c work: reproduced at dc27e4a6~1.
+                    else if (amr_reg_cur > 0) then
                         freg(${D}$)%lo(:,:,:,amr_reg_cur) = nanv
                         $:GPU_UPDATE(device='[freg(' + str(D) + ')%lo(:, :, :, amr_reg_cur)]')
 #endif
@@ -2786,7 +2840,7 @@ contains
                         call MPI_IRECV(freg(${D}$)%hi(:,:,:,amr_reg_cur), cnt, mpi_p, amr_block_owner(k), tq, MPI_COMM_WORLD, &
                                        & amr_fw_req(nreq), ierr)
 #ifdef MFC_DEBUG
-                    else
+                    else if (amr_reg_cur > 0) then
                         freg(${D}$)%hi(:,:,:,amr_reg_cur) = nanv
                         $:GPU_UPDATE(device='[freg(' + str(D) + ')%hi(:, :, :, amr_reg_cur)]')
 #endif
@@ -2958,7 +3012,7 @@ contains
                         call MPI_IRECV(freg(${D}$)%lo(:,:,:,amr_reg_cur), cnt, mpi_p, cowner, tq, MPI_COMM_WORLD, &
                                        & amr_fw_req(nreq), ierr)
 #ifdef MFC_DEBUG
-                    else
+                    else if (amr_reg_cur > 0) then
                         freg(${D}$)%lo(:,:,:,amr_reg_cur) = nanv
                         $:GPU_UPDATE(device='[freg(' + str(D) + ')%lo(:, :, :, amr_reg_cur)]')
 #endif
@@ -2971,7 +3025,7 @@ contains
                         call MPI_IRECV(freg(${D}$)%hi(:,:,:,amr_reg_cur), cnt, mpi_p, cowner, tq, MPI_COMM_WORLD, &
                                        & amr_fw_req(nreq), ierr)
 #ifdef MFC_DEBUG
-                    else
+                    else if (amr_reg_cur > 0) then
                         freg(${D}$)%hi(:,:,:,amr_reg_cur) = nanv
                         $:GPU_UPDATE(device='[freg(' + str(D) + ')%hi(:, :, :, amr_reg_cur)]')
 #endif
@@ -3232,6 +3286,27 @@ contains
     !! concentrating IB or phase-change work weigh more than equal-size quiescent ones. The cost vector is allreduced (one
     !! collective; every rank must call this), after which the assignment is deterministic and identical on every rank.
     !! s_set_amr_fine_geometry applies it as amr_rank_owns_block = (amr_block_owner(amr_cur) == proc_rank).
+    !> W1a: refresh the owned-block list if any owner write has happened since the last refresh. Rebuilt lazily rather than in
+    !! s_amr_assign_block_owners because that routine is NOT the only writer of amr_block_owner.
+    impure subroutine s_amr_refresh_my_blocks()
+
+        integer :: b
+
+        if (.not. amr_myblk_dirty) return
+        if (allocated(amr_my_blk)) then
+            if (size(amr_my_blk) < amr_max_blocks) deallocate (amr_my_blk)
+        end if
+        if (.not. allocated(amr_my_blk)) allocate (amr_my_blk(amr_max_blocks))
+        amr_n_my = 0
+        do b = 1, amr_num_blocks
+            if (amr_block_owner(b) /= proc_rank) cycle
+            amr_n_my = amr_n_my + 1
+            amr_my_blk(amr_n_my) = b
+        end do
+        amr_myblk_dirty = .false.
+
+    end subroutine s_amr_refresh_my_blocks
+
     impure subroutine s_amr_assign_block_owners()
 
         integer :: k, a, lev, maxlev, na
@@ -3291,7 +3366,7 @@ contains
             if (na < 1) cycle
             call s_amr_sfc_cut(akey, awt, na, amr_fine_cut(:,lev), aown)
             do a = 1, na
-                amr_block_owner(aidx(a)) = aown(a)
+                amr_block_owner(aidx(a)) = aown(a); amr_myblk_dirty = .true.
             end do
             if (lev == 1 .and. l0_slot_off == 0) amr_owner_cut = amr_fine_cut(:,1)
         end do
@@ -3848,7 +3923,7 @@ contains
             & // '(2*L0-extent > amr_maxc_fit); static multi-level does not tile the level-2 block - use a smaller base amr ' &
             & // 'block or the dynamic regrid path (amr_regrid_int > 0)')
         amr_block_level(L2) = 2
-        amr_block_owner(L2) = amr_block_owner(par)
+        amr_block_owner(L2) = amr_block_owner(par); amr_myblk_dirty = .true.
         amr_num_blocks = L2; amr_num_levels = 2
         call s_amr_reconcile_slots()
         amr_cur = L2
@@ -4134,7 +4209,7 @@ contains
         integer, intent(in) :: lev
 
 #ifdef MFC_MPI
-        integer :: k, pblk, cowner, powner, rr, nchild, dj_hi, dk_hi, ierr, ip, idx, r, cnt, boff, qbase, nreq, tq
+        integer :: k, pblk, cowner, powner, rr, nchild, dj_hi, dk_hi, ierr, ip, idx, r, cnt, boff, qbase, nreq, tq, kk
         integer :: plo(3), phi(3)
 
         rr = amr_ref_ratio
@@ -4148,10 +4223,11 @@ contains
         end if
         ! send plan + co-located folds (child-owner side)
         amr_fw_snx = 0; amr_fw_snp = 0
-        do k = 1, amr_num_blocks
+        call s_amr_refresh_my_blocks()
+        do kk = 1, amr_n_my
+            k = amr_my_blk(kk)
             if (amr_block_level(k) /= lev) cycle
             cowner = amr_block_owner(k)
-            if (proc_rank /= cowner) cycle
             pblk = f_amr_parent_block(k)
             powner = amr_block_owner(pblk)
             call s_amr_parent_foot(k, pblk, plo, phi)
@@ -4289,7 +4365,7 @@ contains
         type(scalar_field), dimension(sys_size), intent(inout) :: coarse_tgt
 
 #ifdef MFC_MPI
-        integer :: k, owner, rr, nchild, dj_hi, dk_hi, ierr, ip, idx, r, cnt, boff, qbase, nreq, tq, o1, o2, o3, cur
+        integer :: k, owner, rr, nchild, dj_hi, dk_hi, ierr, ip, idx, r, cnt, boff, qbase, nreq, tq, o1, o2, o3, cur, kk
         integer :: rlo(3), rhi(3), ilo(3), ihi(3), milo(3), mihi(3), bl(3), bh(3)
 
         tq = amr_tag_base(7) + 50 + int(mod(amr_mesh_epoch, 50_8))
@@ -4306,9 +4382,10 @@ contains
         call s_amr_rank_interior(proc_rank, milo, mihi)
         ! send plan (block-owner side): the same (interior x region) covered slabs the per-box path sent, k-grouped
         amr_fw_snx = 0; amr_fw_snp = 0
-        do k = 1, amr_num_blocks
+        call s_amr_refresh_my_blocks()
+        do kk = 1, amr_n_my
+            k = amr_my_blk(kk)
             if (amr_block_level(k) /= 1) cycle
-            if (amr_block_owner(k) /= proc_rank) cycle
             rlo = 0; rhi = 0
             rlo(1) = amr_region_lo_all(1, k); rhi(1) = amr_region_hi_all(1, k)
             if (n_glb > 0) then; rlo(2) = amr_region_lo_all(2, k); rhi(2) = amr_region_hi_all(2, k); end if
@@ -4403,9 +4480,10 @@ contains
         ! block's (cyl_coord) radii push must immediately precede that block's overwrite/pack kernels; the transfer list is
         ! k-grouped by construction, so a monotone cursor drains each block's sends inside its group
         cur = 1
-        do k = 1, amr_num_blocks
+        call s_amr_refresh_my_blocks()
+        do kk = 1, amr_n_my
+            k = amr_my_blk(kk)
             if (amr_block_level(k) /= 1) cycle
-            if (amr_block_owner(k) /= proc_rank) cycle
             rr = amr_slots(k)%amr_ref_ratio
             nchild = rr; if (n_glb > 0) nchild = nchild*rr; if (p_glb > 0) nchild = nchild*rr
             dj_hi = merge(rr - 1, 0, n_glb > 0); dk_hi = merge(rr - 1, 0, p_glb > 0)
@@ -6753,7 +6831,7 @@ contains
         type(scalar_field), dimension(sys_size), intent(inout) :: q_cons_coarse
         real(stp), dimension(:,:,:,:,:), intent(inout) :: pb_in, mv_in
         logical :: do_pbmv
-        integer :: k, r, idx, ix, ip, owner, o1, o2, o3, qsz, psz, cellsz, tq, tp, nreq, qbase, pbase, ierr
+        integer :: k, r, idx, ix, ip, owner, o1, o2, o3, qsz, psz, cellsz, tq, tp, nreq, qbase, pbase, ierr, kk
         integer :: v1hi, v2hi, v3hi, plo(3), phi(3), crlo(3), crhi(3), bl(3), bh(3), boff
         integer :: clo(3), chi(3), nsh, msl, isl, scells
         integer :: shb1(6), she1(6), shb2(6), she2(6), shb3(6), she3(6), tb1(6), te1(6), tb2(6), te2(6), tb3(6), te3(6)
@@ -6858,9 +6936,10 @@ contains
         ! RECV side: for every level-1 box I own, each listed contributor's slice (owner excluded - the own box is a device
         ! copy at consume). Both sides enumerate boxes ascending with per-rank running offsets, so the offsets agree.
         amr_fw_rnx = 0; amr_fw_rnp = 0
-        do k = 1, amr_num_blocks
+        call s_amr_refresh_my_blocks()
+        do kk = 1, amr_n_my
+            k = amr_my_blk(kk)
             if (amr_block_level(k) /= 1) cycle
-            if (amr_block_owner(k) /= proc_rank) cycle
             plo(1) = amr_region_lo_all(1, k) - amr_cpat_mar; plo(2) = 0; plo(3) = 0
             if (n_glb > 0) plo(2) = amr_region_lo_all(2, k) - amr_cpat_mar
             if (p_glb > 0) plo(3) = amr_region_lo_all(3, k) - amr_cpat_mar
@@ -7103,7 +7182,7 @@ contains
     impure subroutine s_amr_parent_fill_wave(lev)
 
         integer, intent(in) :: lev
-        integer             :: k, r, ix, ip, pblk, powner, cowner, boxsz, tq, nreq, qbase, ierr
+        integer             :: k, r, ix, ip, pblk, powner, cowner, boxsz, tq, nreq, qbase, ierr, kk
         integer             :: w1, w2, w3, plo(3), phi(3), boff, bl(3), bh(3)
         integer             :: msl, isl
         integer             :: tb1(6), te1(6), tb2(6), te2(6), tb3(6), te3(6)
@@ -7173,9 +7252,10 @@ contains
         ! one full-patch transfer under the pbmv contract). Both sides enumerate boxes ascending, slabs in the fixed
         ! s_amr_parent_shell order, with per-rank running offsets, so the wire layout agrees with no metadata exchange.
         amr_fw_rnx = 0; amr_fw_rnp = 0
-        do k = 1, amr_num_blocks
+        call s_amr_refresh_my_blocks()
+        do kk = 1, amr_n_my
+            k = amr_my_blk(kk)
             if (amr_block_level(k) /= lev) cycle
-            if (amr_block_owner(k) /= proc_rank) cycle
             pblk = f_amr_parent_block(k)
             powner = amr_block_owner(pblk)
             if (powner == proc_rank) cycle
@@ -8072,9 +8152,10 @@ contains
         !> device-native staging doubles the array's device footprint transiently; above this many old columns, fall back to the
         !! host round trip (device peak max(old, new)). 32 covers the startup/early-regrid growth events whose round trips dominated
         !! short runs, while near-limit late growth keeps the OOM-safe path.
-        integer, parameter     :: amr_grow_dev_cap = 32
-        logical                :: want(4)
-        real(stp), allocatable :: tmp(:,:,:,:,:), hstage(:,:,:,:,:)
+        integer, parameter              :: amr_grow_dev_cap = 32
+        logical                         :: want(4)
+        real(stp), allocatable          :: tmp(:,:,:,:,:), hstage(:,:,:,:,:)
+        type(scalar_field), allocatable :: tmp_br(:)  !< CCE descriptor workaround, see below
 
         ! CONTRACT: the store is DEVICE-authoritative at every call; growth preserves the DEVICE contents only, and the host
         ! mirror comes out of a growth UNDEFINED (host readers pull per slot before reading - the store's normal state between
@@ -8177,7 +8258,10 @@ contains
         ! whole batch instead of one block; it rides the same pool lifetime and is rebuilt only if the window changes
         amr_br_w = mbuf3_hi - mbuf3_lo + 1
         if (.not. allocated(amr_cons_br)) then
-            @:ALLOCATE(amr_cons_br(1:sys_size))
+            ! Same CCE descriptor defect as amr_cg / amr_scr_prim: a bare module-scope derived-type allocatable must be given a
+            ! valid descriptor by allocating a LOCAL and handing it over with move_alloc, then mapped.
+            allocate (tmp_br(1:sys_size)); call move_alloc(tmp_br, amr_cons_br)
+            $:GPU_ENTER_DATA(create='[amr_cons_br]')
             do i = 1, sys_size
                 @:ALLOCATE(amr_cons_br(i)%sf(mbuf1_lo:mbuf1_hi, mbuf2_lo:mbuf2_hi, mbuf3_lo:mbuf3_lo + amr_br_batch*amr_br_w - 1))
                 @:ACC_SETUP_SFs(amr_cons_br(i))
@@ -8209,7 +8293,7 @@ contains
     !! properties, velocity + dynamic pressure, and pressure. Change the conversion and this must follow.
     impure subroutine s_amr_convert_prim_batch()
 
-        integer :: g, loc, i, j, k, l
+        integer :: g, loc, i, j, k, l, gg
         integer :: nl, nv, b1l, b1h, b2l, b2h, b3l, b3h
 
         #:if USING_AMD and not MFC_CASE_OPTIMIZATION
@@ -8225,9 +8309,10 @@ contains
         if (amr_loc_n == 0) return
         call s_phase_tic(PH_CVTB)
         amr_bt_on(1:amr_loc_n) = .false.
-        do g = 1, amr_num_blocks
+        call s_amr_refresh_my_blocks()
+        do gg = 1, amr_n_my
+            g = amr_my_blk(gg)
             if (amr_block_level(g) < 1) cycle
-            if (amr_block_owner(g) /= proc_rank) cycle
             loc = amr_loc_of(g)
             if (loc <= 0) cycle
             amr_bt_on(loc) = .true.
@@ -8344,11 +8429,18 @@ contains
     !! allocation would undersize the scratch). rhs mirrors the per-slot igr widening.
     impure subroutine s_amr_scr_init()
 
-        integer :: i
+        integer                         :: i
+        type(scalar_field), allocatable :: tmp_p(:), tmp_r(:)
 
         if (allocated(amr_scr_prim)) return
-        @:ALLOCATE(amr_scr_prim(1:sys_size))
-        @:ALLOCATE(amr_scr_rhs(1:sys_size))
+        ! CCE OpenMP-offload leaves a bare module-scope derived-type allocatable's descriptor uninitialized, so a direct
+        ! allocate here aborts with `lib-4425 INTERNAL ERROR-Unitialized descriptor for ALLOCATE statement argument`. Same
+        ! defect, same workaround as amr_cg above: allocate a LOCAL, which gets a valid descriptor, then hand it over with
+        ! move_alloc and map afterwards. Verified on Frontier 2026-08-28 -- the abort was here, with sys_size and the mbuf
+        ! bounds all sane, on the HOST allocate rather than the device map. GPU_DECLARE alone does NOT avoid it.
+        allocate (tmp_p(1:sys_size)); call move_alloc(tmp_p, amr_scr_prim)
+        allocate (tmp_r(1:sys_size)); call move_alloc(tmp_r, amr_scr_rhs)
+        $:GPU_ENTER_DATA(create='[amr_scr_prim, amr_scr_rhs]')
         do i = 1, sys_size
             @:ALLOCATE(amr_scr_prim(i)%sf(mbuf1_lo:mbuf1_hi, mbuf2_lo:mbuf2_hi, mbuf3_lo:mbuf3_hi))
             if (igr) then
@@ -8876,7 +8968,7 @@ contains
                             tlo(3) = rsidx(3) + f_l0_lo(rext(3) + 1, nt(3), iz)
                             thi(3) = rsidx(3) + f_l0_lo(rext(3) + 1, nt(3), iz + 1) - 1
                         end if
-                        amr_block_owner(k) = r
+                        amr_block_owner(k) = r; amr_myblk_dirty = .true.
                         amr_tile_l0_owner(k) = r  ! L0 storage owner = init owner; stays fixed under migration
                         amr_owns_all(k) = (r == proc_rank)
                         amr_region_lo_all(:,k) = tlo; amr_region_hi_all(:,k) = thi
@@ -8907,7 +8999,7 @@ contains
             end do
             call s_amr_sfc_cut(tkey, twt, l0_ntiles_tot, amr_owner_cut, sfco)
             do kk = 1, l0_ntiles_tot
-                amr_block_owner(kk) = sfco(kk)
+                amr_block_owner(kk) = sfco(kk); amr_myblk_dirty = .true.
                 amr_owns_all(kk) = (sfco(kk) == proc_rank)
             end do
             ! allocate slot data for the tiles this rank COMPUTES (deferred from the cartesian loop above). s_l0_build_tile_slot
