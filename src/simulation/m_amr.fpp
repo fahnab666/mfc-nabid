@@ -120,6 +120,13 @@ module m_amr
     !! deleted that collective, so a nonzero value means the gather came back. amr_gb_win = the gwin-pair ALLGATHERVs (levels >= 2,
     !! still live -- S3.3), amr_gb_cost = the per-box cost ALLREDUCE.
     integer(8) :: amr_gb_tag = 0, amr_gb_win = 0, amr_gb_cost = 0
+    !> Bytes each rank RECEIVES from the two box-list ALLGATHERVs per regrid: the clusterer's accepted-box union (m_amr_regrid.fpp
+    !! `gbx(6,ntot)`) and the nesting pass's child list (`gch(7,ntot_ch)`). These are what keeps the block metadata replicated, and
+    !! they are O(GLOBAL BOXES) -- the "limit 3" that amr_per_level_distribution.md audited on 2026-07-31 and deferred with an
+    !! explicit bar: "do not trade that away without a measurement showing it binds". That doc priced limit 3 as MEMORY (5.6 MB/rank
+    !! at 1e5 boxes); this counter prices the GATHER that maintains it every regrid, which is the term that actually binds. Judge
+    !! the SLOPE across np, not the value.
+    integer(8) :: amr_gb_box = 0
     !> S3.0a/S3.0b instrumentation: shape and reduction cost of the Berger-Rigoutsos clustering tree (`s_amr_cluster`). Named
     !! amr_cl_ (clustering), NOT amr_br_ -- that prefix already means the batched BRIDGE in this module. Tree DEPTH decides whether
     !! S3 can fuse one collective per tree LEVEL; BR splits at signature holes, not midpoints, so the tree is not balanced by
@@ -155,7 +162,7 @@ module m_amr
     !! sends, amr_gb_mig the bytes. fan-out = snd/blk is the reducible quantity: if it is ~1 the volume is inherent and hysteresis
     !! buys nothing.
     integer(8) :: amr_gb_mig = 0, amr_mig_snd = 0, amr_mig_blk = 0
-    public :: amr_gb_tag, amr_gb_win, amr_gb_cost
+    public :: amr_gb_tag, amr_gb_win, amr_gb_cost, amr_gb_box
     public :: amr_cl_maxdep, amr_cl_maxdep_leaf, amr_cl_lmax, amr_cl_ldepth, amr_cl_nodes, amr_cl_rb, amr_cl_rb_now
     public :: amr_cl_shr_nodes, amr_cl_shr_rb, amr_cl_loc_nodes, amr_cl_loc_rb, amr_cl_shr_maxdep
     public :: amr_cl_shr_nodes_r, amr_cl_shr_rb_r, amr_cl_loc_nodes_r, amr_cl_loc_rb_r, amr_cl_shr_maxdep_r
@@ -2800,10 +2807,14 @@ contains
             ! apply's own_lo/own_hi + seam gates); the owner derives the same set per participant, so the pairing is
             ! exact with no metadata exchange. Debug arm: unreceived faces are NaN-flooded so any hidden reader aborts.
             call s_amr_reflux_faces_for(proc_rank, s_lo, s_hi)
+            ! W1: record the block. The apply pass below iterates THIS list rather than rescanning every block in the machine
+            ! to re-derive the same order -- an O(global blocks) walk that ran on every RK stage. Built unconditionally: it
+            ! used to sit inside `XA_NH > 0`, which is 0 in a release build, so the list existed only under the audit.
+            nhr = nhr + 1
+            call s_amr_fw_szi(amr_fw_rblk, nhr)
+            amr_fw_rblk(nhr) = k
             if (XA_NH > 0) then
-                nhr = nhr + 1
-                call s_amr_fw_szr(amr_fw_rq, XA_NH*nhr); call s_amr_fw_szi(amr_fw_rblk, nhr)
-                amr_fw_rblk(nhr) = k
+                call s_amr_fw_szr(amr_fw_rq, XA_NH*nhr)
                 nreq = nreq + 1
                 call s_amr_fw_szi(amr_fw_req, nreq); call s_amr_fw_szi(amr_fw_reqw, nreq)
                 amr_fw_reqw(nreq) = XA_NH
@@ -2934,15 +2945,12 @@ contains
 #endif
         end if
         call s_phase_tic(PH_RFRECV)
-        j = 0
-        do k = 1, amr_num_blocks
-            if (amr_block_level(k) /= 1) cycle
+        ! W1: the post pass recorded exactly the blocks this rank receives, in this order, so iterate that list. The
+        ! ASSERT this replaces checked that a second global scan re-derived the same order; that now holds by construction.
+        do j = 1, nhr
+            k = amr_fw_rblk(j)
             call s_amr_select_slot(k)
-            if (amr_block_owner(k) == proc_rank) cycle
-            if (.not. f_amr_reflux_participates(proc_rank)) cycle
             if (XA_NH > 0) then
-                j = j + 1
-                @:ASSERT(amr_fw_rblk(j) == k, "reflux-faces wave: header slot order broke")
                 call s_xa_hdr_check(amr_fw_rq(XA_NH*(j - 1) + 1:XA_NH*j), XA_F5W_FACE_SND, k, [0, 0, 0], [0, 0, 0])
             end if
             ! push only the received faces; an unreceived face keeps its device content (never applied here - and
@@ -2992,10 +3000,12 @@ contains
             ! s_amr_sibling_face_weights on replicated metadata. Debug arm: skipped-face mirrors are NaN-flooded so any
             ! OTHER consumer of an unshipped face aborts within the step.
             call s_amr_sibling_face_weights(k, pblk, w_lo, w_hi)
+            ! W1: same as the faces wave -- record the block so the apply pass need not rescan the machine's block list
+            nhr = nhr + 1
+            call s_amr_fw_szi(amr_fw_rblk, nhr)
+            amr_fw_rblk(nhr) = k
             if (XA_NH > 0) then
-                nhr = nhr + 1
-                call s_amr_fw_szr(amr_fw_rq, XA_NH*nhr); call s_amr_fw_szi(amr_fw_rblk, nhr)
-                amr_fw_rblk(nhr) = k
+                call s_amr_fw_szr(amr_fw_rq, XA_NH*nhr)
                 nreq = nreq + 1
                 call s_amr_fw_szi(amr_fw_req, nreq); call s_amr_fw_szi(amr_fw_reqw, nreq)
                 amr_fw_reqw(nreq) = XA_NH
@@ -3098,16 +3108,13 @@ contains
             call MPI_WAITALL(nreq, amr_fw_req, MPI_STATUSES_IGNORE, ierr)
 #endif
         end if
-        j = 0
-        do k = 1, amr_num_blocks
-            if (amr_block_level(k) < 2) cycle
+        ! W1: iterate the recorded receive list, as the faces wave does
+        do j = 1, nhr
+            k = amr_fw_rblk(j)
             call s_amr_select_slot(k)
             pblk = f_amr_parent_block(k)
             cowner = amr_block_owner(k); powner = amr_block_owner(pblk)
-            if (cowner == powner .or. powner /= proc_rank) cycle
             if (XA_NH > 0) then
-                j = j + 1
-                @:ASSERT(amr_fw_rblk(j) == k, "freg wave: header slot order broke")
                 call s_xa_hdr_check(amr_fw_rq(XA_NH*(j - 1) + 1:XA_NH*j), XA_F5W_FREG_SND, k, [0, 0, 0], [0, 0, 0])
             end if
             ! push only the faces that shipped; a skipped face keeps its device content (dead under weight 0 - and
