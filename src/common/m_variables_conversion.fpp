@@ -96,16 +96,31 @@ contains
             ! Depending on model_eqns and bubbles_euler, the appropriate procedure for computing pressure is targeted by the
             ! procedure pointer
 
-            if (mhd) then
-                ! MHD pressure: subtract magnetic pressure from total energy
-                pres = (energy - dyn_p - pi_inf - qv - pres_mag)/gamma
-            else if (bubbles_euler .neqv. .true.) then
-                ! Gamma/pi_inf model or five-equation model (Allaire et al. JCP 2002): p from mixture EOS
-                pres = (energy - dyn_p - pi_inf - qv)/gamma
-            else
-                ! Bubble-augmented pressure with void fraction correction
-                pres = ((energy - dyn_p)/(1._wp - alf) - pi_inf - qv)/gamma
-            end if
+            #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                if ((jwl_idx > 0) .and. (.not. mhd) .and. (model_eqns == model_eqns_5eq) .and. (bubbles_euler .neqv. .true.)) then
+                    Y_jwl = 1._wp
+                    if (present(jwl_Y)) Y_jwl = jwl_Y
+                    lambda_jwl = 1._wp
+                    if (present(jwl_lambda)) lambda_jwl = jwl_lambda
+                    eint = energy - dyn_p
+                    e_sp = eint/max(rho, sgm_eps)
+                    ! Pressure only here; the sound speed is recomputed at the faces.
+                    call s_jwl_mix_state_er(rho, e_sp, Y_jwl, jwl_idx, pres, T, lambda=lambda_jwl)
+                else
+                #:endif
+                if (mhd) then
+                    ! MHD pressure: subtract magnetic pressure from total energy
+                    pres = (energy - dyn_p - pi_inf - qv - pres_mag)/gamma
+                else if (bubbles_euler .neqv. .true.) then
+                    ! Gamma/pi_inf model or five-equation model (Allaire et al. JCP 2002): p from mixture EOS
+                    pres = (energy - dyn_p - pi_inf - qv)/gamma
+                else
+                    ! Bubble-augmented pressure with void fraction correction
+                    pres = ((energy - dyn_p)/(1._wp - alf) - pi_inf - qv)/gamma
+                end if
+                #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                end if
+            #:endif
 
             if (hypoelasticity .and. present(G)) then
                 ! Subtract elastic strain energy before computing pressure (hypoelastic model)
@@ -901,6 +916,20 @@ contains
                             ! MHD energy includes magnetic pressure contribution
                             q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*q_prim_vf(eqn_idx%E)%sf(j, k, &
                                       & l) + dyn_pres + pres_mag + pi_inf + qv
+                            #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                            else if (jwl_idx > 0 .and. (model_eqns == model_eqns_5eq) .and. (bubbles_euler .neqv. .true.)) then
+                                ! JWL five-equation model: E = rho*e_mix(rho,p,Y) + 0.5*rho*|u|^2.
+                                ! Y = alpha_rho_j/rho from the primitive slot.
+                                block
+                                    real(wp) :: e_mix_jwl, Y_j, lambda_j
+                                    Y_j = q_prim_vf(jwl_idx)%sf(j, k, l)/max(rho, sgm_eps)
+                                    lambda_j = 1._wp
+                                    if (jwl_reactive) lambda_j = min(max(q_prim_vf(eqn_idx%rxn)%sf(j, k, l), 0._wp), 1._wp)
+                                    call s_jwl_mix_energy_pr(rho, q_prim_vf(eqn_idx%E)%sf(j, k, l), Y_j, jwl_idx, e_mix_jwl, &
+                                                             & lambda_j)
+                                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_mix_jwl + dyn_pres
+                                end block
+                            #:endif
                         else if (bubbles_euler .neqv. .true.) then
                             ! Five-equation model (Allaire et al. JCP 2002): E = Gamma*p + 0.5*rho*|u|^2 + pi_inf + qv
                             q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*q_prim_vf(eqn_idx%E)%sf(j, k, l) + dyn_pres + pi_inf + qv
@@ -1047,8 +1076,8 @@ contains
         ! Computing the flux variables from the primitive variables, without accounting for the contribution of either viscosity or
         ! capillarity
         $:GPU_PARALLEL_LOOP(collapse=3, private='[alpha_rho_K, vel_K, alpha_K, Re_K, Y_K, rho_K, vel_K_sum, pres_K, E_K, gamma_K, &
-                            & pi_inf_K, qv_K, G_K, blkmod1_K, blkmod2_K, K_K, T_K, mix_mol_weight, R_gas]', copyin='[dir_idx_in, &
-                            & dir_flg_in, hll_u_interface_in]')
+                            & pi_inf_K, qv_K, G_K, blkmod1_K, blkmod2_K, K_K, T_K, mix_mol_weight, R_gas, e_mix_jwl, Y_j, &
+                            & lambda_j]', copyin='[dir_idx_in, dir_flg_in, hll_u_interface_in]')
         do l = is3b, is3e
             do k = is2b, is2e
                 do j = is1b, is1e
@@ -1249,6 +1278,7 @@ contains
         if (allocated(rho_sf)) deallocate (rho_sf, gamma_sf, pi_inf_sf, qv_sf)
 
         @:DEALLOCATE(gammas, gs_min, pi_infs, ps_inf, cvs, qvs, qvps, Gs_vc)
+        call s_finalize_jwl_module
         if (allocated(bubrs_vc)) then
             @:DEALLOCATE(bubrs_vc)
         end if

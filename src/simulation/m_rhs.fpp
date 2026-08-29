@@ -789,7 +789,7 @@ contains
                     if (amr) call s_amr_capture_boundary_flux(id, stage)
 
                     ! Viscous stress contribution to RHS
-                    if (viscous .or. surface_tension .or. chem_params%diffusion) then
+                    if (viscous .or. surface_tension .or. jwl_afterburn .or. jwl_reactive .or. chem_params%diffusion) then
                         call nvtxStartRange("RHS-ADD-PHYSICS")
                         call s_compute_additional_physics_rhs(id, q_prim_qp%vf, rhs_vf, dq_prim_dx_qp(1)%vf, dq_prim_dy_qp(1)%vf, &
                                                               & dq_prim_dz_qp(1)%vf)
@@ -1934,6 +1934,34 @@ contains
                         do j = 0, m
                             rhs_vf(eqn_idx%c)%sf(j, k, l) = rhs_vf(eqn_idx%c)%sf(j, k, &
                                    & l) + 1._wp/dy(k)*q_prim_vf(eqn_idx%c)%sf(j, k, l)*(flux_src_rsx_vf(j, k, l, &
+                                   & eqn_idx%adv%beg) - flux_src_rsx_vf(j, k - 1, l, eqn_idx%adv%beg))
+                        end do
+                    end do
+                end do
+                $:END_GPU_PARALLEL_LOOP()
+            end if
+
+            if (jwl_afterburn) then
+                $:GPU_PARALLEL_LOOP(private='[j, k, l]', collapse=3)
+                do l = 0, p
+                    do k = 0, n
+                        do j = 0, m
+                            rhs_vf(eqn_idx%abn)%sf(j, k, l) = rhs_vf(eqn_idx%abn)%sf(j, k, &
+                                   & l) + 1._wp/dy(k)*q_prim_vf(eqn_idx%abn)%sf(j, k, l)*(flux_src_rsx_vf(j, k, l, &
+                                   & eqn_idx%adv%beg) - flux_src_rsx_vf(j, k - 1, l, eqn_idx%adv%beg))
+                        end do
+                    end do
+                end do
+                $:END_GPU_PARALLEL_LOOP()
+            end if
+
+            if (jwl_reactive) then
+                $:GPU_PARALLEL_LOOP(private='[j, k, l]', collapse=3)
+                do l = 0, p
+                    do k = 0, n
+                        do j = 0, m
+                            rhs_vf(eqn_idx%rxn)%sf(j, k, l) = rhs_vf(eqn_idx%rxn)%sf(j, k, &
+                                   & l) + 1._wp/dy(k)*q_prim_vf(eqn_idx%rxn)%sf(j, k, l)*(flux_src_rsx_vf(j, k, l, &
                                    & eqn_idx%adv%beg) - flux_src_rsx_vf(j, k - 1, l, eqn_idx%adv%beg))
                         end do
                     end do

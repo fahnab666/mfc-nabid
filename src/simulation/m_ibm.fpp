@@ -450,7 +450,7 @@ contains
             $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, vel_g, vel_norm_IP, &
                                 & r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, G_K, Gs, gp, &
                                 & innerp, norm, buf, radial_vector, rotation_velocity, j, k, l, q, qv_K, c_IP, nbub, patch_id, &
-                                & Ys_IP, T_IP, mw_IP, e_IP, v_blow_eff]')
+                                & Ys_IP, T_IP, mw_IP, e_IP, v_blow_eff, Y_jwl, e_mix_jwl, b_IP, lam_IP]')
             do i = 1, num_gps
                 gp = ghost_points(i)
                 j = gp%loc(1)
@@ -625,6 +625,29 @@ contains
                         q_cons_vf(eqn_idx%species%beg + q - 1)%sf(j, k, l) = rho*Ys_IP(q)
                     end do
                     q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_IP + dyn_pres
+                    #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                    else if (jwl_idx > 0) then
+                        ! JWL ghost cell: rebuild energy through the JWL closure so near-body
+                        ! pressure and loads match the interior EOS, not the stiffened-gas relation.
+                        ! Reaction-progress ghost values take the image-point value (zero normal
+                        ! gradient at the wall), clamped like every other Y/lambda consumer; the
+                        ! reactive lambda also enters the energy inverse via the delta_e offset.
+                        if (jwl_afterburn) then
+                            b_IP = min(max(b_IP, 0._wp), 1._wp)
+                            q_cons_vf(eqn_idx%abn)%sf(j, k, l) = b_IP
+                            q_prim_vf(eqn_idx%abn)%sf(j, k, l) = b_IP
+                        end if
+                        Y_jwl = alpha_rho_IP(jwl_idx)/max(rho, sgm_eps)
+                        if (jwl_reactive) then
+                            lam_IP = min(max(lam_IP, 0._wp), 1._wp)
+                            q_cons_vf(eqn_idx%rxn)%sf(j, k, l) = lam_IP
+                            q_prim_vf(eqn_idx%rxn)%sf(j, k, l) = lam_IP
+                            call s_jwl_mix_energy_pr(rho, pres_IP, Y_jwl, jwl_idx, e_mix_jwl, lam_IP)
+                        else
+                            call s_jwl_mix_energy_pr(rho, pres_IP, Y_jwl, jwl_idx, e_mix_jwl)
+                        end if
+                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_mix_jwl + dyn_pres
+                    #:endif
                 else if (bubbles_euler) then
                     q_cons_vf(eqn_idx%E)%sf(j, k, l) = (1 - alpha_IP(1))*(gamma*pres_IP + pi_inf + dyn_pres)
                 else
@@ -1152,6 +1175,17 @@ contains
                     if (surface_tension) then
                         c_IP = c_IP + coeff*q_prim_vf(eqn_idx%c)%sf(i, j, k)
                     end if
+
+                    #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                        ! eqn_idx%abn/%rxn are only assigned under their model flags, so gate on
+                        ! the flag as well as on the caller having asked for the value.
+                        if (present(b_IP)) then
+                            if (jwl_afterburn) b_IP = b_IP + coeff*q_prim_vf(eqn_idx%abn)%sf(i, j, k)
+                        end if
+                        if (present(lam_IP)) then
+                            if (jwl_reactive) lam_IP = lam_IP + coeff*q_prim_vf(eqn_idx%rxn)%sf(i, j, k)
+                        end if
+                    #:endif
 
                     if (chemistry) then
                         $:GPU_LOOP(parallelism='[seq]')
