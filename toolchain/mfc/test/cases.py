@@ -2879,6 +2879,11 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                 # block on a 25-cell grid, and the block indices (sized to the example's own grid)
                 # fall outside the capped one. AMR is covered directly by the amr_golden_tests suite.
                 "2D_amr_droplet",
+                # Same 25x25 cap as 2D_amr_droplet: this case's amr_block_beg/end are sized to its
+                # own full-resolution grid, so on the capped grid they fall outside it and the run
+                # aborts in validation ("amr_block_end must be <= global cell max per axis"). The
+                # static AMR + moving-IB coupling it exercises is covered by the amr_golden_tests suite.
+                "2D_ibm_daoud_shock_curtain_amr",
                 # Finite-rate propellant flame: the flame-front position after 50 steps is set by
                 # accumulated stiff-kinetics roundoff, so it drifts past the 1e-3 Example tolerance
                 # across compilers (nvhpc 25.11 golden vs 24.3/GNU/Intel/CCE/AMD disagree by ~1-5e-3).
