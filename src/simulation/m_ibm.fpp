@@ -1731,7 +1731,7 @@ contains
             end do
 
             deallocate (send_buf, recv_bufs)
-            $:GPU_UPDATE(device='[patch_ib]')
+            $:GPU_UPDATE(device='[patch_ib, num_ibs]')
             call s_update_ib_lookup()
         end if
 #endif
