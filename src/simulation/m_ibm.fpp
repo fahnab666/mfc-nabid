@@ -1055,6 +1055,7 @@ contains
         call nvtxStartRange("COMPUTE-GHOST-POINTS")
         ! recalculate the ghost point locations and coefficients
         call s_find_num_ghost_points(num_gps)
+        $:GPU_UPDATE(device='[num_gps]')
         call s_find_ghost_points(ghost_points)
         call nvtxEndRange
 
