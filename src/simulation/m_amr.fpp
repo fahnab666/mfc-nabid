@@ -623,7 +623,7 @@ contains
         ! body,
         ! so an IB block must itself fit a rank's local half-extent.
         bad_loc = 0
-        if (ib) then
+        if (ib .and. amr_max_grid_size == 0) then
             if (amr_ref_ratio*(amr_block_end(1) - amr_block_beg(1) + 1) - 1 > m) bad_loc = 1
             if (n_glb > 0 .and. amr_ref_ratio*(amr_block_end(2) - amr_block_beg(2) + 1) - 1 > n) bad_loc = 1
             if (p_glb > 0 .and. amr_ref_ratio*(amr_block_end(3) - amr_block_beg(3) + 1) - 1 > p) bad_loc = 1
@@ -852,17 +852,14 @@ contains
 
         ! set geometry (region, m/n/p, idwbuff, coordinates) for the initial block (amr_cur = f_l0_slot(1), the initial fine-block
         ! slot). Under dynamic regrid with bodies
-        ! the initial block gets the same body-containment expansion regrid boxes get (the moving-body containment guard requires it
-        ! from step 1); for a static block (amr_regrid_int = 0) the user's placement is authoritative. max_grid_size tiling: the
-        ! initial block splits into <= amr_maxc_fit sub-blocks (at np=1 amr_maxc_fit == amr_maxc so a normal block stays a single
-        ! tile - unchanged), one per slot; IB keeps a single contiguous block.
+        ! Dynamic blocks expand around bodies; static blocks keep the requested box. Capped IBM uses tiled blocks.
         blk_lo = amr_block_beg; blk_hi = amr_block_end
         if (ib .and. amr_regrid_int > 0) call s_amr_expand_box_over_bodies(blk_lo, blk_hi)
         block
             type(t_box), allocatable :: tiled(:)
             integer                  :: nt, capt, kk
             allocate (tiled(amr_max_blocks)); nt = 0; capt = 0
-            if (ib) then
+            if (ib .and. amr_max_grid_size == 0) then
                 nt = 1; tiled(1)%lo = blk_lo; tiled(1)%hi = blk_hi
             else
                 call s_amr_tile_box(blk_lo, blk_hi, tiled, nt, amr_max_fine, capt)
@@ -4896,9 +4893,14 @@ contains
         ! body wholly within one rank is decomposition-exact.
         call s_mpi_allreduce_integer_sum(merge(1_8, 0_8, my_ib_gps > 0_8), nrank_ib)
         if (nrank_ib > 1_8) then
-            call s_mpi_abort('amr with ib: the immersed body straddles a rank boundary, where the ' &
-                             & // 'fine-IB image-point stencil is not yet decomposition-exact; keep the ' &
-                             & // 'body within a single rank subdomain (use fewer ranks or reposition it).')
+            if (amr_max_grid_size > 0) then
+                call s_mpi_abort('amr with ib: the fine-IB image-point stencil spans multiple tiled owners; align the capped L1 ' &
+                                 & // 'region so each moving body and its stencil remain inside one tile, or use a larger tile cap.')
+            else
+                call s_mpi_abort('amr with ib: the immersed body straddles a rank boundary, where the ' &
+                                 & // 'fine-IB image-point stencil is not yet decomposition-exact; keep the ' &
+                                 & // 'body within a single rank subdomain (use fewer ranks or reposition it).')
+            end if
         end if
 
     end subroutine s_amr_setup_ib
@@ -4911,9 +4913,24 @@ contains
         !> the q_prim the block's RHS pass filled (pooled scratch for fine blocks; per-slot for L0 tiles, where other tiles' RHS
         !! work ran in between - ib is in the copy-out gate, so a tile slot always has its own q_prim when this reads it)
         type(scalar_field), dimension(1:sys_size), intent(inout) :: q_prim_b
+        integer                                                  :: i, blo(3), bhi(3)
 
         if (.not. ib) return
         if (.not. amr_rank_owns_block) return
+        ! Skip capped tiles without an IBM body.
+        if (amr_max_grid_size > 0) then
+            do i = 1, num_ibs
+                call s_amr_body_bbox(i, 2, blo, bhi)
+                if (blo(1) <= amr_slots(amr_cur)%region%hi(1) .and. bhi(1) >= amr_slots(amr_cur)%region%lo(1)) then
+                    if (n_glb == 0 .or. (blo(2) <= amr_slots(amr_cur)%region%hi(2) .and. bhi(2) >= amr_slots(amr_cur)%region%lo(2) &
+                        & )) then
+                        if (p_glb == 0 .or. (blo(3) <= amr_slots(amr_cur)%region%hi(3) .and. bhi(3) &
+                            & >= amr_slots(amr_cur)%region%lo(3))) exit
+                    end if
+                end if
+            end do
+            if (i > num_ibs) return
+        end if
         call s_amr_swap_to_fine()
         call s_ibm_swap_to_fine(amr_cur, gps_on_device=.true.)
         call s_amr_br_load(amr_loc_of(amr_cur))
@@ -4940,10 +4957,11 @@ contains
 
         real(wp), intent(in) :: th
         integer              :: i, blo(3), bhi(3)
-        logical              :: ovl, inside
+        logical              :: ovl, inside, has_mib
 
         if (.not. ib) return
         if (.not. amr_rank_owns_block) return
+        has_mib = .false.
         ! A moving body must stay inside its block (a body overlapping the block edge gets silently clipped forcing - abort
         ! instead).
         ! Under dynamic regrid the expansion contained it with margin max(amr_buf,4) and we require body + image-point stencil reach
@@ -4960,6 +4978,7 @@ contains
                 if (p_glb > 0) ovl = ovl .and. blo(3) <= amr_slots(amr_cur)%region%hi(3) .and. bhi(3) &
                     & >= amr_slots(amr_cur)%region%lo(3)
                 if (.not. ovl) cycle
+                has_mib = .true.
                 inside = blo(1) >= amr_slots(amr_cur)%region%lo(1) .and. bhi(1) <= amr_slots(amr_cur)%region%hi(1)
                 if (n_glb > 0) inside = inside .and. blo(2) >= amr_slots(amr_cur)%region%lo(2) .and. bhi(2) &
                     & <= amr_slots(amr_cur)%region%hi(2)
@@ -4972,6 +4991,8 @@ contains
                 end if
             end do
         end if
+        ! Skip tiles without moving-IBM overlap.
+        if (.not. has_mib) return
         call s_amr_swap_to_fine()
         call s_ibm_swap_to_fine(amr_cur, gps_on_device=.true.)
         call s_update_mib(num_ibs, th)

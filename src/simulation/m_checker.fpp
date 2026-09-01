@@ -98,11 +98,9 @@ contains
             ! implemented for the L0/L1 coarse frame only. Multi-level folds/refluxes in the
             ! PARENT-FINE frame (host-only per-block coords) are not radius-weighted - fail-closed
             ! under cyl_coord.
-            ! static-body IB AMR (SP20) + prescribed-motion moving bodies (SP21): fixed or
-            ! analytically-moving (moving_ibm==1) bodies resolved on a static fine block. Multi-body
-            ! (num_ibs>1) supported - every body shares the one static block and reuses the
-            ! multi-body-capable core IB setup. Force/torque-driven motion (moving_ibm==2) and STL
-            ! geometry remain gated (unvalidated).
+            ! Static single-block IB AMR supports fixed, prescribed, and force-driven (moving_ibm==2)
+            ! analytic bodies. Every moving body and its image stencil must remain inside that block;
+            ! tiled-block handoff and STL geometry remain unvalidated.
             ! dynamic regrid with bodies (static or prescribed-motion): candidate boxes expand to
             ! fully contain every body at its LIVE position (partial coverage is untested),
             ! overlapping expansions merge, and the fine IB state is rebuilt from the geometry after

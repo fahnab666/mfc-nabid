@@ -11,7 +11,7 @@ module m_data_input
 
     use m_derived_types
     use m_global_parameters
-    use m_constants, only: amr_restart_blk_hdr_ints
+    use m_constants, only: amr_restart_blk_hdr_ints, amr_restart_blk_own_ints
     use m_mpi_proxy
     use m_mpi_common
     use m_compile_specific
@@ -637,14 +637,15 @@ contains
         integer, intent(in)                  :: t_step
         character(LEN=path_len + 3*name_len) :: file_loc
         logical                              :: file_exist
-        integer                              :: k, i, nblk, ghdr(3), reg(6), lvl, rm, rn, rp, cw
+        integer                              :: k, i, nblk, ghdr(3), reg(6), lvl, rm, rn, rp, cw, np_old, orec
         integer                              :: sidx(3), ext(3), isect_lo(3), isect_hi(3), fm, fn, fp, d, rr
         integer                              :: have_loc, have_glb
-        logical                              :: owns
+        logical                              :: owns, v2
 
 #ifdef MFC_MPI
         integer                             :: ifile, ierr, cnt, idx, fi, fj, fk, ibytes, sbytes
         integer                             :: bhdr(amr_restart_blk_hdr_ints)
+        integer                             :: fown(amr_restart_blk_own_ints)
         integer                             :: myext(3)
         integer, allocatable                :: wext(:), rext(:)
         integer, dimension(MPI_STATUS_SIZE) :: status
@@ -709,9 +710,8 @@ contains
                     isect_lo(d) = max(reg(d), sidx(d))
                     isect_hi(d) = min(reg(3 + d), sidx(d) + ext(d))
                 end do
-                owns = isect_lo(1) <= isect_hi(1)
-                if (n > 0) owns = owns .and. isect_lo(2) <= isect_hi(2)
-                if (p > 0) owns = owns .and. isect_lo(3) <= isect_hi(3)
+                ! Only the owner file contains fine payload.
+                owns = rm >= 0
                 if (.not. owns) cycle  ! writer emitted no data record for a block this rank does not own
                 ! Use the file's authoritative per-block fine extent (rm/rn/rp); derive rr = amr_ref_ratio**level
                 ! from the ratio of fine cells to coarse cells (2 for L1, 4 for L2, etc.).
@@ -737,9 +737,10 @@ contains
             ibytes = storage_size(0)/8; sbytes = storage_size(0._stp)/8
             call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, MPI_MODE_RDONLY, mpi_info_int, ifile, ierr)
             call MPI_FILE_READ_AT_ALL(ifile, int(0, MPI_OFFSET_KIND), ghdr, 3, MPI_INTEGER, status, ierr)
-            ! the parallel layout is per-rank slices concatenated in WRITER rank order: a different
-            ! rank count or decomposition would silently misalign every block - fail closed instead
-            if (ghdr(1) /= num_procs) then
+            ! v2 uses a negative rank count and a compact per-block owner/extent record; v1 stores one extent per rank.
+            v2 = ghdr(1) < 0
+            np_old = abs(ghdr(1))
+            if (np_old /= num_procs) then
                 call s_mpi_abort('amr post: the AMR fine-block file was written with a different rank count; ' &
                                  & // 'run post_process with the same number of ranks as the simulation')
             end if
@@ -748,6 +749,7 @@ contains
                                  & // 'conserved variables; the physics configuration must match the simulation')
             end if
             nblk = ghdr(2)
+            orec = merge(amr_restart_blk_own_ints, 3*np_old, v2)
             allocate (amr_fine(nblk))
             allocate (wext(3*num_procs), rext(3*num_procs))
             amr_num_fine = 0
@@ -757,21 +759,35 @@ contains
                 ! in m_constants so this mirrors s_write_amr_restart (and m_amr:s_read_amr_restart) exactly.
                 call MPI_FILE_READ_AT_ALL(ifile, disp0, bhdr, amr_restart_blk_hdr_ints, MPI_INTEGER, status, ierr)
                 reg = bhdr(1:6); lvl = bhdr(amr_restart_blk_hdr_ints)
-                call MPI_FILE_READ_AT_ALL(ifile, disp0 + int(amr_restart_blk_hdr_ints*ibytes, MPI_OFFSET_KIND), wext, &
-                                          & 3*num_procs, MPI_INTEGER, status, ierr)
+                if (v2) then
+                    call MPI_FILE_READ_AT_ALL(ifile, disp0 + int(amr_restart_blk_hdr_ints*ibytes, MPI_OFFSET_KIND), fown, &
+                                              & amr_restart_blk_own_ints, MPI_INTEGER, status, ierr)
+                else
+                    call MPI_FILE_READ_AT_ALL(ifile, disp0 + int(amr_restart_blk_hdr_ints*ibytes, MPI_OFFSET_KIND), wext, &
+                                              & 3*num_procs, MPI_INTEGER, status, ierr)
+                end if
                 do d = 1, 3
                     isect_lo(d) = max(reg(d), sidx(d))
                     isect_hi(d) = min(reg(3 + d), sidx(d) + ext(d))
                 end do
-                owns = isect_lo(1) <= isect_hi(1)
-                if (n > 0) owns = owns .and. isect_lo(2) <= isect_hi(2)
-                if (p > 0) owns = owns .and. isect_lo(3) <= isect_hi(3)
+                if (v2) then
+                    owns = fown(1) == proc_rank + 1
+                else
+                    owns = isect_lo(1) <= isect_hi(1)
+                    if (n > 0) owns = owns .and. isect_lo(2) <= isect_hi(2)
+                    if (p > 0) owns = owns .and. isect_lo(3) <= isect_hi(3)
+                end if
                 ! Use the file's authoritative per-rank fine extents from wext; derive rr per block.
                 fm = 0; fn = 0; fp = 0; rr = 1
                 if (owns) then
-                    fm = wext(3*proc_rank + 1)
-                    if (n > 0) fn = wext(3*proc_rank + 2)
-                    if (p > 0) fp = wext(3*proc_rank + 3)
+                    if (v2) then
+                        fm = fown(2); fn = fown(3); fp = fown(4)
+                        isect_lo = reg(1:3); isect_hi = reg(4:6)
+                    else
+                        fm = wext(3*proc_rank + 1)
+                        if (n > 0) fn = wext(3*proc_rank + 2)
+                        if (p > 0) fp = wext(3*proc_rank + 3)
+                    end if
                     cw = max(isect_hi(1) - isect_lo(1) + 1, 1)
                     rr = (fm + 1)/cw
                     ! fail-closed: mirror the serial path's header sanity check (see s_read_amr_data serial branch)
@@ -780,15 +796,15 @@ contains
                         & call s_mpi_abort('amr post: malformed fine-block header (level/extent inconsistent); the AMR restart ' &
                         & // 'writer and reader header layouts have drifted')
                 end if
-                ! validate the writer's per-rank layout against this run's decomposition (catches a
-                ! load_balance simulation, whose weighted splits post never reproduces)
-                myext = 0
-                if (owns) myext = [fm, fn, fp]
-                call MPI_ALLGATHER(myext, 3, MPI_INTEGER, rext, 3, MPI_INTEGER, MPI_COMM_WORLD, ierr)
-                if (any(rext /= wext)) then
-                    call s_mpi_abort('amr post: the per-rank fine-block layout in the file does not match this ' &
-                                     & // 'decomposition (e.g. the simulation used load_balance); the AMR overlay ' &
-                                     & // 'requires the writing decomposition')
+                if (.not. v2) then
+                    myext = 0
+                    if (owns) myext = [fm, fn, fp]
+                    call MPI_ALLGATHER(myext, 3, MPI_INTEGER, rext, 3, MPI_INTEGER, MPI_COMM_WORLD, ierr)
+                    if (any(rext /= wext)) then
+                        call s_mpi_abort('amr post: the per-rank fine-block layout in the file does not match this ' &
+                                         & // 'decomposition (e.g. the simulation used load_balance); the AMR overlay ' &
+                                         & // 'requires the writing decomposition')
+                    end if
                 end if
                 cnt = sys_size*(fm + 1)*(fn + 1)*(fp + 1)
                 if (.not. owns) cnt = 0
@@ -797,7 +813,7 @@ contains
                 call MPI_EXSCAN(my_cnt, my_off, 1, MPI_OFFSET, MPI_SUM, MPI_COMM_WORLD, ierr)
                 if (proc_rank == 0) my_off = int(0, MPI_OFFSET_KIND)
                 call MPI_ALLREDUCE(my_cnt, tot_cnt, 1, MPI_OFFSET, MPI_SUM, MPI_COMM_WORLD, ierr)
-                ddisp = disp0 + int((amr_restart_blk_hdr_ints + 3*num_procs)*ibytes, MPI_OFFSET_KIND)
+                ddisp = disp0 + int((amr_restart_blk_hdr_ints + orec)*ibytes, MPI_OFFSET_KIND)
                 allocate (buf(max(cnt, 1)))
                 call MPI_FILE_READ_AT_ALL(ifile, ddisp + my_off*int(sbytes, MPI_OFFSET_KIND), buf, cnt*mpi_io_type, mpi_io_p, &
                                           & status, ierr)

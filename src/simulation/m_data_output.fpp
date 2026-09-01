@@ -20,6 +20,7 @@ module m_data_output
     use m_delay_file_access
     use m_ibm
     use m_boundary_common
+    use m_boundary_io
     use m_constants, only: model_eqns_5eq, precision_single
     use m_load_weight, only: load_weight, s_compute_load_weight, s_report_load_imbalance
     use m_rank_timing, only: s_report_rank_time
@@ -334,15 +335,17 @@ contains
         integer, intent(in) :: t_step
         type(scalar_field), intent(inout), optional :: beta
         type(integer_field), dimension(1:num_dims,-1:1), intent(in) :: bc_type
-        character(LEN=path_len + 2*name_len) :: t_step_dir  !< Relative path to the current time-step directory
-        character(LEN=path_len + 3*name_len) :: file_path   !< Relative path to the grid and conservative variables data files
-        logical :: file_exist                               !< Logical used to check existence of current time-step directory
+        character(LEN=path_len + 2*name_len) :: t_step_dir        !< Relative path to the current time-step directory
+        character(LEN=path_len + 2*name_len) :: restart_step_dir  !< Serial restart directory for this save step
+        character(LEN=path_len + 3*name_len) :: file_path         !< Relative path to the grid and conservative variables data files
+        logical :: file_exist                                     !< Logical used to check existence of current time-step directory
         character(LEN=15) :: FMT
         integer :: i, j, k, l, r
-        real(wp) :: gamma, lit_gamma, pi_inf, qv            !< Temporary EOS params
+        real(wp) :: gamma, lit_gamma, pi_inf, qv                  !< Temporary EOS params
 
         write (t_step_dir, '(A,I0,A,I0)') trim(case_dir) // '/p_all'
         write (t_step_dir, '(a,i0,a,i0)') trim(case_dir) // '/p_all/p', proc_rank, '/', t_step
+        restart_step_dir = t_step_dir
 
         file_path = trim(t_step_dir) // '/.'
         call my_inquire(file_path, file_exist)
@@ -440,6 +443,15 @@ contains
             ! (=1._wp)
             if (qbmm) then
                 q_prim_vf(eqn_idx%bub%beg)%sf = 1._wp
+            end if
+        end if
+
+        ! Save boundary metadata with every serial restart step.
+        if (bc_io) then
+            if (igr) then
+                call s_write_serial_boundary_condition_files(q_cons_vf, bc_type, restart_step_dir, .false.)
+            else
+                call s_write_serial_boundary_condition_files(q_prim_vf, bc_type, restart_step_dir, .false., q_T_sf)
             end if
         end if
 
