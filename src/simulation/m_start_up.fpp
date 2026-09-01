@@ -960,6 +960,17 @@ contains
         if (.not. amr_restored) call s_populate_amr_fine(q_cons_ts(1)%vf)
 
         if (model_eqns == model_eqns_6eq) call s_initialize_internal_energy_equations(q_cons_ts(1)%vf)
+        ! AMR+IBM setup swaps the live grid to a fine block. On a nonuniform
+        ! grid that swap refreshes WENO/MUSCL coefficients, so reconstruction
+        ! must be initialized before s_amr_setup_ib below.
+        if (.not. igr) then
+            if (recon_type == recon_type_weno) then
+                call s_initialize_weno_module()
+            else if (recon_type == recon_type_muscl) then
+                call s_initialize_muscl_module()
+            end if
+        end if
+
         if (ib) then
             block
                 type(ib_patch_parameters), allocatable :: particle_cloud_ibs(:)
@@ -1001,11 +1012,6 @@ contains
             call s_initialize_igr_module()
         end if
         if (.not. igr) then
-            if (recon_type == recon_type_weno) then
-                call s_initialize_weno_module()
-            else if (recon_type == recon_type_muscl) then
-                call s_initialize_muscl_module()
-            end if
             call s_initialize_cbc_module()
             call s_initialize_riemann_solvers_module()
         end if
