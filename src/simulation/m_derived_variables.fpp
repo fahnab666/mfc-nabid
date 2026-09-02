@@ -42,12 +42,12 @@ contains
 
         ! Allocating centered finite-difference coefficients
         if (probe_wrt .or. ib) then
-            @:ALLOCATE(fd_coeff_x(-fd_number:fd_number, 0:m))
+            @:ALLOCATE(fd_coeff_x(-fd_number:fd_number, -fd_number:m + fd_number))
             if (n > 0) then
-                @:ALLOCATE(fd_coeff_y(-fd_number:fd_number, 0:n))
+                @:ALLOCATE(fd_coeff_y(-fd_number:fd_number, -fd_number:n + fd_number))
             end if
             if (p > 0) then
-                @:ALLOCATE(fd_coeff_z(-fd_number:fd_number, 0:p))
+                @:ALLOCATE(fd_coeff_z(-fd_number:fd_number, -fd_number:p + fd_number))
             end if
 
             @:ALLOCATE(accel_mag(0:m, 0:n, 0:p))

@@ -250,10 +250,13 @@ contains
 
                     call s_compute_stability_from_dt(vel, c, rho, Re, j, k, l, icfl, vcfl, Rc, ccfl)
 
-                    icfl_max_loc = max(icfl_max_loc, icfl)
-                    vcfl_max_loc = max(vcfl_max_loc, merge(vcfl, 0.0_wp, viscous))
-                    ccfl_max_loc = max(ccfl_max_loc, merge(ccfl, 0.0_wp, surface_tension))
-                    Rc_min_loc = min(Rc_min_loc, merge(Rc, huge(1.0_wp), viscous))
+                    ! IB solid cells carry no physical flow state, so they don't belong in the CFL extrema
+                    if ((.not. ib) .or. (ib_markers%sf(j, k, l) == 0)) then
+                        icfl_max_loc = max(icfl_max_loc, icfl)
+                        vcfl_max_loc = max(vcfl_max_loc, merge(vcfl, 0.0_wp, viscous))
+                        ccfl_max_loc = max(ccfl_max_loc, merge(ccfl, 0.0_wp, surface_tension))
+                        Rc_min_loc = min(Rc_min_loc, merge(Rc, huge(1.0_wp), viscous))
+                    end if
                 end do
             end do
         end do
@@ -959,6 +962,8 @@ contains
 
 #ifdef MFC_MPI
         character(LEN=path_len + 2*name_len) :: file_loc
+        character(len=10)                    :: t_step_string
+        logical                              :: dir_check
         integer(kind=MPI_OFFSET_kind)        :: disp
         integer(kind=MPI_OFFSET_kind)        :: m_MOK, n_MOK, p_MOK
         integer(kind=MPI_OFFSET_kind)        :: WP_MOK, var_MOK, MOK
@@ -968,37 +973,59 @@ contains
         $:GPU_UPDATE(host='[ib_markers%sf]')
 
         data_size = (m + 1)*(n + 1)*(p + 1)
-        m_MOK = int(m_glb + 1, MPI_OFFSET_KIND)
-        n_MOK = int(n_glb + 1, MPI_OFFSET_KIND)
-        p_MOK = int(p_glb + 1, MPI_OFFSET_KIND)
-        ! ib_markers is 4-byte integers; stride by the larger of the stp and
-        ! integer sizes so half-precision builds cannot overlap save slots.
-        WP_MOK = int(max(storage_size(0._stp), storage_size(0))/8, MPI_OFFSET_KIND)
-        MOK = int(1._wp, MPI_OFFSET_KIND)
 
-        write (file_loc, '(A)') 'ib.dat'
-        file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
+        if (file_per_process) then
+            call s_int_to_str(time_step, t_step_string)
 
-        call s_mpi_barrier()
-        call s_delay_file_access(proc_rank)
+            if (proc_rank == 0) then
+                file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string)
+                call my_inquire(file_loc, dir_check)
+                if (dir_check .neqv. .true.) then
+                    call s_create_directory(trim(file_loc))
+                end if
+            end if
+            call s_mpi_barrier()
+            call s_delay_file_access(proc_rank)
 
-        call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+            write (file_loc, '(A,I0,A,i7.7,A)') 'ib_markers_', time_step, '_', proc_rank, '.dat'
+            file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc)
 
-        var_MOK = int(sys_size + 1, MPI_OFFSET_KIND)
-        ! Under cfl_dt, time_step is already the save index and t_step_save is
-        ! unset; dividing would make every save overwrite slot 0. Must match the
-        ! post_process reader.
-        if (cfl_dt) then
-            save_index = time_step
+            call MPI_FILE_OPEN(MPI_COMM_SELF, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+            call MPI_FILE_WRITE_ALL(ifile, MPI_IO_IB_DATA%var%sf, data_size, MPI_INTEGER, status, ierr)
+            call MPI_FILE_CLOSE(ifile, ierr)
         else
-            save_index = time_step/t_step_save
-        end if
-        disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1 + int(save_index, MPI_OFFSET_KIND))
-        if (time_step == 0) disp = 0
+            m_MOK = int(m_glb + 1, MPI_OFFSET_KIND)
+            n_MOK = int(n_glb + 1, MPI_OFFSET_KIND)
+            p_MOK = int(p_glb + 1, MPI_OFFSET_KIND)
+            ! ib_markers is 4-byte integers; stride by the larger of the stp and
+            ! integer sizes so half-precision builds cannot overlap save slots.
+            WP_MOK = int(max(storage_size(0._stp), storage_size(0))/8, MPI_OFFSET_KIND)
+            MOK = int(1._wp, MPI_OFFSET_KIND)
 
-        call MPI_FILE_SET_VIEW(ifile, disp, MPI_INTEGER, MPI_IO_IB_DATA%view, 'native', mpi_info_int, ierr)
-        call MPI_FILE_WRITE_ALL(ifile, MPI_IO_IB_DATA%var%sf, data_size, MPI_INTEGER, status, ierr)
-        call MPI_FILE_CLOSE(ifile, ierr)
+            write (file_loc, '(A)') 'ib.dat'
+            file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
+
+            call s_mpi_barrier()
+            call s_delay_file_access(proc_rank)
+
+            call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+
+            var_MOK = int(sys_size + 1, MPI_OFFSET_KIND)
+            ! Under cfl_dt, time_step is already the save index and t_step_save is
+            ! unset; dividing would make every save overwrite slot 0. Must match the
+            ! post_process reader.
+            if (cfl_dt) then
+                save_index = time_step
+            else
+                save_index = time_step/t_step_save
+            end if
+            disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1 + int(save_index, MPI_OFFSET_KIND))
+            if (time_step == 0) disp = 0
+
+            call MPI_FILE_SET_VIEW(ifile, disp, MPI_INTEGER, MPI_IO_IB_DATA%view, 'native', mpi_info_int, ierr)
+            call MPI_FILE_WRITE_ALL(ifile, MPI_IO_IB_DATA%var%sf, data_size, MPI_INTEGER, status, ierr)
+            call MPI_FILE_CLOSE(ifile, ierr)
+        end if
 #endif
 
     end subroutine s_write_parallel_ib_data
