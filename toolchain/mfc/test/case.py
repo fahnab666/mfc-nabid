@@ -148,7 +148,7 @@ def trace_to_uuid(trace: str) -> str:
 
 
 # Opt-in (per test, via honor_io_keys=True) exemption from the POST_PROCESS_OFF_PARAMS
-# clobber: a test whose DEFINITION sets parallel_io etc. for coverage (MPI-IO AMR restart,
+# clobber: a test whose DEFINITION sets parallel_io etc. for coverage (MPI-IO restart,
 # load_balance) keeps its explicit values. Content-based honoring is wrong: Example-derived
 # tests import example case.py files that set these keys, but their goldens were generated
 # under the clobber (an unconditional honor broke 18 example goldens on every CI lane).

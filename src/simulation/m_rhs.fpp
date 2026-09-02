@@ -40,7 +40,6 @@ module m_rhs
     use m_thinc
     use m_pressure_relaxation
     use m_active_box, only: ab_x, ab_y, ab_z, ab_active
-    use m_amr_registers, only: s_amr_capture_boundary_flux
 
     implicit none
 
@@ -598,11 +597,6 @@ contains
 
         ! RHS: halo exchange -> reconstruct -> Riemann solve -> flux difference -> source terms
 
-        ! AMR NOTE: when amr_in_fine_advance is true, the grid globals (m/n/p, idwint/idwbuff, x_cb..dz) are SWAPPED to a fine
-        ! block's values (s_amr_swap_to_fine). Code reading a module-level array precomputed against the COARSE grid must guard on
-        ! .not. amr_in_fine_advance or read the swapped/refreshed state - see the ab_int GPU_UPDATE below and the swap contract in
-        ! m_amr.fpp. A physics hook here that indexes coarse-baked state is the ab_int/acoustic-source hazard.
-
         call nvtxStartRange("COMPUTE-RHS")
 
         if (ab_active .and. ab_prim_seeded) then
@@ -631,11 +625,6 @@ contains
         end if
         if (ab_active) ab_prim_seeded = .true.
 
-        ! ab_int must be refreshed on device EVERY call: the AMR fine advance swaps idwint to the fine-block
-        ! bounds, and CCE OpenACC resolves the convert kernel's loop bounds through the present device copy of
-        ! this module variable - a seed-once guard left stale COARSE bounds on the swapped fine grid, giving
-        ! out-of-range device accesses and a spurious wave at every fine-block edge (CCE-acc only; NVHPC and
-        ! CCE-omp evaluate the bounds host-side and never saw it).
         $:GPU_UPDATE(device='[ab_int]')
 
         if (.not. igr) then
@@ -683,12 +672,7 @@ contains
         end if
         if (.not. igr) then
             call nvtxStartRange("RHS-CONVERT")
-            ! 2a: the AMR fine advance may have preloaded this block's computed prim vars from the batched
-            ! conversion (s_amr_convert_prim_batch, pinned to this kernel); the per-block conversion is then
-            ! skipped bit-identically. The aliased prim vars (cont, adv, c, psi) ride the cons copy-in above.
-            if (.not. amr_prim_preloaded) then
-                call s_convert_conservative_to_primitive_variables(q_cons_qp%vf, q_T_sf, q_prim_qp%vf, ab_int)
-            end if
+            call s_convert_conservative_to_primitive_variables(q_cons_qp%vf, q_T_sf, q_prim_qp%vf, ab_int)
             call nvtxEndRange
 
             call nvtxStartRange("RHS-COMMUNICATION")
@@ -774,19 +758,12 @@ contains
                     end if
 
                     ! RHS for chemistry species diffusion: writes species (and, when not viscous, energy) face
-                    ! fluxes into flux_src_rsx_vf. Runs before the AMR capture below so refluxing sees the total
-                    ! advection+diffusion flux, mirroring the viscous flux_src the Riemann solver wrote.
+                    ! fluxes into flux_src_rsx_vf, mirroring the viscous flux_src the Riemann solver wrote.
                     if (chemistry .and. chem_params%diffusion) then
                         call nvtxStartRange("RHS-CHEM-DIFFUSION")
                         call s_compute_chemistry_diffusion_flux(id, q_prim_qp%vf, flux_src_rsx_vf, irx, iry, irz, q_T_sf)
                         call nvtxEndRange
                     end if
-
-                    ! AMR refluxing: record the c/f boundary-face fluxes exactly as the assembly above used
-                    ! them (after s_cbc may have modified flux_rsx_vf in the advection source call, and after
-                    ! all flux_src contributions - viscous and species diffusion - are in place); must run
-                    ! before the next direction's sweep overwrites flux_rsx_vf, which all directions share.
-                    if (amr) call s_amr_capture_boundary_flux(id, stage)
 
                     ! Viscous stress contribution to RHS
                     if (viscous .or. surface_tension .or. jwl_afterburn .or. jwl_reactive .or. chem_params%diffusion) then
@@ -912,10 +889,7 @@ contains
             call s_compute_ptilde(q_cons_qp%vf(1:sys_size), q_prim_qp%vf(1:sys_size))
         end if
 
-        ! Lagrangian bubbles couple on the coarse grid only (the cloud is excluded from fine blocks):
-        ! the EL hooks are skipped during the fine advance - a bubble's position would map to wrong
-        ! cell indices on the swapped block grid.
-        if (bubbles_lagrange .and. .not. amr_in_fine_advance) then
+        if (bubbles_lagrange) then
             if (.not. adap_dt) then
                 call nvtxStartRange("RHS-EL-BUBBLES-DYN")
                 call s_compute_bubble_EL_dynamics(q_prim_qp%vf(1:sys_size), bc_type, stage)
@@ -1969,10 +1943,7 @@ contains
                 $:END_GPU_PARALLEL_LOOP()
             end if
 
-            ! the axis-singularity stress treatment belongs to the PHYSICAL axis only: bc_y is not
-            ! swapped by the AMR fine advance, so without the guard a fine block would apply axis
-            ! handling at its own (interior) lower-y edge - the coarse pass owns the real axis
-            if (cyl_coord .and. (.not. amr_in_fine_advance) .and. ((bc_y%beg == -2) .or. (bc_y%beg == -14))) then
+            if (cyl_coord .and. ((bc_y%beg == -2) .or. (bc_y%beg == -14))) then
                 if (viscous) then
                     if (p > 0) then
                         call s_compute_viscous_stress_cylindrical_boundary(q_prim_vf, &

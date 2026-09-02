@@ -68,10 +68,6 @@ module m_global_parameters_common
     $:GPU_DECLARE(create='[sys_size, eqn_idx]')
     $:GPU_DECLARE(create='[shear_num, shear_indices, shear_BC_flip_num, shear_BC_flip_indices]')
 
-    !> Set only by the simulation's AMR fine-level advance; .false. everywhere else. Declared here rather than in the simulation so
-    !! that src/common/m_boundary_common can read it without a stage ifdef.
-    logical :: amr_in_fine_advance = .false.
-
     !> @name Processor coordinates and parallel-IO addressing (identical declaration across all three targets)
     !> @{
     integer, allocatable, dimension(:) :: proc_coords      !< Processor coordinates in MPI_CART_COMM

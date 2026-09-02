@@ -308,10 +308,7 @@ contains
             end do
             $:END_GPU_PARALLEL_LOOP()
 
-            ! AMR fine advance: the block's jac ghost shell holds frozen Dirichlet data prolonged
-            ! from the converged coarse sigma (seeded by s_amr_igr_swap_sigma); the physical-BC/halo
-            ! populate would write wrong (coarse-indexed) data on the swapped block grid
-            if (.not. amr_in_fine_advance) call s_populate_F_igr_buffers(bc_type, jac_sf)
+            call s_populate_F_igr_buffers(bc_type, jac_sf)
 
             if (igr_iter_solver == 1) then  ! Jacobi iteration
                 $:GPU_PARALLEL_LOOP(private='[j, k, l]', collapse=3)
