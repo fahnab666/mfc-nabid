@@ -1,11 +1,11 @@
 !>
 !! @file
-!! @brief JWL EOS with a composition-weighted (heat-capacity) two-material mixture closure for ideal-gas and stiffened ambients.
+!! @brief JWL EOS with pressure-temperature equilibrium for products mixed with ideal-gas or stiffened ambients.
 
 #:include 'macros.fpp'
 #:include 'case.fpp'
 
-!> @brief Jones-Wilkins-Lee (JWL) EOS and its composition-weighted two-material closure for the five-equation model (Allaire et al.,
+!> @brief Jones-Wilkins-Lee (JWL) EOS and its pressure-temperature equilibrium closure for the five-equation model (Allaire et al.,
 !! JCP 2002).
 !!
 !! Pure JWL products (Mie-Grueneisen referenced to an isentrope), V = rho0/rho:
@@ -14,8 +14,10 @@
 !! principal isentrope, the last the thermal (Grueneisen) pressure.
 !! Refs: Lee/Hornig/Kury UCRL-50422 (1968); Menikoff LA-UR-15-29536 (2015).
 !!
-!! Two-material closure (products + ambient of mass fraction Y = alpha_rho_prod/rho).
-!! One effective EOS per cell, heat-capacity weighted with w = Y cv_j/(Y cv_j + (1-Y) cv_a):
+!! Mixed cells use a safeguarded pressure-temperature equilibrium solve; the
+!! composition-weighted expression below supplies its warm start and pure limits.
+!! Products mass fraction is Y = alpha_rho_prod/rho.
+!! The warm-start EOS is heat-capacity weighted with w = Y cv_j/(Y cv_j + (1-Y) cv_a):
 !!   An = w A, Bn = w B, omega = air_gamma + w(omega0 - air_gamma), cv = Y cv_j + (1-Y) cv_a.
 !! Exact at Y=0 (ambient) and Y=1 (pure JWL). A stiffened ambient (pi_inf > 0) adds the
 !! cold-stiffness offset pi_hat = (1-w) pi_inf; pi_inf = 0 recovers the ideal-gas closure
@@ -995,14 +997,14 @@ contains
 
         if (jwl_idx > 0) then
             if (f_is_default(jwl_cv_prod) .or. jwl_cv_prod <= 0._wp) then
-                call s_mpi_abort('The weighted-composition closure requires positive fluid_pp%cv for the JWL fluid.')
+                call s_mpi_abort('The JWL mixture closure requires positive fluid_pp%cv for the JWL fluid.')
             end if
             if (num_fluids > 1 .and. n_air /= 1) then
-                call s_mpi_abort('The weighted-composition closure requires exactly one non-JWL ideal-gas fluid.')
+                call s_mpi_abort('The JWL mixture closure requires exactly one non-JWL ideal-gas fluid.')
             end if
             if (air_idx > 0) then
                 if (f_is_default(fluid_pp(air_idx)%cv) .or. fluid_pp(air_idx)%cv <= 0._wp) then
-                    call s_mpi_abort('The weighted-composition closure requires positive fluid_pp%cv for the non-JWL air fluid.')
+                    call s_mpi_abort('The JWL mixture closure requires positive fluid_pp%cv for the non-JWL air fluid.')
                 end if
             end if
 
@@ -1014,7 +1016,7 @@ contains
                 gamma_src = jwl_idx
             end if
             if (f_is_default(fluid_pp(gamma_src)%gamma) .or. fluid_pp(gamma_src)%gamma <= 0._wp) then
-                call s_mpi_abort('The weighted-composition closure requires positive fluid_pp%gamma for the ambient-gas Grueneisen coefficient.')
+                call s_mpi_abort('The JWL mixture closure requires positive fluid_pp%gamma for the ambient-gas Grueneisen coefficient.')
             end if
             jwl_air_gammas(jwl_idx) = 1._wp/fluid_pp(gamma_src)%gamma
 
@@ -1048,7 +1050,7 @@ contains
 
             if (jwl_rho0s(jwl_idx) <= jwl_air_rho0s(jwl_idx) .or. jwl_E0s(jwl_idx)/jwl_ej_rho_refs(jwl_idx) &
                 & <= jwl_air_e0s(jwl_idx)) then
-                call s_mpi_abort('The weighted-composition closure requires increasing air-to-products reference density and energy.')
+                call s_mpi_abort('The JWL mixture closure requires increasing air-to-products reference density and energy.')
             end if
 
             ! Verify the assembled closure is positive-definite and invertible over the
