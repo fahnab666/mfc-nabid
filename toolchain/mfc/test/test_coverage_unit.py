@@ -577,7 +577,7 @@ def _set_verified(repo, sha):
 def test_verified_sha_is_none_when_the_ref_was_never_pushed():
     """A fork, or the window before the first refresh: undeterminable, not broken."""
     health = _health_module()
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, _env_without_git(), clear=True):
         repo, _, _ = _repo_with_history(d)
         assert health.verified_sha(cwd=repo) is None
         # None must reach map_health as None, which falls back to the wall-clock rule.
@@ -586,7 +586,7 @@ def test_verified_sha_is_none_when_the_ref_was_never_pushed():
 
 def test_verified_after_last_change_true_when_a_refresh_ran_since_the_change():
     health = _health_module()
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, _env_without_git(), clear=True):
         repo, relevant, later = _repo_with_history(d)
         _set_verified(repo, later)
         assert health.verified_sha(cwd=repo) == later
@@ -598,7 +598,7 @@ def test_verified_after_last_change_true_when_a_refresh_ran_since_the_change():
 def test_verified_after_last_change_false_when_the_refresh_predates_the_change():
     """The genuine broken-refresh case this check exists to catch."""
     health = _health_module()
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, _env_without_git(), clear=True):
         repo, relevant, _ = _repo_with_history(d)
         env = _env_without_git()
         git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(repo)]
