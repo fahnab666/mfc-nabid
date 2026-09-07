@@ -81,3 +81,9 @@ def test_cloud_rejects_periodic_override_on_shell():
     params = {**_valid_cloud_params(), "particle_cloud(1)%periodic_y": 1}
     with pytest.raises(CaseConstraintError, match="requires box rejection packing"):
         CaseValidator(params).validate("simulation")
+
+
+def test_rejects_underresolved_contact_parameter():
+    params = {**_valid_cloud_params(), "collision_steps_per_contact": 1}
+    with pytest.raises(CaseConstraintError, match="collision_steps_per_contact must be"):
+        CaseValidator(params).validate("simulation")

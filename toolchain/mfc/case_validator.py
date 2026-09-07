@@ -692,6 +692,8 @@ class CaseValidator:
         self.prohibit(ib_state_wrt and not ib, "ib_state_wrt requires ib to be enabled")
         self.prohibit(many_ib_patch_parallelism and not ib, "many_ib_patch_parallelism requires ib to be enabled")
 
+        self.prohibit(self.get("collision_steps_per_contact", 20) < 2, "collision_steps_per_contact must be >= 2")
+
         for i in range(1, num_particle_clouds + 1):
             n = self.get("n", 0)
             p = self.get("p", 0)

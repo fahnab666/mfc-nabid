@@ -678,6 +678,7 @@ def _load():
     _r("collision_model", INT, {"ib"})
     _r("coefficient_of_restitution", REAL, {"ib"})
     _r("collision_time", REAL, {"ib"})
+    _r("collision_steps_per_contact", INT, {"ib"})
     _r("ib_coefficient_of_friction", REAL, {"ib"})
     _r("many_ib_patch_parallelism", LOG, {"ib"})
 
@@ -1435,6 +1436,7 @@ _nv(
     "collision_model",
     "coefficient_of_restitution",
     "collision_time",
+    "collision_steps_per_contact",
     "ib_coefficient_of_friction",
     "num_particle_clouds",
     "ib_neighborhood_radius",

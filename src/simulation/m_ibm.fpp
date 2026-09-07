@@ -176,7 +176,7 @@ contains
         real(wp) :: Y_jwl, e_mix_jwl  !< JWL ghost-cell energy rebuild
         real(wp) :: b_IP, lam_IP  !< JWL reaction-progress rebuild (afterburn b, reactive lambda)
         real(wp) :: wsum, w  !< JWL fresh-cell extrapolation weights
-        integer :: di, dj, dk, jn, kn, ln, z_stencil  !< JWL fresh-cell neighbour stencil
+        integer :: di, dj, dk, jn, kn, ln, z_stencil, stencil, missing_donors  !< Fresh-cell neighbour stencil
         real(wp), dimension(2) :: Re_K
         real(wp) :: G_K
         real(wp) :: qv_K
@@ -214,7 +214,7 @@ contains
         type(ghost_point)      :: innerp
 
         ! set the Moving IBM interior conservative variables
-        $:GPU_PARALLEL_LOOP(private='[i, j, k, patch_id, rho]', collapse=3)
+        $:GPU_PARALLEL_LOOP(private='[i, j, k, l, patch_id, patch_id_temp, rho, dyn_pres]', collapse=3)
         do l = 0, p
             do k = 0, n
                 do j = 0, m
@@ -223,17 +223,27 @@ contains
                         call s_decode_patch_periodicity(patch_id, patch_id_temp)
                         call s_get_neighborhood_idx(patch_id_temp, patch_id)
                         if (patch_id > 0) then
-                            ! Placeholder low pressure inside the IB solid. Skip it with
-                            ! chemistry on: it would force an unphysical temperature
-                            ! (P=1 Pa at the ambient density -> T~0.01 K), which the
-                            ! Cantera temperature/transport evaluation (run grid-wide
-                            ! before the IB mask is applied) cannot handle -> NaN/hang.
-                            ! The interior is masked from the RHS regardless.
-                            if (.not. chemistry) q_prim_vf(eqn_idx%E)%sf(j, k, l) = 1._wp
                             rho = 0._wp
-                            do i = 1, num_fluids
-                                rho = rho + q_prim_vf(eqn_idx%cont%beg + i - 1)%sf(j, k, l)
-                            end do
+                            if (patch_ib(patch_id)%moving_ibm /= 0) then
+                                ! Preserve internal energy when the body velocity changes.
+                                ! This is independent of the EOS and its energy reference.
+                                do i = 1, num_fluids
+                                    rho = rho + q_cons_vf(eqn_idx%cont%beg + i - 1)%sf(j, k, l)
+                                end do
+                                dyn_pres = 0._wp
+                                do i = 1, num_dims
+                                    dyn_pres = dyn_pres + 0.5_wp*q_cons_vf(eqn_idx%mom%beg + i - 1)%sf(j, k, l)**2/rho
+                                end do
+                                q_cons_vf(eqn_idx%E)%sf(j, k, l) = q_cons_vf(eqn_idx%E)%sf(j, k, &
+                                          & l) - dyn_pres + 0.5_wp*rho*sum(patch_ib(patch_id)%vel(1:num_dims)**2)
+                            else
+                                ! Retain the stationary solid seed. Chemistry needs a
+                                ! physical temperature even in cells masked from the RHS.
+                                if (.not. chemistry) q_prim_vf(eqn_idx%E)%sf(j, k, l) = 1._wp
+                                do i = 1, num_fluids
+                                    rho = rho + q_prim_vf(eqn_idx%cont%beg + i - 1)%sf(j, k, l)
+                                end do
+                            end if
 
                             ! Sets the momentum
                             do i = 1, num_dims
@@ -247,20 +257,18 @@ contains
         end do
         $:END_GPU_PARALLEL_LOOP()
 
-        ! Moving-IB fresh-cell repopulation: a cell that just changed from
-        ! solid to fluid (prev marker /= 0, current marker == 0) is otherwise left
-        ! holding the p=1 Pa solid seed set above, which is a near-vacuum at
-        ! detonation pressures and drives a spurious rarefaction at the body's
-        ! trailing edge. Rebuild it by inverse-distance extrapolation from
+        ! Moving-IB fresh-cell repopulation: reconstruct cells that changed
+        ! from solid to fluid using physical-distance extrapolation from
         ! established-fluid neighbours (fluid now AND before the move). JWL uses
         ! its EOS closure below; ideal/stiffened-gas cases use the same closure as
         ! the ghost-point path. The %abn/%rxn reaction-progress
         ! variables are material scalars (prim = cons, like the color function), so
         ! a fresh cell takes the same inverse-distance neighbour average as alpha.
         if (moving_immersed_boundary_flag) then
-            z_stencil = 0; if (p > 0) z_stencil = 1
-            $:GPU_PARALLEL_LOOP(private='[j, k, l, q, di, dj, dk, jn, kn, ln, wsum, w, rho, gamma, pi_inf, qv_K, Re_K, G_K, Gs, &
-                                & Y_jwl, e_mix_jwl, dyn_pres, alpha_rho_IP, alpha_IP, vel_IP, pres_IP, b_IP, lam_IP]', collapse=3)
+            missing_donors = 0
+            $:GPU_PARALLEL_LOOP(private='[j, k, l, q, di, dj, dk, jn, kn, ln, z_stencil, stencil, wsum, w, rho, gamma, pi_inf, &
+                                & qv_K, Re_K, G_K, Gs, Y_jwl, e_mix_jwl, dyn_pres, alpha_rho_IP, alpha_IP, vel_IP, pres_IP, b_IP, &
+                                & lam_IP]', collapse=3, reduction='[[missing_donors]]', reductionOp='[+]')
             do l = 0, p
                 do k = 0, n
                     do j = 0, m
@@ -278,38 +286,40 @@ contains
                             do q = 1, 3
                                 vel_IP(q) = 0._wp
                             end do
-                            ! inverse-distance average over the 1-cell neighbourhood,
-                            ! established-fluid neighbours only (no solid, no other fresh cells)
+                            ! Expand only when the local neighbourhood has no established fluid.
                             $:GPU_LOOP(parallelism='[seq]')
-                            do dk = -z_stencil, z_stencil
-                                do dj = -1, 1
-                                    do di = -1, 1
-                                        jn = j + di; kn = k + dj; ln = l + dk
-                                        if ((di /= 0 .or. dj /= 0 .or. dk /= 0) .and. ib_markers%sf(jn, kn, &
-                                            & ln) == 0 .and. ib_markers_prev%sf(jn, kn, ln) == 0) then
-                                            w = 1._wp/sqrt(real(di*di + dj*dj + dk*dk, wp))
-                                            wsum = wsum + w
-                                            do q = 1, num_fluids
-                                                alpha_rho_IP(q) = alpha_rho_IP(q) + w*q_prim_vf(eqn_idx%cont%beg + q - 1)%sf(jn, &
-                                                             & kn, ln)
-                                                alpha_IP(q) = alpha_IP(q) + w*q_prim_vf(eqn_idx%adv%beg + q - 1)%sf(jn, kn, ln)
-                                            end do
-                                            do q = 1, num_dims
-                                                vel_IP(q) = vel_IP(q) + w*q_prim_vf(eqn_idx%mom%beg + q - 1)%sf(jn, kn, ln)
-                                            end do
-                                            pres_IP = pres_IP + w*q_prim_vf(eqn_idx%E)%sf(jn, kn, ln)
-                                            #:if not MFC_CASE_OPTIMIZATION or jwl_active
-                                                if (jwl_afterburn) b_IP = b_IP + w*q_prim_vf(eqn_idx%abn)%sf(jn, kn, ln)
-                                                if (jwl_reactive) lam_IP = lam_IP + w*q_prim_vf(eqn_idx%rxn)%sf(jn, kn, ln)
-                                            #:endif
-                                        end if
+                            do stencil = 1, buff_size
+                                z_stencil = 0; if (p > 0) z_stencil = stencil
+                                do dk = -z_stencil, z_stencil
+                                    do dj = -stencil, stencil
+                                        do di = -stencil, stencil
+                                            jn = j + di; kn = k + dj; ln = l + dk
+                                            if ((di /= 0 .or. dj /= 0 .or. dk /= 0) .and. ib_markers%sf(jn, kn, &
+                                                & ln) == 0 .and. ib_markers_prev%sf(jn, kn, ln) == 0) then
+                                                w = (x_cc(jn) - x_cc(j))**2 + (y_cc(kn) - y_cc(k))**2
+                                                if (p > 0) w = w + (z_cc(ln) - z_cc(l))**2
+                                                w = 1._wp/sqrt(w)
+                                                wsum = wsum + w
+                                                do q = 1, num_fluids
+                                                    alpha_rho_IP(q) = alpha_rho_IP(q) + w*q_prim_vf(eqn_idx%cont%beg + q &
+                                                                 & - 1)%sf(jn, kn, ln)
+                                                    alpha_IP(q) = alpha_IP(q) + w*q_prim_vf(eqn_idx%adv%beg + q - 1)%sf(jn, kn, ln)
+                                                end do
+                                                do q = 1, num_dims
+                                                    vel_IP(q) = vel_IP(q) + w*q_prim_vf(eqn_idx%mom%beg + q - 1)%sf(jn, kn, ln)
+                                                end do
+                                                pres_IP = pres_IP + w*q_prim_vf(eqn_idx%E)%sf(jn, kn, ln)
+                                                #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                                                    if (jwl_afterburn) b_IP = b_IP + w*q_prim_vf(eqn_idx%abn)%sf(jn, kn, ln)
+                                                    if (jwl_reactive) lam_IP = lam_IP + w*q_prim_vf(eqn_idx%rxn)%sf(jn, kn, ln)
+                                                #:endif
+                                            end if
+                                        end do
                                     end do
                                 end do
+                                if (wsum > 0._wp) exit
                             end do
 
-                            ! wsum == 0 (fully surrounded by solid/fresh) is unreachable under
-                            ! the acoustic CFL since the body moves << 1 cell/stage; if it ever
-                            ! happens the cell keeps the p=1 seed (no worse than base).
                             if (wsum > 0._wp) then
                                 rho = 0._wp
                                 $:GPU_LOOP(parallelism='[seq]')
@@ -357,9 +367,10 @@ contains
                                             & alpha_rho_IP, Re_K)
                                     end if
                                     if (bubbles_euler) then
-                                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = (1._wp - alpha_IP(1))*(gamma*pres_IP + pi_inf + dyn_pres)
+                                        q_cons_vf(eqn_idx%E)%sf(j, k, &
+                                                  & l) = (1._wp - alpha_IP(1))*(gamma*pres_IP + pi_inf + qv_K + dyn_pres)
                                     else
-                                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + dyn_pres
+                                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + qv_K + dyn_pres
                                     end if
                                     #:if not MFC_CASE_OPTIMIZATION or jwl_active
                                     end if
@@ -378,12 +389,16 @@ contains
                                     q_prim_vf(eqn_idx%mom%beg + q - 1)%sf(j, k, l) = vel_IP(q)
                                 end do
                                 q_prim_vf(eqn_idx%E)%sf(j, k, l) = pres_IP
+                            else
+                                missing_donors = missing_donors + 1
                             end if
                         end if
                     end do
                 end do
             end do
             $:END_GPU_PARALLEL_LOOP()
+            if (missing_donors > 0) &
+                & call s_mpi_abort("Moving IBM: uncovered cell has no established fluid donor in the available halo")
         end if
 
         if (num_gps > 0) then
@@ -594,9 +609,9 @@ contains
                         q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_mix_jwl + dyn_pres
                     #:endif
                 else if (bubbles_euler) then
-                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = (1 - alpha_IP(1))*(gamma*pres_IP + pi_inf + dyn_pres)
+                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = (1 - alpha_IP(1))*(gamma*pres_IP + pi_inf + qv_K + dyn_pres)
                 else
-                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + dyn_pres
+                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + qv_K + dyn_pres
                 end if
                 ! Set bubble vars
                 if (bubbles_euler .and. .not. qbmm) then
@@ -907,10 +922,13 @@ contains
         real(wp), dimension(2, 2, 2)                         :: eta
         type(ghost_point)                                    :: gp
         integer                                              :: q, i, j, k, ii, jj, kk  !< Grid indexes and iterators
-        integer                                              :: patch_id
+        integer                                              :: donor_i, donor_j, donor_k, zlo, zhi, missing_donors
+        real(wp)                                             :: donor_dist, best_dist
         logical                                              :: is_cell_center
 
-        $:GPU_PARALLEL_LOOP(private='[q, i, j, k, ii, jj, kk, dist, buf, gp, interp_coeffs, eta, alpha, patch_id, is_cell_center]')
+        missing_donors = 0
+        $:GPU_PARALLEL_LOOP(private='[q, i, j, k, ii, jj, kk, dist, buf, gp, interp_coeffs, eta, alpha, is_cell_center, donor_i, &
+                            & donor_j, donor_k, zlo, zhi, donor_dist, best_dist]', reduction='[[missing_donors]]', reductionOp='[+]')
         do q = 1, num_gps
             gp = ghost_points_in(q)
             ! Get the interpolation points
@@ -944,13 +962,13 @@ contains
             is_cell_center = .false.
             check_is_cell_center: do ii = 0, 1
                 do jj = 0, 1
-                    if (dist(ii + 1, jj + 1, 1) <= 1.e-16_wp) then
+                    if (dist(ii + 1, jj + 1, 1) <= 1.e-16_wp .and. ib_markers%sf(i + ii, j + jj, k) == 0) then
                         interp_coeffs(ii + 1, jj + 1, 1) = 1._wp
                         is_cell_center = .true.
                         exit check_is_cell_center
                     else
                         if (p /= 0) then
-                            if (dist(ii + 1, jj + 1, 2) <= 1.e-16_wp) then
+                            if (dist(ii + 1, jj + 1, 2) <= 1.e-16_wp .and. ib_markers%sf(i + ii, j + jj, k + 1) == 0) then
                                 interp_coeffs(ii + 1, jj + 1, 2) = 1._wp
                                 is_cell_center = .true.
                                 exit check_is_cell_center
@@ -963,41 +981,64 @@ contains
             if (.not. is_cell_center) then
                 ! if we are not arbitrarily close, interpolate
                 alpha = 1._wp
-                patch_id = gp%ib_patch_id
                 if (ib_markers%sf(i, j, k) /= 0) alpha(1, 1, 1) = 0._wp
                 if (ib_markers%sf(i + 1, j, k) /= 0) alpha(2, 1, 1) = 0._wp
                 if (ib_markers%sf(i, j + 1, k) /= 0) alpha(1, 2, 1) = 0._wp
                 if (ib_markers%sf(i + 1, j + 1, k) /= 0) alpha(2, 2, 1) = 0._wp
 
                 if (p == 0) then
-                    eta(:,:,1) = 1._wp/dist(:,:,1)**2
+                    eta(:,:,1) = 1._wp/max(dist(:,:,1)**2, tiny(1._wp))
                     buf = sum(alpha(:,:,1)*eta(:,:,1))
                     if (buf > 0._wp) then
                         interp_coeffs(:,:,1) = alpha(:,:,1)*eta(:,:,1)/buf
-                    else
-                        buf = sum(eta(:,:,1))
-                        interp_coeffs(:,:,1) = eta(:,:,1)/buf
                     end if
                 else
                     if (ib_markers%sf(i, j, k + 1) /= 0) alpha(1, 1, 2) = 0._wp
                     if (ib_markers%sf(i + 1, j, k + 1) /= 0) alpha(2, 1, 2) = 0._wp
                     if (ib_markers%sf(i, j + 1, k + 1) /= 0) alpha(1, 2, 2) = 0._wp
                     if (ib_markers%sf(i + 1, j + 1, k + 1) /= 0) alpha(2, 2, 2) = 0._wp
-                    eta = 1._wp/dist**2
+                    eta = 1._wp/max(dist**2, tiny(1._wp))
                     buf = sum(alpha*eta)
 
                     if (buf > 0._wp) then
                         interp_coeffs = alpha*eta/buf
-                    else
-                        buf = sum(eta)
-                        interp_coeffs = eta/buf
                     end if
+                end if
+            end if
+
+            if (sum(interp_coeffs) <= 0._wp) then
+                best_dist = huge(1._wp)
+                donor_i = i; donor_j = j; donor_k = k
+                zlo = 0; zhi = 0
+                if (p > 0) then
+                    zlo = max(k - gp_layers, -buff_size)
+                    zhi = min(k + gp_layers + 1, p + buff_size - 1)
+                end if
+                do kk = zlo, zhi
+                    do jj = max(j - gp_layers, -buff_size), min(j + gp_layers + 1, n + buff_size - 1)
+                        do ii = max(i - gp_layers, -buff_size), min(i + gp_layers + 1, m + buff_size - 1)
+                            if (ib_markers%sf(ii, jj, kk) /= 0) cycle
+                            donor_dist = (x_cc(ii) - gp%ip_loc(1))**2 + (y_cc(jj) - gp%ip_loc(2))**2
+                            if (p > 0) donor_dist = donor_dist + (z_cc(kk) - gp%ip_loc(3))**2
+                            if (donor_dist < best_dist) then
+                                best_dist = donor_dist
+                                donor_i = ii; donor_j = jj; donor_k = kk
+                            end if
+                        end do
+                    end do
+                end do
+                if (best_dist < huge(1._wp)) then
+                    ghost_points_in(q)%ip_grid = [donor_i, donor_j, donor_k]
+                    interp_coeffs(1, 1, 1) = 1._wp
+                else
+                    missing_donors = missing_donors + 1
                 end if
             end if
 
             ghost_points_in(q)%interp_coeffs = interp_coeffs
         end do
         $:END_GPU_PARALLEL_LOOP()
+        if (missing_donors > 0) call s_mpi_abort("IBM image point has no fluid donor in the available halo")
 
     end subroutine s_compute_interpolation_coeffs
 
@@ -1073,6 +1114,7 @@ contains
                 $:GPU_LOOP(parallelism='[seq]')
                 do k = k1, k2
                     coeff = gp%interp_coeffs(i - i1 + 1, j - j1 + 1, k - k1 + 1)
+                    if (coeff == 0._wp) cycle
 
                     pres_IP = pres_IP + coeff*q_prim_vf(eqn_idx%E)%sf(i, j, k)
 
@@ -1154,17 +1196,17 @@ contains
         call nvtxStartRange("UPDATE-MIBM")
 
         ! Clears the existing immersed boundary indices
-        z_gp_layers = 0; if (p /= 0) z_gp_layers = gp_layers + 1
+        z_gp_layers = 0; if (p /= 0) z_gp_layers = buff_size
 
         ! Snapshot markers before they are cleared/recomputed so s_ibm_correct_state can find cells that just changed solid->fluid.
         $:GPU_PARALLEL_LOOP(private='[i, j, k]')
-        do i = -gp_layers - 1, m + gp_layers + 1; do j = -gp_layers - 1, n + gp_layers + 1; do k = -z_gp_layers, p + z_gp_layers
+        do i = -buff_size, m + buff_size; do j = -buff_size, n + buff_size; do k = -z_gp_layers, p + z_gp_layers
             ib_markers_prev%sf(i, j, k) = ib_markers%sf(i, j, k)
         end do; end do; end do
         $:END_GPU_PARALLEL_LOOP()
 
         $:GPU_PARALLEL_LOOP(private='[i, j, k]')
-        do i = -gp_layers - 1, m + gp_layers + 1; do j = -gp_layers - 1, n + gp_layers + 1; do k = -z_gp_layers, p + z_gp_layers
+        do i = -buff_size, m + buff_size; do j = -buff_size, n + buff_size; do k = -z_gp_layers, p + z_gp_layers
             ib_markers%sf(i, j, k) = 0._wp
         end do; end do; end do
         $:END_GPU_PARALLEL_LOOP()
@@ -1334,7 +1376,7 @@ contains
             $:END_GPU_PARALLEL_LOOP()
         end if
 
-        call s_apply_collision_forces(ghost_points, num_gps, ib_markers, forces, torques)
+        call s_apply_collision_forces(forces, torques)
 
         ! reduce the forces across local neighborhood ranks
         call s_communicate_ib_forces(forces, torques)

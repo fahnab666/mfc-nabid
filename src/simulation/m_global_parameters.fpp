@@ -502,6 +502,7 @@ contains
         collision_model = 0
         coefficient_of_restitution = dflt_real
         collision_time = dflt_real
+        collision_steps_per_contact = 20
         ib_coefficient_of_friction = dflt_real
         ib_state_wrt = .false.
         many_ib_patch_parallelism = .false.

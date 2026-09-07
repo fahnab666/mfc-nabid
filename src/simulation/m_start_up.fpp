@@ -1572,14 +1572,16 @@ contains
             end do
 
             ! determine the upper bound on the size
-            local_rank_width = -1._wp
+            local_rank_width = huge(1._wp)
             #:for X, ID, DIM in [('x', 1, 'm'), ('y', 2, 'n'), ('z', 3, 'p')]
-                if (num_dims >= ${ID}$) local_rank_width = max(local_rank_width, abs(${X}$_cb(${DIM}$) - ${X}$_cb(-1)))
+                if (num_dims >= ${ID}$) local_rank_width = min(local_rank_width, abs(${X}$_cb(${DIM}$) - ${X}$_cb(-1)))
             #:endfor
             call s_mpi_allreduce_min(local_rank_width, min_rank_width)
 
-            ! approximate the size of the neighborhood with a local 1.1x fudge factor for safety, lower bound of 1
-            ib_neighborhood_radius = max(1, ceiling(1.1_wp*max_ib_bound/(min_rank_width)))
+            ! Contacts require both centers, up to two bounding radii apart.
+            ! The narrowest directional rank width controls coverage, not the
+            ! largest extent of an anisotropic decomposition.
+            ib_neighborhood_radius = max(1, ceiling(2.2_wp*max_ib_bound/min_rank_width))
             if (proc_rank == 0) print *, "Automatic choice of ib_neighborhood_radius selected: ", ib_neighborhood_radius
         end if
 

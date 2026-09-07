@@ -393,6 +393,7 @@ This is enabled by adding ``'elliptic_smoothing': "T",`` and ``'elliptic_smoothi
 | `coefficient_of_restitution`     | Real    | A number 0 to 1 describing how elastic IB collisions are |
 | `collision_model`     | Integer    | Integer to select the collision model being used for IB collisions. |
 | `collision_time`     | Real    | Amount of simulation time used to resolve collisions |
+| `collision_steps_per_contact` | Integer | Minimum adaptive timesteps per contact (default 20; must be at least 2). Fixed timesteps remain user-controlled. |
 | `ib_coefficient_of_friction`     | Real    | Coefficient of friction used in IB collisions |
 
 These parameters should be prepended with `patch_ib(j)%` where $j$ is the patch index.
@@ -446,6 +447,15 @@ Additional details on this specification can be found in [NACA airfoil](https://
 - `ib_coefficient_of_friction` is the coefficient of friction used in IB collisions.
 
 - `ib_neighborhood_radius` controls the size of the neighborhood size. A value of $r$ indicates that any given rank is aware of IBs up to $r$ ranks away. This value defaults to 0, which leaves the radius unset so that it is selected automatically. This parameter is required to strong-scale a case when IBs eventually grow to be larger than one full processor domain wide.
+
+Automatic neighborhood selection covers two particle bounding radii using the
+smallest directional rank width. It is a startup estimate; changes in geometry
+or decomposition still require checking communication coverage.
+
+Adaptive timestepping also limits body translation and circular/spherical
+surface rotation to one quarter of the smallest local cell width per step.
+The contact cap is a numerical resolution control, not a convergence guarantee.
+Keep `collision_time` fixed while refining `collision_steps_per_contact`.
 
 #### Particle Clouds
 

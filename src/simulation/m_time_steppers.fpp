@@ -673,7 +673,8 @@ contains
         real(wp)               :: max_dt
         real(wp)               :: dt_local
         integer                :: j, k, l     !< Generic loop iterators
-        integer                :: fl          !< Fluid loop iterator
+        integer                :: fl, ib_idx  !< Fluid and particle loop iterators
+        real(wp)               :: h_ib, speed_ib
 
         if (.not. igr) then
             call s_convert_conservative_to_primitive_variables(q_cons_ts(1)%vf, q_T_sf, q_prim_vf, idwint)
@@ -731,6 +732,23 @@ contains
             end do
         end do
         $:END_GPU_PARALLEL_LOOP()
+
+        ! Resolve soft-sphere contact independently of the fluid acoustic CFL.
+        if (collision_model == 1) dt_local = min(dt_local, collision_time/real(collision_steps_per_contact, wp))
+
+        ! Covered cells do not enter the fluid CFL. Bound body translation and
+        ! surface rotation separately so fresh-cell reconstruction stays local.
+        if (moving_immersed_boundary_flag .and. num_ibs > 0) then
+            h_ib = min(minval(dx(0:m)), minval(dy(0:n)))
+            if (p > 0) h_ib = min(h_ib, minval(dz(0:p)))
+            $:GPU_PARALLEL_LOOP(private='[ib_idx, speed_ib]', copyin='[h_ib]', reduction='[[dt_local]]', reductionOp='[min]')
+            do ib_idx = 1, num_ibs
+                if (patch_ib(ib_idx)%moving_ibm == 0) cycle
+                speed_ib = norm2(patch_ib(ib_idx)%vel) + max(0._wp, patch_ib(ib_idx)%radius)*norm2(patch_ib(ib_idx)%angular_vel)
+                if (speed_ib > 0._wp) dt_local = min(dt_local, 0.25_wp*h_ib/speed_ib)
+            end do
+            $:END_GPU_PARALLEL_LOOP()
+        end if
 
         if (num_procs == 1) then
             dt = dt_local
@@ -800,16 +818,24 @@ contains
     !> Update immersed boundary positions and velocities at the current Runge-Kutta stage
     subroutine s_propagate_immersed_boundaries(s)
 
-        integer, intent(in) :: s
-        integer             :: i
-        integer             :: gbl_id  ! used for analytic ib patch motion
+        integer, intent(in)    :: s
+        integer                :: i
+        integer                :: gbl_id  ! used for analytic ib patch motion
+        real(wp), dimension(3) :: stage_vel, stage_angular_vel
+        real(wp)               :: stage_weight, initial_weight, stage_dt
 
         call nvtxStartRange("PROPAGATE-IMMERSED-BOUNDARIES")
 
+        stage_weight = rk_coef(s, 1)/rk_coef(s, 4)
+        initial_weight = rk_coef(s, 2)/rk_coef(s, 4)
+        stage_dt = rk_coef(s, 3)*dt/rk_coef(s, 4)
         if (moving_immersed_boundary_flag) call s_compute_ib_forces(q_prim_vf, fluid_pp)
 
-        $:GPU_PARALLEL_LOOP(private='[i, gbl_id]', copyin='[s]')
+        $:GPU_PARALLEL_LOOP(private='[i, gbl_id, stage_vel, stage_angular_vel]', &
+                            & copyin='[s, stage_weight, initial_weight, stage_dt]')
         do i = 1, num_ibs
+            stage_vel = patch_ib(i)%vel
+            stage_angular_vel = patch_ib(i)%angular_vel
             if (s == 1) then
                 patch_ib(i)%step_vel = patch_ib(i)%vel
                 patch_ib(i)%step_angular_vel = patch_ib(i)%angular_vel
@@ -819,39 +845,43 @@ contains
                 patch_ib(i)%step_z_centroid = patch_ib(i)%z_centroid
             end if
 
+            ! Match fluid RK weights: column 1 is current stage, column 2 is the step start.
             ! Compute forces BEFORE the RK velocity blend so the device copy of patch_ib%vel matches the host (pre-blend) when
             ! velocity-dependent collision damping forces are evaluated on the GPU.
             if (patch_ib(i)%moving_ibm > 0) then
-                patch_ib(i)%vel = (rk_coef(s, 1)*patch_ib(i)%step_vel + rk_coef(s, 2)*patch_ib(i)%vel)/rk_coef(s, 4)
-                patch_ib(i)%angular_vel = (rk_coef(s, 1)*patch_ib(i)%step_angular_vel + rk_coef(s, &
-                         & 2)*patch_ib(i)%angular_vel)/rk_coef(s, 4)
+                patch_ib(i)%vel = initial_weight*patch_ib(i)%step_vel + stage_weight*patch_ib(i)%vel
+                patch_ib(i)%angular_vel = initial_weight*patch_ib(i)%step_angular_vel + stage_weight*patch_ib(i)%angular_vel
 
                 if (patch_ib(i)%moving_ibm == 1) then
                     ! plug in analytic velocities for 1-way coupling, if it exists
                     @:mib_analytical()
                 else if (patch_ib(i)%moving_ibm == 2) then  ! if we are using two-way coupling, apply force and torque
                     ! update the velocity from the force value
-                    patch_ib(i)%vel = patch_ib(i)%vel + rk_coef(s, 3)*dt*(patch_ib(i)%force/patch_ib(i)%mass)/rk_coef(s, 4)
+                    patch_ib(i)%vel = patch_ib(i)%vel + stage_dt*(patch_ib(i)%force/patch_ib(i)%mass)
 
                     ! update the angular velocity with the torque value
-                    patch_ib(i)%angular_vel = (patch_ib(i)%angular_vel*patch_ib(i)%moment) + (rk_coef(s, &
-                             & 3)*dt*patch_ib(i)%torque/rk_coef(s, 4))  ! add the torque to the angular momentum
+                    patch_ib(i)%angular_vel = patch_ib(i)%angular_vel*patch_ib(i)%moment + stage_dt*patch_ib(i)%torque
                     if (num_dims == 3) call s_compute_moment_of_inertia(patch_ib(i), patch_ib(i)%angular_vel, patch_ib(i)%moment)
                     ! update the moment of inertia to be based on the direction of the angular momentum
                     patch_ib(i)%angular_vel = patch_ib(i)%angular_vel/patch_ib(i)%moment
                 end if
 
-                ! Update the angle of the IB
-                patch_ib(i)%angles = (rk_coef(s, 1)*patch_ib(i)%step_angles + rk_coef(s, 2)*patch_ib(i)%angles + rk_coef(s, &
-                         & 3)*patch_ib(i)%angular_vel*dt)/rk_coef(s, 4)
+                ! Position and orientation use the incoming stage derivatives,
+                ! just as the fluid and velocity equations do in SSP RK.
+                ! Prescribed analytic motion supplies its velocity above.
+                if (patch_ib(i)%moving_ibm == 1) then
+                    stage_vel = patch_ib(i)%vel
+                    stage_angular_vel = patch_ib(i)%angular_vel
+                end if
 
-                ! Update the position of the IB
-                patch_ib(i)%x_centroid = (rk_coef(s, 1)*patch_ib(i)%step_x_centroid + rk_coef(s, &
-                         & 2)*patch_ib(i)%x_centroid + rk_coef(s, 3)*patch_ib(i)%vel(1)*dt)/rk_coef(s, 4)
-                patch_ib(i)%y_centroid = (rk_coef(s, 1)*patch_ib(i)%step_y_centroid + rk_coef(s, &
-                         & 2)*patch_ib(i)%y_centroid + rk_coef(s, 3)*patch_ib(i)%vel(2)*dt)/rk_coef(s, 4)
-                patch_ib(i)%z_centroid = (rk_coef(s, 1)*patch_ib(i)%step_z_centroid + rk_coef(s, &
-                         & 2)*patch_ib(i)%z_centroid + rk_coef(s, 3)*patch_ib(i)%vel(3)*dt)/rk_coef(s, 4)
+                patch_ib(i)%angles = initial_weight*patch_ib(i)%step_angles + stage_weight*patch_ib(i)%angles &
+                         & + stage_dt*stage_angular_vel
+                patch_ib(i)%x_centroid = initial_weight*patch_ib(i)%step_x_centroid + stage_weight*patch_ib(i)%x_centroid &
+                         & + stage_dt*stage_vel(1)
+                patch_ib(i)%y_centroid = initial_weight*patch_ib(i)%step_y_centroid + stage_weight*patch_ib(i)%y_centroid &
+                         & + stage_dt*stage_vel(2)
+                patch_ib(i)%z_centroid = initial_weight*patch_ib(i)%step_z_centroid + stage_weight*patch_ib(i)%z_centroid &
+                         & + stage_dt*stage_vel(3)
             end if
         end do
         $:END_GPU_PARALLEL_LOOP()
