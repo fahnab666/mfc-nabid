@@ -383,7 +383,8 @@ module m_derived_types
         integer  :: seed  !< Random seed for reproducible placement
         integer  :: cloud_geometry  !< Cloud region geometry: 1=box, 2=hemisphere shell
         integer  :: packing_method  !< Packing algorithm: 1=rejection sampling, 2=lattice
-        integer  :: periodic  !< Periodic overlap flag for box rejection packing: 0=off, 1=on
+        integer  :: periodic  !< Legacy all-axis periodic packing flag: 0=off, 1=on
+        integer  :: periodic_x, periodic_y, periodic_z  !< Per-axis override: -1=inherit, 0=off, 1=on
     end type particle_cloud_parameters
 
     !> Derived type annexing the physical parameters (PP) of the fluids. These include the specific heat ratio function and liquid

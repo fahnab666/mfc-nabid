@@ -715,6 +715,11 @@ class CaseValidator:
             mass = self.get(f"particle_cloud({i})%mass", None)
             num_particles = self.get(f"particle_cloud({i})%num_particles", None)
             periodic = self.get(f"particle_cloud({i})%periodic", 0)
+            for axis in "xyz":
+                override = self.get(f"particle_cloud({i})%periodic_{axis}", -1)
+                self.prohibit(override not in [-1, 0, 1], f"particle_cloud({i})%periodic_{axis} must be -1 (inherit), 0 (off), or 1 (on)")
+                self.prohibit(override == 1 and (geometry != 1 or packing_method != 1), f"particle_cloud({i})%periodic_{axis} requires box rejection packing")
+                self.prohibit(override == 1 and (self.get(f"particle_cloud({i})%length_{axis}", 0) or 0) <= 0, f"particle_cloud({i})%periodic_{axis} requires a positive box length")
             length_x = self.get(f"particle_cloud({i})%length_x", None)
             length_y = self.get(f"particle_cloud({i})%length_y", None)
             length_z = self.get(f"particle_cloud({i})%length_z", None)

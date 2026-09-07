@@ -449,6 +449,16 @@ Additional details on this specification can be found in [NACA airfoil](https://
 
 #### Particle Clouds
 
+For box rejection packing, `particle_cloud(j)%%periodic` retains its legacy
+all-axis meaning. The integer overrides `particle_cloud(j)%%periodic_x`,
+`particle_cloud(j)%%periodic_y`, and `particle_cloud(j)%%periodic_z` accept
+-1 (inherit, default), 0 (off), or 1 (on). For a curtain with periodic y/z only,
+set `periodic=0`, `periodic_y=1`, and `periodic_z=1`. Packing periodicity is
+independent of the flow boundary conditions and must be chosen consistently.
+Periodic hashing uses equal-width bins and verifies center distances against
+`2*radius + min_spacing`.
+
+
 A particle cloud is a compact specification of a bed of identical circular (2D) or spherical (3D) immersed boundaries; each cloud is expanded into individual `patch_ib` particles at startup. Set `num_particle_clouds` to the number of beds and prepend the parameters below with `particle_cloud(j)%` where $j$ is the cloud index.
 
 | Parameter         | Type    | Description |

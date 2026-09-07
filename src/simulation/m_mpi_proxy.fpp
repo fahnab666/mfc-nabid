@@ -209,6 +209,9 @@ contains
             call MPI_BCAST(particle_cloud(i)%cloud_geometry, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(particle_cloud(i)%packing_method, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
             call MPI_BCAST(particle_cloud(i)%periodic, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
+            #:for VAR in ['periodic_x', 'periodic_y', 'periodic_z']
+                call MPI_BCAST(particle_cloud(i)%${VAR}$, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
+            #:endfor
         end do
 
         ! manual: acoustic/probe (combined loop; complex acoustic member set)

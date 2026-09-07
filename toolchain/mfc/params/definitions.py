@@ -1041,6 +1041,8 @@ def _load():
     _pb_attrs["cloud_geometry"] = (INT, _pb_tags)
     _pb_attrs["packing_method"] = (INT, _pb_tags)
     _pb_attrs["periodic"] = (INT, _pb_tags)
+    for _d in ["x", "y", "z"]:
+        _pb_attrs[f"periodic_{_d}"] = (INT, _pb_tags)
     REGISTRY.register_family(
         IndexedFamily(
             base_name="particle_cloud",

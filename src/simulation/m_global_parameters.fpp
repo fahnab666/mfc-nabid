@@ -658,6 +658,9 @@ contains
             particle_cloud(i)%cloud_geometry = 1
             particle_cloud(i)%packing_method = dflt_int
             particle_cloud(i)%periodic = 0
+            particle_cloud(i)%periodic_x = -1
+            particle_cloud(i)%periodic_y = -1
+            particle_cloud(i)%periodic_z = -1
         end do
 
         do i = 1, num_ib_patches_max_namelist

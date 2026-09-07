@@ -93,7 +93,8 @@ contains
         integer                                                           :: ib_idx, n_placed, geom, seed, alloc_stat
         integer(8)                                                        :: n_attempts, max_attempts
         real(wp)                                                          :: min_dist, rx, ry, rz
-        logical                                                           :: overlaps, reject, periodic_pack
+        logical                                                           :: overlaps, reject
+        logical, dimension(3)                                             :: periodic_pack
         real(wp), allocatable                                             :: placed(:,:)
         integer                                                           :: hash_size, slot
         integer                                                           :: bx, by, bz, nx_bins, ny_bins, nz_bins
@@ -109,15 +110,19 @@ contains
 
         min_dist = 2._wp*particle_cloud(cloud_idx)%radius + particle_cloud(cloud_idx)%min_spacing
         periodic_pack = particle_cloud(cloud_idx)%cloud_geometry == 1 .and. particle_cloud(cloud_idx)%periodic == 1
+        if (particle_cloud(cloud_idx)%periodic_x >= 0) periodic_pack(1) = particle_cloud(cloud_idx)%periodic_x == 1
+        if (particle_cloud(cloud_idx)%periodic_y >= 0) periodic_pack(2) = particle_cloud(cloud_idx)%periodic_y == 1
+        if (particle_cloud(cloud_idx)%periodic_z >= 0) periodic_pack(3) = particle_cloud(cloud_idx)%periodic_z == 1
+        if (num_dims < 3) periodic_pack(3) = .false.
         length_x = particle_cloud(cloud_idx)%length_x
         length_y = particle_cloud(cloud_idx)%length_y
         length_z = particle_cloud(cloud_idx)%length_z
         xmin = particle_cloud(cloud_idx)%x_centroid - 0.5_wp*length_x
         ymin = particle_cloud(cloud_idx)%y_centroid - 0.5_wp*length_y
         zmin = particle_cloud(cloud_idx)%z_centroid - 0.5_wp*length_z
-        nx_bins = max(1, ceiling(length_x/min_dist))
-        ny_bins = max(1, ceiling(length_y/min_dist))
-        nz_bins = max(1, ceiling(length_z/min_dist))
+        nx_bins = max(1, floor(length_x/min_dist))
+        ny_bins = max(1, floor(length_y/min_dist))
+        nz_bins = max(1, floor(length_z/min_dist))
         if (num_dims < 3) nz_bins = 1
 
         if (num_dims < 3) then
@@ -402,30 +407,26 @@ contains
     end subroutine s_add_cloud_particle
 
     !> Convert a candidate particle centre to spatial-hash bin coordinates.
-    subroutine s_get_cloud_bin(px, py, pz, min_dist, periodic_pack, xmin, ymin, zmin, nx_bins, ny_bins, nz_bins, bx, by, bz)
+    subroutine s_get_cloud_bin(px, py, pz, min_dist, periodic_pack, xmin, ymin, zmin, length_x, length_y, length_z, nx_bins, &
+                               & ny_bins, nz_bins, bx, by, bz)
 
-        real(wp), intent(in) :: px, py, pz, min_dist
-        logical, intent(in)  :: periodic_pack
-        real(wp), intent(in) :: xmin, ymin, zmin
-        integer, intent(in)  :: nx_bins, ny_bins, nz_bins
-        integer, intent(out) :: bx, by, bz
+        real(wp), intent(in)              :: px, py, pz, min_dist, xmin, ymin, zmin, length_x, length_y, length_z
+        logical, dimension(3), intent(in) :: periodic_pack
+        integer, intent(in)               :: nx_bins, ny_bins, nz_bins
+        integer, intent(out)              :: bx, by, bz
 
-        if (periodic_pack) then
-            bx = modulo(int(floor((px - xmin)/min_dist)), nx_bins)
-            by = modulo(int(floor((py - ymin)/min_dist)), ny_bins)
-            if (num_dims < 3) then
-                bz = 0
-            else
-                bz = modulo(int(floor((pz - zmin)/min_dist)), nz_bins)
-            end if
-        else
-            bx = int(floor(px/min_dist))
-            by = int(floor(py/min_dist))
-            if (num_dims < 3) then
-                bz = 0
-            else
-                bz = int(floor(pz/min_dist))
-            end if
+        ! Equal-width periodic bins, at least min_dist wide when there is more
+        ! than one bin. A short remainder bin can otherwise hide a seam contact
+        ! two bin hops away from a candidate.
+
+        bx = int(floor((px - xmin)/min_dist))
+        by = int(floor((py - ymin)/min_dist))
+        bz = 0
+        if (periodic_pack(1)) bx = modulo(int(floor((px - xmin)/(length_x/nx_bins))), nx_bins)
+        if (periodic_pack(2)) by = modulo(int(floor((py - ymin)/(length_y/ny_bins))), ny_bins)
+        if (num_dims == 3) then
+            bz = int(floor((pz - zmin)/min_dist))
+            if (periodic_pack(3)) bz = modulo(int(floor((pz - zmin)/(length_z/nz_bins))), nz_bins)
         end if
 
     end subroutine s_get_cloud_bin
@@ -440,7 +441,7 @@ contains
         real(wp), intent(in), dimension(:,:) :: placed
         integer, intent(in), dimension(:)    :: hash_head, chain_next
         integer, intent(in)                  :: hash_size
-        logical, intent(in)                  :: periodic_pack
+        logical, dimension(3), intent(in)    :: periodic_pack
         real(wp), intent(in)                 :: xmin, ymin, zmin, length_x, length_y, length_z
         integer, intent(in)                  :: nx_bins, ny_bins, nz_bins
         logical, intent(out)                 :: overlaps
@@ -449,7 +450,8 @@ contains
         integer                              :: dx_b, dy_b, dz_b, dz_lo, dz_hi, j
         real(wp)                             :: dist_sq, min_dist_sq, dx, dy, dz
 
-        call s_get_cloud_bin(px, py, pz, min_dist, periodic_pack, xmin, ymin, zmin, nx_bins, ny_bins, nz_bins, bx, by, bz)
+        call s_get_cloud_bin(px, py, pz, min_dist, periodic_pack, xmin, ymin, zmin, length_x, length_y, length_z, nx_bins, &
+                             & ny_bins, nz_bins, bx, by, bz)
 
         dz_lo = -1
         dz_hi = 1
@@ -467,25 +469,21 @@ contains
                     nbx = bx + dx_b
                     nby = by + dy_b
                     nbz = bz + dz_b
-                    if (periodic_pack) then
-                        nbx = modulo(nbx, nx_bins)
-                        nby = modulo(nby, ny_bins)
-                        if (num_dims == 3) nbz = modulo(nbz, nz_bins)
-                    end if
+                    if (periodic_pack(1)) nbx = modulo(nbx, nx_bins)
+                    if (periodic_pack(2)) nby = modulo(nby, ny_bins)
+                    if (periodic_pack(3)) nbz = modulo(nbz, nz_bins)
                     slot = f_bin_hash(nbx, nby, nbz, hash_size)
                     j = hash_head(slot)
                     do while (j > 0)
                         dx = abs(px - placed(1, j))
                         dy = abs(py - placed(2, j))
-                        if (periodic_pack) then
-                            dx = min(dx, length_x - dx)
-                            dy = min(dy, length_y - dy)
-                        end if
+                        if (periodic_pack(1)) dx = min(dx, length_x - dx)
+                        if (periodic_pack(2)) dy = min(dy, length_y - dy)
                         if (num_dims < 3) then
                             dist_sq = dx**2 + dy**2
                         else
                             dz = abs(pz - placed(3, j))
-                            if (periodic_pack) dz = min(dz, length_z - dz)
+                            if (periodic_pack(3)) dz = min(dz, length_z - dz)
                             dist_sq = dx**2 + dy**2 + dz**2
                         end if
                         if (dist_sq < min_dist_sq) then

@@ -68,3 +68,16 @@ def test_hemi_shell_validator_rejects_shell_outside_domain():
     params = {**_valid_cloud_params(), "particle_cloud(1)%x_centroid": 0.9, "particle_cloud(1)%shell_outer_radius": 0.3}
     with pytest.raises(CaseConstraintError, match="x-extent must lie within x_domain"):
         CaseValidator(params).validate("simulation")
+
+
+@pytest.mark.parametrize("axis", ["x", "y", "z"])
+def test_cloud_rejects_invalid_periodic_override(axis):
+    params = {**_valid_cloud_params(), f"particle_cloud(1)%periodic_{axis}": 2}
+    with pytest.raises(CaseConstraintError, match=f"periodic_{axis} must be"):
+        CaseValidator(params).validate("simulation")
+
+
+def test_cloud_rejects_periodic_override_on_shell():
+    params = {**_valid_cloud_params(), "particle_cloud(1)%periodic_y": 1}
+    with pytest.raises(CaseConstraintError, match="requires box rejection packing"):
+        CaseValidator(params).validate("simulation")
