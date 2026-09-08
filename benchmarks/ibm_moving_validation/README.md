@@ -5,6 +5,9 @@ particle time integration error in a binary impact.
 Run commands from the repository root. Use separate output directories for
 comparisons; MFC writes checkpoints beside the input file.
 
+See [the HPC test plan](HPC_TEST_PLAN.md) for staged multi-GPU correctness,
+convergence, physics-validation, and scaling tests with acceptance criteria.
+
 ## Solver changes
 
 - Particle velocity, position, and orientation use the same current-stage/step-start
