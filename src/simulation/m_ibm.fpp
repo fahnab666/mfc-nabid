@@ -182,7 +182,7 @@ contains
         real(wp) :: G_K
         real(wp) :: qv_K
         real(wp) :: pres_IP
-        real(wp), dimension(3) :: vel_IP, vel_norm_IP
+        real(wp), dimension(3) :: vel_IP, vel_wall
         real(wp) :: c_IP
 
         #:if not MFC_CASE_OPTIMIZATION and USING_AMD
@@ -403,7 +403,7 @@ contains
         end if
 
         if (num_gps > 0) then
-            $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, vel_g, vel_norm_IP, &
+            $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, vel_g, vel_wall, &
                                 & r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, G_K, Gs, gp, &
                                 & innerp, norm, buf, radial_vector, rotation_velocity, j, k, l, q, qv_K, c_IP, nbub, patch_id, &
                                 & Ys_IP, T_IP, mw_IP, e_IP, v_blow_eff, Y_jwl, e_mix_jwl, b_IP, lam_IP, vel_sum_g, E_ghost, &
@@ -472,19 +472,12 @@ contains
                     q_prim_vf(eqn_idx%c)%sf(j, k, l) = c_IP
                 end if
 
-                ! set the pressure
-                if (patch_ib(patch_id)%moving_ibm <= 1) then
-                    q_prim_vf(eqn_idx%E)%sf(j, k, l) = pres_IP
-                else
-                    q_prim_vf(eqn_idx%E)%sf(j, k, l) = 0._wp
-                    $:GPU_LOOP(parallelism='[seq]')
-                    do q = 1, num_fluids
-                        ! Pressure correction for moving IB: accounts for acceleration of IB surface
-                        q_prim_vf(eqn_idx%E)%sf(j, k, l) = q_prim_vf(eqn_idx%E)%sf(j, k, &
-                                  & l) + pres_IP/(1._wp - 2._wp*abs(gp%levelset*alpha_rho_IP(q)/pres_IP) &
-                                  & *dot_product(patch_ib(patch_id)%force/patch_ib(patch_id)%mass, gp%levelset_norm))
-                    end do
-                end if
+                ! Homogeneous Neumann pressure condition.  The former moving-body
+                ! correction divided by 1 - 2*|phi|*rho*a_n/p; an impulsive DEM
+                ! contact force can drive that denominator through zero inside one
+                ! cell.  Contact changes the wall velocity through the particle
+                ! integrator and must not independently manufacture ghost pressure.
+                q_prim_vf(eqn_idx%E)%sf(j, k, l) = pres_IP
 
                 ! If in simulation, use acc mixture subroutines
                 if (hypoelasticity) then
@@ -505,33 +498,31 @@ contains
                         & + real(ghost_points(i)%z_periodicity, wp)*(glb_bounds(3)%end - glb_bounds(3)%beg))
                 end if
 
-                ! Calculate velocity of ghost cell
+                ! Calculate velocity of ghost cell. For moving bodies, reflect the
+                ! image-point velocity about the velocity at the boundary intercept
+                ! (halfway between the ghost and image points). This imposes the
+                ! requested wall velocity at the immersed surface.
                 if (gp%slip) then
                     norm(1:3) = gp%levelset_norm
                     buf = sqrt(sum(norm**2))
                     norm = norm/buf
-                    vel_norm_IP = sum(vel_IP*norm)*norm
-                    vel_g = vel_IP - vel_norm_IP
                     if (patch_ib(patch_id)%moving_ibm /= 0) then
-                        ! compute the linear velocity of the ghost point due to rotation
+                        radial_vector = radial_vector + abs(gp%levelset)*norm
                         call s_cross_product(patch_ib(patch_id)%angular_vel, radial_vector, rotation_velocity)
-
-                        ! add only the component of the IB's motion that is normal to the surface
-                        vel_g = vel_g + sum((patch_ib(patch_id)%vel + rotation_velocity)*norm)*norm
+                        vel_wall = patch_ib(patch_id)%vel + rotation_velocity
+                        vel_g = vel_IP - 2._wp*sum((vel_IP - vel_wall)*norm)*norm
+                    else
+                        vel_g = vel_IP - sum(vel_IP*norm)*norm
                     end if
                 else
                     if (patch_ib(patch_id)%moving_ibm == 0) then
                         ! we know the object is not moving if moving_ibm is 0 (false)
                         vel_g = 0._wp
                     else
-                        ! convert the angular velocity from the inertial reference frame to the fluids frame, then convert to linear
-                        ! velocity
+                        radial_vector = radial_vector + abs(gp%levelset)*gp%levelset_norm
                         call s_cross_product(patch_ib(patch_id)%angular_vel, radial_vector, rotation_velocity)
-                        do q = 1, 3
-                            ! if mibm is 1 or 2, then the boundary may be moving
-                            vel_g(q) = patch_ib(patch_id)%vel(q)  ! add the linear velocity
-                            vel_g(q) = vel_g(q) + rotation_velocity(q)  ! add the rotational velocity
-                        end do
+                        vel_wall = patch_ib(patch_id)%vel + rotation_velocity
+                        vel_g = 2._wp*vel_wall - vel_IP
                     end if
                 end if
 
@@ -881,29 +872,44 @@ contains
                             ghost_points_in(local_idx)%z_periodicity = zp
                             ghost_points_in(local_idx)%slip = patch_ib(neighborhood_patch_id)%slip
 
-                            if ((x_cc(i) - dx(i)) < glb_bounds(1)%beg) then
-                                ghost_points_in(local_idx)%DB(1) = -1
-                            else if ((x_cc(i) + dx(i)) > glb_bounds(1)%end) then
-                                ghost_points_in(local_idx)%DB(1) = 1
+                            if (ib_bc_x%beg == BC_SLIP_WALL .or. ib_bc_x%beg == BC_NO_SLIP_WALL) then
+                                if ((x_cc(i) - dx(i)) < glb_bounds(1)%beg) then
+                                    ghost_points_in(local_idx)%DB(1) = -1
+                                else
+                                    ghost_points_in(local_idx)%DB(1) = 0
+                                end if
                             else
                                 ghost_points_in(local_idx)%DB(1) = 0
                             end if
+                            if ((ib_bc_x%end == BC_SLIP_WALL .or. ib_bc_x%end == BC_NO_SLIP_WALL) .and. (x_cc(i) + dx(i)) &
+                                & > glb_bounds(1)%end) then
+                                ghost_points_in(local_idx)%DB(1) = 1
+                            end if
 
-                            if ((y_cc(j) - dy(j)) < glb_bounds(2)%beg) then
-                                ghost_points_in(local_idx)%DB(2) = -1
-                            else if ((y_cc(j) + dy(j)) > glb_bounds(2)%end) then
-                                ghost_points_in(local_idx)%DB(2) = 1
+                            if (ib_bc_y%beg == BC_SLIP_WALL .or. ib_bc_y%beg == BC_NO_SLIP_WALL) then
+                                if ((y_cc(j) - dy(j)) < glb_bounds(2)%beg) then
+                                    ghost_points_in(local_idx)%DB(2) = -1
+                                else
+                                    ghost_points_in(local_idx)%DB(2) = 0
+                                end if
                             else
                                 ghost_points_in(local_idx)%DB(2) = 0
                             end if
+                            if ((ib_bc_y%end == BC_SLIP_WALL .or. ib_bc_y%end == BC_NO_SLIP_WALL) .and. (y_cc(j) + dy(j)) &
+                                & > glb_bounds(2)%end) then
+                                ghost_points_in(local_idx)%DB(2) = 1
+                            end if
 
+                            ghost_points_in(local_idx)%DB(3) = 0
                             if (p /= 0) then
-                                if ((z_cc(k) - dz(k)) < glb_bounds(3)%beg) then
-                                    ghost_points_in(local_idx)%DB(3) = -1
-                                else if ((z_cc(k) + dz(k)) > glb_bounds(3)%end) then
+                                if (ib_bc_z%beg == BC_SLIP_WALL .or. ib_bc_z%beg == BC_NO_SLIP_WALL) then
+                                    if ((z_cc(k) - dz(k)) < glb_bounds(3)%beg) then
+                                        ghost_points_in(local_idx)%DB(3) = -1
+                                    end if
+                                end if
+                                if ((ib_bc_z%end == BC_SLIP_WALL .or. ib_bc_z%end == BC_NO_SLIP_WALL) .and. (z_cc(k) + dz(k)) &
+                                    & > glb_bounds(3)%end) then
                                     ghost_points_in(local_idx)%DB(3) = 1
-                                else
-                                    ghost_points_in(local_idx)%DB(3) = 0
                                 end if
                             end if
                         end if
