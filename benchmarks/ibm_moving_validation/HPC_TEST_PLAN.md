@@ -26,6 +26,58 @@ The older `benchmarks/1D_jwl_mixture_closure_validation/README.md` describes the
 previous weighted closure; its reported results must not be treated as validation
 of the current pressure-temperature equilibrium implementation.
 
+## EOS integration gate
+
+The upstream integration includes the state-dependent EOS framework from
+[PR #1811](https://github.com/MFlowCode/MFC/pull/1811), alongside this fork's
+existing equilibrium JWL closure. These are different mixture models:
+
+| Selector | Behavior |
+|---|---|
+| `jwl_pt` (2) | Existing pressure-temperature equilibrium closure, program burn, afterburn and JWL reaction progress |
+| `jwl` (4) | Per-phase JWL coefficients, frozen mixture acoustics, five- and six-equation models |
+| `mie_gruneisen` (3), `vinet` (5) | PR #1811 reference-curve families |
+| `ideal_gas` (6) | Zero-stiffness gas; use the name when importing upstream cases |
+
+Numeric `2` remains the existing JWL selector in this fork. Do not copy upstream
+numeric ideal-gas selectors without translating them. The `jwl_pt` and per-phase
+families cannot be mixed in one case. Use `jwl_wrt` for equilibrium temperature
+and `T_wrt` for per-phase temperature. Reaction parameters also belong to their
+respective models; switching the EOS name alone does not convert a burn case.
+
+The existing capabilities retain their established locations:
+
+| Location | Connection |
+|---|---|
+| `src/common/m_jwl.fpp` | Equilibrium pressure, temperature, energy and sound speed; initialized/finalized by `m_variables_conversion` for all three executables |
+| `src/common/m_variables_conversion.fpp` | Primitive/conservative conversion and dispatch to the equilibrium closure or PR reference-curve helpers |
+| `src/simulation/m_jwl_sources.fpp` | Existing program-burn, afterburn and reaction sources, called from `m_rhs` |
+| `src/simulation/m_riemann_solver_{hll,hllc,lf}.fpp` | Equilibrium face energy/sound-speed calls; reactive progress uses HLLC |
+| `src/simulation/m_ibm.fpp` | Equilibrium ghost/fresh-cell energy reconstruction, including reaction progress; per-phase cells use the shared EOS helpers |
+| `src/post_process/m_start_up.fpp` | Existing `jwl_wrt` equilibrium diagnostics alongside per-phase `T_wrt` |
+| `toolchain/mfc/params/definitions.py`, `case_validator.py`, `case.py` | Parameter bindings, model compatibility and case-optimization selection |
+
+The obsolete inline Riemann include is removed; its equilibrium calls are wired
+directly into the refactored solvers. Existing uppercase JWL coefficient names
+remain accepted alongside the PR's lowercase names.
+
+On each compiler/backend, run both JWL paths before particle-shock production:
+
+```sh
+./mfc.sh test --only Kernel JWL --no-examples --gpu acc -a -j 1
+./mfc.sh test --only eos=jwl --no-examples --gpu acc -a -j 1
+./mfc.sh test --only eos=mie_gruneisen --no-examples --gpu acc -a -j 1
+./mfc.sh test --only eos=vinet --no-examples --gpu acc -a -j 1
+./mfc.sh test --only 'Reactive Burn' --no-examples --gpu acc -a -j 1
+```
+
+Repeat with `--case-optimization`, and use `--gpu mp` for the OpenMP target lane.
+Also run the registered JWL isentropic-release and Mie-Gruneisen acoustic/impact
+convergence tests (`./mfc.sh test -l` lists their IDs). Compare each closure with
+its own reference results; equality between the two mixture models is not an
+acceptance criterion. GPU results and DNS qualification remain pending until
+these gates and the particle/mesh convergence stages below pass.
+
 ## 1. Freeze the configuration
 
 Begin in double precision, with fast math and case optimization disabled.
@@ -47,6 +99,26 @@ template from `toolchain/modules` and `toolchain/templates`. Confirm that local
 subdomains satisfy the solver's decomposition and halo requirements.
 
 ## 2. CPU/GPU and MPI correctness
+
+Fresh-cell reconstruction follows the established practice of supplying a fluid
+state when a moving solid uncovers a cell. The EOS consistency fix rebuilds total
+and six-equation phase energies from the reconstructed pressure and densities;
+equilibrium JWL also retains its reaction-dependent energy reference. Test
+`D116E4F1` moves a circle through a two-fluid MG/ideal-gas field on two ranks.
+Restoring the old fresh-cell block changes final phase-energy values by about
+0.0029, well above the existing comparison tolerance.
+
+[Mittal et al. (2008)](https://pmc.ncbi.nlm.nih.gov/articles/PMC2834215/) discuss
+fresh-cell treatment, and
+[Brahmachary et al. (2018)](https://doi.org/10.1002/fld.4479) demonstrate
+inverse-distance-based reconstruction for high-speed compressible flow.
+These support the approach, not an accuracy claim for this exact stencil.
+The current reconstruction does not enforce a swept-volume conservation balance.
+[Seo and Mittal (2011)](https://doi.org/10.1016/j.jcp.2011.06.003) connect geometric
+conservation errors to pressure oscillations. Therefore measure fluid/particle
+mass, momentum and energy budgets, pressure/force oscillations, and mesh/timestep
+convergence before DNS qualification. Positive interpolation weights alone do
+not guarantee thermodynamic admissibility for a nonlinear mixture EOS.
 
 Run regressions inside an allocation with the site's supported compiler/backend.
 Use the ordinary build first, then repeat selected cases with case optimization.

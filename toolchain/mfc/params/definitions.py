@@ -664,6 +664,7 @@ def _load():
     _r("reactive_burn", LOG, {"reactive_burn"})
     for a in ["k", "pign", "pref", "n", "ta"]:
         _r(f"rburn%{a}", REAL, {"reactive_burn"})
+    _r("rburn%substeps", INT, {"reactive_burn"})
 
     # Acoustic
     _r("num_source", INT, {"acoustic"})
@@ -702,6 +703,7 @@ def _load():
         "pi_inf_wrt",
         "pres_inf_wrt",
         "c_wrt",
+        "T_wrt",
         "qm_wrt",
         "liutex_wrt",
         "cf_wrt",
@@ -910,13 +912,49 @@ def _load():
             for mm in range(-ll, ll + 1):
                 _r(f"{px}sph_har_coeff({ll},{mm})", REAL)
 
+    # Values must match the hand-written eos_* constants in src/common/m_constants.fpp.
+    _EOS_NAMES = {"stiffened_gas": 1, "ideal_gas": 6, "jwl_pt": 2, "mie_gruneisen": 3, "jwl": 4, "vinet": 5}
+    _EOS_VALUE_LABELS = {1: "stiffened-gas", 6: "ideal-gas", 2: "JWL pressure-temperature equilibrium", 3: "Mie-Gruneisen", 4: "JWL", 5: "Vinet"}
+
     # fluid_pp (10 fluids)
     # Members present in physical_parameters: gamma, pi_inf, Re, cv, qv, qvp, G.
     # mul0/ss/pv/gamma_v/M_v/mu_v/k_v/cp_v/D_v were removed from the Fortran type
     # by upstream #1085/#1093 — they must NOT be registered (namelist read would crash).
     for f in range(1, NF + 1):
         px = f"fluid_pp({f})%"
+        CONSTRAINTS[f"fluid_pp({f})%eos"] = {"choices": [1, 2, 3, 4, 5, 6], "value_labels": _EOS_VALUE_LABELS, "names": _EOS_NAMES}
         for a, sym in [("gamma", r"\f$\gamma_k\f$"), ("pi_inf", r"\f$\pi_{\infty,k}\f$"), ("cv", r"\f$c_{v,k}\f$"), ("qv", r"\f$q_{v,k}\f$"), ("qvp", r"\f$q'_{v,k}\f$")]:
+            _r(f"{px}{a}", REAL, math=sym)
+        _r(f"{px}eos", INT, math=r"\f$\mathrm{EOS}_k\f$")
+        for a, sym in [
+            ("mg_rho0", r"\f$\rho_{0,k}\f$"),
+            ("mg_c0", r"\f$c_{0,k}\f$"),
+            ("mg_s", r"\f$s_k\f$"),
+            ("mg_gruneisen", r"\f$\Gamma_{G,k}\f$"),
+            ("mg_gruneisen_a", r"\f$a_k\f$"),
+            ("mg_t0", r"\f$T_{0,k}\f$"),
+            ("mg_s2", r"\f$s_{2,k}\f$"),
+            ("mg_s3", r"\f$s_{3,k}\f$"),
+        ]:
+            _r(f"{px}{a}", REAL, math=sym)
+        for a, sym in [
+            ("jwl_a", r"\f$A_k\f$"),
+            ("jwl_b", r"\f$B_k\f$"),
+            ("jwl_r1", r"\f$R_{1,k}\f$"),
+            ("jwl_r2", r"\f$R_{2,k}\f$"),
+            ("jwl_omega", r"\f$\omega_k\f$"),
+            ("jwl_rho0", r"\f$\rho_{0,k}\f$"),
+            ("jwl_t0", r"\f$T_{0,k}\f$"),
+        ]:
+            _r(f"{px}{a}", REAL, math=sym)
+        for a, sym in [
+            ("vinet_k0", r"\f$K_{0,k}\f$"),
+            ("vinet_k0p", r"\f$K'_{0,k}\f$"),
+            ("vinet_rho0", r"\f$\rho_{0,k}\f$"),
+            ("vinet_gruneisen", r"\f$\Gamma_{G,k}\f$"),
+            ("vinet_gruneisen_a", r"\f$a_k\f$"),
+            ("vinet_t0", r"\f$T_{0,k}\f$"),
+        ]:
             _r(f"{px}{a}", REAL, math=sym)
         _r(f"{px}G", REAL, {"hypoelasticity"}, math=r"\f$G_k\f$")
         _r(f"{px}Re(1)", REAL, {"viscosity"}, math=r"\f$\mathrm{Re}_k\f$ (shear)")
@@ -929,13 +967,10 @@ def _load():
         _r(f"{px}mu_min", REAL, {"viscosity"}, math=r"\mu_{\min,k}")
         _r(f"{px}mu_max", REAL, {"viscosity"}, math=r"\mu_{\max,k}")
         _r(f"{px}mu_bulk", REAL, {"viscosity"}, math=r"\mu_{\mathrm{bulk},k}")
-        _r(f"{px}eos", INT, math=r"\mathrm{EOS}_k")
         _r(f"{px}jwl_A", REAL, math=r"\f$A_k\f$")
         _r(f"{px}jwl_B", REAL, math=r"\f$B_k\f$")
         _r(f"{px}jwl_R1", REAL, math=r"\f$R_{1,k}\f$")
         _r(f"{px}jwl_R2", REAL, math=r"\f$R_{2,k}\f$")
-        _r(f"{px}jwl_omega", REAL, math=r"\f$\omega_k\f$")
-        _r(f"{px}jwl_rho0", REAL, math=r"\f$\rho_{0,k}\f$")
         _r(f"{px}jwl_Q", REAL, math=r"\f$Q_k\f$")
         _r(f"{px}jwl_E0", REAL, math=r"\f$E_{0,k}\f$")
         _r(f"{px}jwl_air_e0", REAL, math=r"\f$e_{\mathrm{air},k}\f$")
@@ -1341,6 +1376,8 @@ _nv(
     "avg_state",
     "alt_soundspeed",
     "mixture_err",
+    "num_particle_clouds",
+    "particle_cloud",
 )
 _nv(
     _PRE_SIM,
@@ -1438,10 +1475,8 @@ _nv(
     "collision_time",
     "collision_steps_per_contact",
     "ib_coefficient_of_friction",
-    "num_particle_clouds",
     "ib_neighborhood_radius",
     "many_ib_patch_parallelism",
-    "particle_cloud",
     "tau_star",
     "cont_damage_s",
     "alpha_bar",
@@ -1520,6 +1555,7 @@ _nv(
     "pres_wrt",
     "c_wrt",
     "jwl_wrt",
+    "T_wrt",
     "gamma_wrt",
     "heat_ratio_wrt",
     "pi_inf_wrt",

@@ -164,45 +164,46 @@ contains
         real(wp)                                            :: rho  !< Cell-avg. density
 
         #:if not MFC_CASE_OPTIMIZATION and USING_AMD
-            real(wp), dimension(3) :: alpha  !< Cell-avg. volume fraction
-            real(wp), dimension(3) :: vel    !< Cell-avg. velocity
+            real(wp), dimension(3) :: alpha, alpha_rho  !< Cell-avg. volume fraction, partial density
+            real(wp), dimension(3) :: vel               !< Cell-avg. velocity
         #:else
-            real(wp), dimension(num_fluids) :: alpha  !< Cell-avg. volume fraction
-            real(wp), dimension(num_vels)   :: vel    !< Cell-avg. velocity
+            real(wp), dimension(num_fluids) :: alpha, alpha_rho  !< Cell-avg. volume fraction, partial density
+            real(wp), dimension(num_vels)   :: vel               !< Cell-avg. velocity
         #:endif
-        real(wp)               :: vel_sum                     !< Cell-avg. velocity sum
-        real(wp)               :: pres                        !< Cell-avg. pressure
-        real(wp)               :: gamma                       !< Cell-avg. sp. heat ratio
-        real(wp)               :: pi_inf                      !< Cell-avg. liquid stiffness function
-        real(wp)               :: qv                          !< Cell-avg. internal energy reference value
-        real(wp)               :: c                           !< Cell-avg. sound speed
-        real(wp)               :: H                           !< Cell-avg. enthalpy
-        real(wp)               :: Y_jwl                       !< Cell-avg. JWL mass fraction
-        real(wp)               :: lambda_jwl                  !< JWL reaction progress (1 unless jwl_reactive)
-        real(wp), dimension(2) :: Re                          !< Cell-avg. Reynolds numbers
+        real(wp)               :: vel_sum                                    !< Cell-avg. velocity sum
+        real(wp)               :: pres                                       !< Cell-avg. pressure
+        real(wp)               :: gamma                                      !< Cell-avg. sp. heat ratio
+        real(wp)               :: pi_inf                                     !< Cell-avg. liquid stiffness function
+        real(wp)               :: qv                                         !< Cell-avg. internal energy reference value
+        real(wp)               :: c                                          !< Cell-avg. sound speed
+        real(wp), dimension(2) :: Re                                         !< Cell-avg. Reynolds numbers
+        real(wp)               :: Y_jwl, lambda_jwl
         integer                :: j, k, l
-        real(wp)               :: icfl_max_loc, icfl_max_glb  !< ICFL stability extrema on local and global grids
-        real(wp)               :: vcfl_max_loc, vcfl_max_glb  !< VCFL stability extrema on local and global grids
-        real(wp)               :: ccfl_max_loc, ccfl_max_glb  !< CCFL stability extrema on local and global grids
-        real(wp)               :: Rc_min_loc, Rc_min_glb      !< Rc stability extrema on local and global grids
+        real(wp)               :: icfl_max_loc, icfl_max_glb                 !< ICFL stability extrema on local and global grids
+        real(wp)               :: vcfl_max_loc, vcfl_max_glb                 !< VCFL stability extrema on local and global grids
+        real(wp)               :: ccfl_max_loc, ccfl_max_glb                 !< CCFL stability extrema on local and global grids
+        real(wp)               :: Rc_min_loc, Rc_min_glb                     !< Rc stability extrema on local and global grids
         real(wp)               :: icfl, vcfl, ccfl, Rc
-        integer                :: fl                          !< Fluid loop iterator
+        real(wp)               :: mu_frac, mu_frac_max_loc, mu_frac_max_glb  !< Compression as a fraction of the EOS limit
+        integer                :: fl                                         !< Fluid loop iterator
 
         icfl_max_loc = 0._wp
         vcfl_max_loc = 0._wp
         ccfl_max_loc = 0._wp
         Rc_min_loc = huge(1.0_wp)
+        mu_frac_max_loc = 0._wp
         ! Computing Stability Criteria at Current Time-step
-        $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, vel, alpha, Re, rho, vel_sum, pres, gamma, pi_inf, c, H, qv, Y_jwl, &
-                            & lambda_jwl, icfl, vcfl, Rc, ccfl, fl]', reduction='[[icfl_max_loc, vcfl_max_loc, &
-                            & ccfl_max_loc], [Rc_min_loc]]', reductionOp='[max, min]')
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, Y_jwl, lambda_jwl, vel, alpha, alpha_rho, Re, rho, vel_sum, pres, &
+                            & gamma, pi_inf, c, qv, icfl, vcfl, Rc, ccfl, fl, mu_frac]', reduction='[[icfl_max_loc, vcfl_max_loc, &
+                            & ccfl_max_loc, mu_frac_max_loc], [Rc_min_loc]]', reductionOp='[max, min]')
         do l = 0, p
             do k = 0, n
                 do j = 0, m
                     ! Cells inside/on an immersed boundary hold ghost-derived, non-physical state -
                     ! excluded here so they cannot spuriously trip a stability violation.
                     if ((.not. ib) .or. (ib_markers%sf(j, k, l) == 0)) then
-                        call s_compute_enthalpy(q_prim_vf, pres, rho, gamma, pi_inf, Re, H, alpha, vel, vel_sum, qv, j, k, l)
+                        call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, &
+                                                  & k, l)
 
                         #:if not MFC_CASE_OPTIMIZATION or jwl_active
                             if (jwl_idx > 0) then
@@ -214,10 +215,24 @@ contains
                                 call s_compute_jwl_speed_of_sound(pres, rho, Y_jwl, c, lambda_jwl)
                             else
                             #:endif
-                            call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv)
+                            call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
                             #:if not MFC_CASE_OPTIMIZATION or jwl_active
                             end if
                         #:endif
+
+                        ! How close each Mie-Gruneisen phase is to the compression its Hugoniot fit can represent.
+                        ! Past 1 there is no shock state to find and the reference curve is fiction, so it is reduced
+                        ! out of the kernel and turned into an abort on the host -- s_mpi_abort cannot be called here.
+                        if (any_state_dependent_eos) then
+                            $:GPU_LOOP(parallelism='[seq]')
+                            do fl = 1, num_fluids
+                                if (eoss(fl) == eos_mie_gruneisen) then
+                                    mu_frac = (alpha_rho(fl)/max(alpha(fl), &
+                                               & sgm_eps)/eos_coeffs(fl)%rho0 - 1._wp)/eos_coeffs(fl)%mu_max
+                                    mu_frac_max_loc = max(mu_frac_max_loc, mu_frac)
+                                end if
+                            end do
+                        end if
 
                         if (any_non_newtonian) then
                             Re(1) = 0._wp
@@ -255,6 +270,9 @@ contains
             if (bubbles_lagrange) n_el_bubs_glb = n_el_bubs_loc
         end if
 
+        mu_frac_max_glb = mu_frac_max_loc
+        if (num_procs > 1) call s_mpi_allreduce_max(mu_frac_max_loc, mu_frac_max_glb)
+
         if (icfl_max_glb > icfl_max) icfl_max = icfl_max_glb
 
         if (surface_tension) then
@@ -290,6 +308,11 @@ contains
 
             write (3, *)  ! new line
 
+            if (mu_frac_max_glb > 1._wp) then
+                print *, 'compression as a fraction of the Hugoniot fit limit', mu_frac_max_glb
+                call s_mpi_abort('A Mie-Gruneisen phase is compressed past what its Hugoniot fit represents. Exiting.')
+            end if
+
             if (.not. f_approx_equal(icfl_max_glb, icfl_max_glb)) then
                 call s_mpi_abort('ICFL is NaN. Exiting.')
             else if (icfl_max_glb > 1._wp) then
@@ -322,10 +345,10 @@ contains
     impure subroutine s_report_icfl_violation(q_prim_vf)
 
         type(scalar_field), dimension(sys_size), intent(in) :: q_prim_vf
-        real(wp), dimension(num_fluids)                     :: alpha
+        real(wp), dimension(num_fluids)                     :: alpha, alpha_rho
         real(wp), dimension(num_vels)                       :: vel, vel_hit
         real(wp), dimension(2)                              :: Re
-        real(wp)                                            :: rho, vel_sum, pres, gamma, pi_inf, qv, c, H
+        real(wp)                                            :: rho, vel_sum, pres, gamma, pi_inf, qv, c, Y_jwl, lambda_jwl
         real(wp)                                            :: rho_hit, pres_hit, c_hit
         real(wp)                                            :: icfl, vcfl, Rc, ccfl, icfl_hit
         integer                                             :: i, j, k, l, fl, j_hit, k_hit, l_hit
@@ -352,8 +375,15 @@ contains
                         if (ib_markers%sf(j, k, l) /= 0) cycle
                     end if
 
-                    call s_compute_enthalpy(q_prim_vf, pres, rho, gamma, pi_inf, Re, H, alpha, vel, vel_sum, qv, j, k, l)
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv)
+                    call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, k, l)
+                    if (jwl_idx > 0) then
+                        Y_jwl = min(max(alpha_rho(jwl_idx)/max(rho, sgm_eps), 0._wp), 1._wp)
+                        lambda_jwl = 1._wp
+                        if (jwl_reactive) lambda_jwl = min(max(q_prim_vf(eqn_idx%rxn)%sf(j, k, l), 0._wp), 1._wp)
+                        call s_compute_jwl_speed_of_sound(pres, rho, Y_jwl, c, lambda_jwl)
+                    else
+                        call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
+                    end if
 
                     if (any_non_newtonian) then
                         Re(1) = 0._wp
@@ -436,7 +466,6 @@ contains
         logical :: file_exist                               !< Logical used to check existence of current time-step directory
         character(LEN=15) :: FMT
         integer :: i, j, k, l, r
-        real(wp) :: gamma, lit_gamma, pi_inf, qv            !< Temporary EOS params
 
         write (t_step_dir, '(A,I0,A,I0)') trim(case_dir) // '/p_all'
         write (t_step_dir, '(a,i0,a,i0)') trim(case_dir) // '/p_all/p', proc_rank, '/', t_step
@@ -509,11 +538,6 @@ contains
         if (ib) then
             call s_write_serial_ib_data(t_step)
         end if
-
-        gamma = gammas(1)
-        lit_gamma = gs_min(1)
-        pi_inf = pi_infs(1)
-        qv = qvs(1)
 
         if (precision == precision_single) then
             FMT = "(2F30.3)"
@@ -1275,7 +1299,7 @@ contains
         real(wp)                        :: ptot
         real(wp)                        :: alf
         real(wp)                        :: alfgr
-        real(wp), dimension(num_fluids) :: alpha
+        real(wp), dimension(num_fluids) :: alpha, alpha_rho
         real(wp)                        :: gamma
         real(wp)                        :: pi_inf
         real(wp)                        :: qv
@@ -1365,6 +1389,7 @@ contains
                     end do
                     do s = 1, num_fluids
                         alpha(s) = q_cons_vf(eqn_idx%adv%beg + s - 1)%sf(j - 2, k, l)
+                        alpha_rho(s) = q_cons_vf(eqn_idx%cont%beg + s - 1)%sf(j - 2, k, l)
                     end do
 
                     dyn_p = 0.5_wp*rho*dot_product(vel, vel)
@@ -1377,8 +1402,7 @@ contains
 
                         call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k, l), q_cons_vf(eqn_idx%alf)%sf(j - 2, k, l), &
                                                 & dyn_p, pi_inf, gamma, rho, qv, rhoYks(:), pres, T, &
-                                                & q_cons_vf(eqn_idx%stress%beg)%sf(j - 2, k, l), &
-                                                & q_cons_vf(eqn_idx%mom%beg)%sf(j - 2, k, l), G_local)
+                                                & f_hypoelastic_energy(q_cons_vf, j - 2, k, l, rho, G_local))
                     else if (jwl_idx > 0 .and. jwl_idx <= eqn_idx%cont%end) then
                         ! Pass the cell's products mass fraction so probes in air or
                         ! mixed cells do not evaluate the pure-products branch, and the
@@ -1443,8 +1467,7 @@ contains
                     end if
 
                     ! Compute mixture sound Speed
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, ((gamma + 1._wp)*pres + pi_inf)/rho, alpha, 0._wp, &
-                                                  & 0._wp, c, qv)
+                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
                     if (hypoelasticity) c = sqrt(c*c + (4._wp/3._wp)*G_local/rho)
 
                     accel = accel_mag(j - 2, k, l)
@@ -1480,6 +1503,7 @@ contains
                         end do
                         do s = 1, num_fluids
                             alpha(s) = q_cons_vf(eqn_idx%adv%beg + s - 1)%sf(j - 2, k - 2, l)
+                            alpha_rho(s) = q_cons_vf(eqn_idx%cont%beg + s - 1)%sf(j - 2, k - 2, l)
                         end do
 
                         dyn_p = 0.5_wp*rho*dot_product(vel, vel)
@@ -1492,8 +1516,7 @@ contains
 
                             call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k - 2, l), q_cons_vf(eqn_idx%alf)%sf(j - 2, &
                                                     & k - 2, l), dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T, &
-                                                    & q_cons_vf(eqn_idx%stress%beg)%sf(j - 2, k - 2, l), &
-                                                    & q_cons_vf(eqn_idx%mom%beg)%sf(j - 2, k - 2, l), G_local)
+                                                    & f_hypoelastic_energy(q_cons_vf, j - 2, k - 2, l, rho, G_local))
                         else if (jwl_idx > 0 .and. jwl_idx <= eqn_idx%cont%end) then
                             lambda_jwl = 1._wp
                             if (jwl_reactive) lambda_jwl = min(max(q_cons_vf(eqn_idx%rxn)%sf(j - 2, k - 2, l), 0._wp), 1._wp)
@@ -1534,8 +1557,7 @@ contains
                             Rdot(:) = nRdot(:)/nbub
                         end if
                         ! Compute mixture sound speed
-                        call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, ((gamma + 1._wp)*pres + pi_inf)/rho, alpha, &
-                                                      & 0._wp, 0._wp, c, qv)
+                        call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
                         if (hypoelasticity) c = sqrt(c*c + (4._wp/3._wp)*G_local/rho)
                     end if
                 end if
@@ -1570,6 +1592,7 @@ contains
                             end do
                             do s = 1, num_fluids
                                 alpha(s) = q_cons_vf(eqn_idx%adv%beg + s - 1)%sf(j - 2, k - 2, l - 2)
+                                alpha_rho(s) = q_cons_vf(eqn_idx%cont%beg + s - 1)%sf(j - 2, k - 2, l - 2)
                             end do
 
                             dyn_p = 0.5_wp*rho*dot_product(vel, vel)
@@ -1588,9 +1611,8 @@ contains
 
                                 call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j - 2, k - 2, l - 2), &
                                                         & q_cons_vf(eqn_idx%alf)%sf(j - 2, k - 2, l - 2), dyn_p, pi_inf, gamma, &
-                                                        & rho, qv, rhoYks, pres, T, q_cons_vf(eqn_idx%stress%beg)%sf(j - 2, &
-                                                        & k - 2, l - 2), q_cons_vf(eqn_idx%mom%beg)%sf(j - 2, k - 2, l - 2), &
-                                                        & G_local)
+                                                        & rho, qv, rhoYks, pres, T, f_hypoelastic_energy(q_cons_vf, j - 2, k - 2, &
+                                                        & l - 2, rho, G_local))
                             else if (jwl_idx > 0 .and. jwl_idx <= eqn_idx%cont%end) then
                                 lambda_jwl = 1._wp
                                 if (jwl_reactive) lambda_jwl = min(max(q_cons_vf(eqn_idx%rxn)%sf(j - 2, k - 2, l - 2), 0._wp), &
@@ -1612,8 +1634,7 @@ contains
                             end if
 
                             ! Compute mixture sound speed
-                            call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, ((gamma + 1._wp)*pres + pi_inf)/rho, alpha, &
-                                                          & 0._wp, 0._wp, c, qv)
+                            call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
                             if (hypoelasticity) c = sqrt(c*c + (4._wp/3._wp)*G_local/rho)
 
                             accel = accel_mag(j - 2, k - 2, l - 2)

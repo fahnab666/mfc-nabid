@@ -12,7 +12,7 @@ module m_checker_common
     use m_mpi_proxy
     use m_helper_basic
     use m_helper
-    use m_constants, only: eos_jwl
+    use m_constants, only: eos_jwl_pt
 
     implicit none
 
@@ -42,7 +42,7 @@ contains
         integer :: i
 
         do i = 1, num_fluids
-            if (fluid_pp(i)%eos == eos_jwl .and. .not. f_is_default(fluid_pp(i)%jwl_rho0)) then
+            if (fluid_pp(i)%eos == eos_jwl_pt .and. .not. f_is_default(fluid_pp(i)%jwl_rho0)) then
                 if (f_is_default(fluid_pp(i)%jwl_E0) .and. .not. f_is_default(fluid_pp(i)%jwl_Q)) then
                     fluid_pp(i)%jwl_E0 = fluid_pp(i)%jwl_rho0*fluid_pp(i)%jwl_Q
                 else if (.not. f_is_default(fluid_pp(i)%jwl_E0) .and. f_is_default(fluid_pp(i)%jwl_Q)) then

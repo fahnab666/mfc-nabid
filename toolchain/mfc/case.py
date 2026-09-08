@@ -372,6 +372,12 @@ gbl_id = patch_ib(i)%gbl_patch_id
             else:
                 num_vels = num_dims
 
+            # Baking this lets the compiler drop the state-dependent EOS chain entirely. Left in the
+            # call graph it costs registers, and so occupancy, in every kernel that can reach it.
+            eos_state_dependent = {3, 4, 5}  # Mie-Gruneisen, JWL, Vinet; see eos_* in m_constants.fpp
+            num_fluids_case = int(self.params.get("num_fluids", 1))
+            any_state_dependent_eos = 1 if any(int(self.params.get(f"fluid_pp({f})%eos", 1)) in eos_state_dependent for f in range(1, num_fluids_case + 1)) else 0
+
             mhd = 1 if self.params.get("mhd", "F") == "T" else 0
             relativity = 1 if self.params.get("relativity", "F") == "T" else 0
             viscous = 1 if self.params.get("viscous", "F") == "T" else 0
@@ -405,6 +411,7 @@ gbl_id = patch_ib(i)%gbl_patch_id
 #:set igr_pres_lim          = {igr_pres_lim}
 #:set igr_order             = {self.params.get("igr_order", 3)}
 #:set viscous               = {viscous}
+#:set any_state_dependent_eos = {any_state_dependent_eos}
 """
 
         else:
@@ -424,7 +431,7 @@ gbl_id = patch_ib(i)%gbl_patch_id
 
         def _prepend() -> str:
             num_fluids = int(self.params.get("num_fluids", 1))
-            jwl_names = {"2", "jwl", "eos_jwl"}
+            jwl_names = {"2", "jwl_pt", "eos_jwl_pt"}
             jwl_active = any(str(self.params.get(f"fluid_pp({i})%eos", 1)).strip().lower() in jwl_names for i in range(1, num_fluids + 1))
             return f"""\
 #:set chemistry             = {self.params.get("chemistry", "F") == "T"}

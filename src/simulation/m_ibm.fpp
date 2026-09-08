@@ -94,9 +94,9 @@ contains
         call nvtxStartRange("SETUP-IBM-MODULE")
 
         ! GPU routines require updated cell centers
-        $:GPU_UPDATE(device='[num_ibs, num_gbl_ibs, x_cc, y_cc, dx, dy, ib_bc_x%beg, ib_bc_y%beg]')
+        $:GPU_UPDATE(device='[num_ibs, num_gbl_ibs, x_cc, y_cc, dx, dy, ib_bc_x%beg, ib_bc_x%end, ib_bc_y%beg, ib_bc_y%end]')
         if (p /= 0) then
-            $:GPU_UPDATE(device='[z_cc, dz, ib_bc_z%beg]')
+            $:GPU_UPDATE(device='[z_cc, dz, ib_bc_z%beg, ib_bc_z%end]')
         end if
         if (num_ibs > 0) then
             $:GPU_UPDATE(device='[patch_ib(1:num_ibs)]')
@@ -177,6 +177,7 @@ contains
         real(wp) :: b_IP, lam_IP  !< JWL reaction-progress rebuild (afterburn b, reactive lambda)
         real(wp) :: wsum, w  !< JWL fresh-cell extrapolation weights
         integer :: di, dj, dk, jn, kn, ln, z_stencil, stencil, missing_donors  !< Fresh-cell neighbour stencil
+        real(wp) :: vel_sum_g, E_ghost
         real(wp), dimension(2) :: Re_K
         real(wp) :: G_K
         real(wp) :: qv_K
@@ -199,6 +200,7 @@ contains
             real(wp), dimension(nb*nnode)    :: presb_IP, massv_IP
             real(wp), dimension(num_species) :: Ys_IP
         #:endif
+        real(wp) :: alpha_q, alpha_rho_q, e_q
         real(wp) :: T_IP, mw_IP, e_IP  !< Image-point temperature, mixture MW, and mass-specific internal energy (chemistry)
         real(wp) :: v_blow_eff         !< Effective surface blowing speed (after any pressure-coupled burn-rate scaling)
         ! Primitive variables at the image point associated with a ghost point, interpolated from surrounding fluid cells.
@@ -260,15 +262,15 @@ contains
         ! Moving-IB fresh-cell repopulation: reconstruct cells that changed
         ! from solid to fluid using physical-distance extrapolation from
         ! established-fluid neighbours (fluid now AND before the move). JWL uses
-        ! its EOS closure below; ideal/stiffened-gas cases use the same closure as
+        ! its EOS closure below; per-phase EOS cases use the same closure as
         ! the ghost-point path. The %abn/%rxn reaction-progress
         ! variables are material scalars (prim = cons, like the color function), so
         ! a fresh cell takes the same inverse-distance neighbour average as alpha.
         if (moving_immersed_boundary_flag) then
             missing_donors = 0
-            $:GPU_PARALLEL_LOOP(private='[j, k, l, q, di, dj, dk, jn, kn, ln, z_stencil, stencil, wsum, w, rho, gamma, pi_inf, &
-                                & qv_K, Re_K, G_K, Gs, Y_jwl, e_mix_jwl, dyn_pres, alpha_rho_IP, alpha_IP, vel_IP, pres_IP, b_IP, &
-                                & lam_IP]', collapse=3, reduction='[[missing_donors]]', reductionOp='[+]')
+            $:GPU_PARALLEL_LOOP(private='[j, k, l, q, di, dj, dk, jn, kn, ln, z_stencil, stencil, wsum, w, rho, Y_jwl, e_mix_jwl, &
+                                & dyn_pres, alpha_rho_IP, alpha_IP, vel_IP, pres_IP, b_IP, lam_IP, vel_sum_g, E_ghost, alpha_q, &
+                                & alpha_rho_q, e_q]', collapse=3, reduction='[[missing_donors]]', reductionOp='[+]')
             do l = 0, p
                 do k = 0, n
                     do j = 0, m
@@ -359,19 +361,9 @@ contains
                                         q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_mix_jwl + dyn_pres
                                     else
                                     #:endif
-                                    if (hypoelasticity) then
-                                        call s_convert_species_to_mixture_variables_kernel(rho, gamma, pi_inf, qv_K, alpha_IP, &
-                                            & alpha_rho_IP, Re_K, G_K, Gs)
-                                    else
-                                        call s_convert_species_to_mixture_variables_kernel(rho, gamma, pi_inf, qv_K, alpha_IP, &
-                                            & alpha_rho_IP, Re_K)
-                                    end if
-                                    if (bubbles_euler) then
-                                        q_cons_vf(eqn_idx%E)%sf(j, k, &
-                                                  & l) = (1._wp - alpha_IP(1))*(gamma*pres_IP + pi_inf + qv_K + dyn_pres)
-                                    else
-                                        q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + qv_K + dyn_pres
-                                    end if
+                                    vel_sum_g = sum(vel_IP(1:num_dims)**2)
+                                    call s_compute_energy(pres_IP, alpha_rho_IP, alpha_IP, vel_sum_g, E_ghost)
+                                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = E_ghost
                                     #:if not MFC_CASE_OPTIMIZATION or jwl_active
                                     end if
                                 #:endif
@@ -383,6 +375,15 @@ contains
                                     q_cons_vf(eqn_idx%adv%beg + q - 1)%sf(j, k, l) = alpha_IP(q)
                                     q_prim_vf(eqn_idx%adv%beg + q - 1)%sf(j, k, l) = alpha_IP(q)
                                 end do
+                                if (model_eqns == model_eqns_6eq) then
+                                    $:GPU_LOOP(parallelism='[seq]')
+                                    do q = 1, num_fluids
+                                        alpha_q = alpha_IP(q)
+                                        alpha_rho_q = alpha_rho_IP(q)
+                                        call s_phase_internal_energy(pres_IP, alpha_q, alpha_rho_q, q, e_q)
+                                        q_cons_vf(eqn_idx%int_en%beg + q - 1)%sf(j, k, l) = e_q
+                                    end do
+                                end if
                                 $:GPU_LOOP(parallelism='[seq]')
                                 do q = 1, num_dims
                                     q_cons_vf(eqn_idx%mom%beg + q - 1)%sf(j, k, l) = rho*vel_IP(q)
@@ -405,7 +406,8 @@ contains
             $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, vel_g, vel_norm_IP, &
                                 & r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, G_K, Gs, gp, &
                                 & innerp, norm, buf, radial_vector, rotation_velocity, j, k, l, q, qv_K, c_IP, nbub, patch_id, &
-                                & Ys_IP, T_IP, mw_IP, e_IP, v_blow_eff, Y_jwl, e_mix_jwl, b_IP, lam_IP]')
+                                & Ys_IP, T_IP, mw_IP, e_IP, v_blow_eff, Y_jwl, e_mix_jwl, b_IP, lam_IP, vel_sum_g, E_ghost, &
+                                & alpha_q, alpha_rho_q, e_q]')
             do i = 1, num_gps
                 gp = ghost_points(i)
                 j = gp%loc(1)
@@ -552,11 +554,13 @@ contains
                 end if
 
                 ! Set momentum
+                vel_sum_g = 0._wp
                 $:GPU_LOOP(parallelism='[seq]')
                 do q = eqn_idx%mom%beg, eqn_idx%mom%end
                     q_cons_vf(q)%sf(j, k, l) = rho*vel_g(q - eqn_idx%mom%beg + 1)
-                    dyn_pres = dyn_pres + q_cons_vf(q)%sf(j, k, l)*vel_g(q - eqn_idx%mom%beg + 1)/2._wp
+                    vel_sum_g = vel_sum_g + vel_g(q - eqn_idx%mom%beg + 1)**2._wp
                 end do
+                dyn_pres = 5.e-1_wp*rho*vel_sum_g
 
                 ! Set continuity and adv vars
                 $:GPU_LOOP(parallelism='[seq]')
@@ -608,10 +612,9 @@ contains
                         end if
                         q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_mix_jwl + dyn_pres
                     #:endif
-                else if (bubbles_euler) then
-                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = (1 - alpha_IP(1))*(gamma*pres_IP + pi_inf + qv_K + dyn_pres)
                 else
-                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = gamma*pres_IP + pi_inf + qv_K + dyn_pres
+                    call s_compute_energy(pres_IP, alpha_rho_IP, alpha_IP, vel_sum_g, E_ghost)
+                    q_cons_vf(eqn_idx%E)%sf(j, k, l) = E_ghost
                 end if
                 ! Set bubble vars
                 if (bubbles_euler .and. .not. qbmm) then
@@ -656,9 +659,10 @@ contains
                 if (model_eqns == model_eqns_6eq) then
                     $:GPU_LOOP(parallelism='[seq]')
                     do q = eqn_idx%int_en%beg, eqn_idx%int_en%end
-                        q_cons_vf(q)%sf(j, k, &
-                                  & l) = alpha_IP(q - eqn_idx%int_en%beg + 1)*(gammas(q - eqn_idx%int_en%beg + 1)*pres_IP &
-                                  & + pi_infs(q - eqn_idx%int_en%beg + 1))
+                        alpha_q = alpha_IP(q - eqn_idx%int_en%beg + 1)
+                        alpha_rho_q = alpha_rho_IP(q - eqn_idx%int_en%beg + 1)
+                        call s_phase_internal_energy(pres_IP, alpha_q, alpha_rho_q, q - eqn_idx%int_en%beg + 1, e_q)
+                        q_cons_vf(q)%sf(j, k, l) = e_q
                     end do
                 end if
             end do

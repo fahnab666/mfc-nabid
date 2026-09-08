@@ -528,7 +528,7 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 
 - `fluid_pp(i)%%G` is required for `hypoelasticity`.
 
-- `fluid_pp(i)%%eos` selects the equation of state for the `i`-th fluid: `[1]` stiffened gas (default), or `[2]` Jones-Wilkins-Lee (JWL) for detonation products. JWL setup is described in [JWL equation of state](#sec-jwl-eos) and [JWL reaction sources](#sec-jwl-reaction-sources) below.
+- `fluid_pp(i)%%eos` selects the equation of state for the `i`-th fluid. Prefer named selectors: `stiffened_gas` (1, default), `jwl_pt` (2, this fork's pressure-temperature equilibrium closure), `mie_gruneisen` (3), `jwl` (4, per-phase JWL), `vinet` (5), or `ideal_gas` (6). This fork retains `2 = jwl_pt` for existing cases; upstream's numeric ideal-gas selector is therefore different. The equilibrium JWL setup is described in [JWL equation of state](#sec-jwl-eos) and [JWL reaction sources](#sec-jwl-reaction-sources) below.
 
 #### JWL equation of state {#sec-jwl-eos}
 
@@ -841,6 +841,7 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `pres_inf_wrt`          | Logical | Add the liquid stiffness to the formatted database	 |
 | `c_wrt`                 | Logical | Add the sound speed to the database	 |
 | `jwl_wrt`               | Logical | Add the JWL temperature, products mass fraction, and reaction progress to the database |
+| `T_wrt`                 | Logical | Add each fluid's temperature to the database (needs `cv` > 0) |
 | `omega_wrt(i)`          | Logical | Add the $i$-direction vorticity to the database	 |
 | `schlieren_wrt`         | Logical | Add the numerical schlieren to the database|
 | `qm_wrt`                | Logical | Add the Q-criterion to the database|

@@ -107,3 +107,34 @@ With gfortran and MPI in double precision:
 
 GPU execution, the other supported compilers, and the production mesh have
 not been validated locally.
+
+## Upstream/EOS integration validation (2026-09-08)
+
+The integration retains the existing equilibrium JWL capabilities and adds the
+per-phase EOS framework from PR #1811. See the selector and source-location tables
+in [the HPC test plan](HPC_TEST_PLAN.md). Numeric EOS 2 remains equilibrium JWL;
+prefer the names `jwl_pt`, `jwl`, and `ideal_gas` when moving cases between forks.
+
+On CPU with gfortran, MPI and double precision:
+
+- All 604 existing regressions passed through pre_process, simulation and
+  post_process. Two chemistry mixing-layer cases needed an isolated rerun because
+  concurrent precheck validation rewrote their shared example initial conditions.
+- All 59 IBM regressions passed after fresh-cell reconstruction was connected to
+  the shared EOS energy helpers and six-equation phase energies were rebuilt.
+  The new two-fluid moving-circle test `D116E4F1` also passed with case optimization.
+- The binary-impact benchmark completed with positive, finite fluid states and
+  passed its restitution and momentum checks.
+- The existing stiffened-carrier JWL case exposed a pre-existing ordinary versus
+  case-optimized mismatch. The equilibrium solver now retains its positive density
+  gap instead of recovering the trace ambient volume by subtracting nearly equal
+  specific volumes. An independent 80-digit pressure-based calculation reduced
+  the near-pure initial energy error from 3.72e-10 to 1.53e-15 relative. Ordinary
+  and optimized saved fields agree within 2.70e-10 using
+  `abs(optimized - ordinary)/max(1, abs(ordinary))`.
+  Only this JWL golden was refreshed for the precision correction; its tolerance
+  was not changed. The other three equilibrium JWL references remain unchanged.
+
+These results do not replace the multi-GPU, conservation, and convergence gates
+in the HPC plan. The contact pair scan can still be accelerated with spatial bins
+once profiling justifies it; no new collision model is introduced by this merge.

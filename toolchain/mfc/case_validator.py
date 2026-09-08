@@ -17,10 +17,15 @@ import re
 from functools import lru_cache
 from typing import Any, Dict, List, Set
 
+from . import eos
 from .common import MFCException
 from .params.definitions import CONSTRAINTS
 from .params.namelist_parser import get_fortran_constants
 from .state import CFG
+
+# Above this the Ensemble-Averaged Bubble Model's O(alpha) expansion, which enters the closure as
+# 1/(1 - alpha), is outside the dilute limit it is derived in (MFlowCode/MFC#1793).
+DILUTE_VOID_FRACTION_MAX = 0.1
 
 # Physics documentation for check methods.
 # Each entry maps a check method name to metadata used by gen_physics_docs.py
@@ -33,6 +38,31 @@ PHYSICS_DOCS = {
         "category": "Thermodynamic Constraints",
         "math": r"\Gamma > 0, \quad \Pi_\infty \geq 0, \quad c_v \geq 0",
         "explanation": "The equation-of-state parameters must satisfy basic positivity requirements for thermodynamic stability.",
+        "references": ["Wilfong26"],
+    },
+    "_check_initial_states_inside_eos": {
+        "title": "Initial States Inside a State-Dependent Equation of State",
+        "category": "Thermodynamic Constraints",
+        "math": r"\rho e = \Gamma p + \Pi(\rho) > 0, \quad \Gamma c^2 = \frac{(\Gamma + 1) p + \Pi}{\rho} - \Pi' - p\,\Gamma' > 0",
+        "explanation": (
+            "A reference-curve EOS is only defined where the internal energy and the sound speed it implies are positive; "
+            "outside that region the solver has no clamp and produces NaNs. Every patch is checked at the state it starts "
+            "each state-dependent fluid in."
+        ),
+        "references": [],
+    },
+    "check_eos_selector": {
+        "title": "Equation of State Selector",
+        "category": "Thermodynamic Constraints",
+        "math": r"\rho e = \Gamma\,p + \Pi(\rho), \quad \Gamma = 1/\Gamma_G, \quad \Pi(\rho) = \rho\, e_{\mathrm{ref}}(\rho) - p_{\mathrm{ref}}(\rho)/\Gamma_G",
+        "explanation": (
+            "Every backend supplies the same two coefficients, and a case may only set the parameters its backend reads: an "
+            "ideal gas has no pi_inf, and a state-dependent fluid (mie_gruneisen, jwl, vinet) has neither gamma nor pi_inf; qv stays "
+            "a formation energy shared by every family. A family's parameters are read only when that family is selected, and a "
+            "temperature (T_wrt, or an Arrhenius burn rate) needs the reference temperature *_t0 as well as cv. The initial state "
+            "of every patch must lie inside the equation of state (rho e > 0 and c^2 > 0). The features a state-dependent fluid "
+            "is refused with still read stiffened-gas coefficients directly."
+        ),
         "references": ["Wilfong26"],
     },
     "check_eos_parameter_sanity": {
@@ -119,7 +149,13 @@ PHYSICS_DOCS = {
     "check_bubbles_euler": {
         "title": "Euler-Euler Bubble Model",
         "category": "Bubble Physics",
-        "explanation": ("Requires nb >= 1, positive reference quantities. Polydisperse requires odd nb > 1 and poly_sigma > 0. QBMM requires nnode = 4."),
+        "math": r"\Gamma_l\,p_l = \frac{1}{1-\alpha}\left(E - \tfrac{1}{2}\rho|\mathbf{u}|^2\right) - \Pi_{\infty,l}",
+        "explanation": (
+            "Requires nb >= 1, positive reference quantities. Polydisperse requires odd nb > 1 and poly_sigma > 0. "
+            "QBMM requires nnode = 4. The closure is written for a single carrier liquid, whose own coefficients "
+            "enter undiluted with the void fraction appearing only as the 1/(1 - alpha) on the energy, so "
+            "num_fluids <= 2 (the last advection slot being the void)."
+        ),
         "references": ["Bryngelson21"],
     },
     "check_bubbles_euler_simulation": {
@@ -169,7 +205,10 @@ PHYSICS_DOCS = {
     "check_mhd": {
         "title": "Magnetohydrodynamics (MHD)",
         "category": "Feature Compatibility",
-        "explanation": ("Requires model_eqns = 2, num_fluids = 1, HLL or HLLD Riemann solver. No relativity with HLLD."),
+        "explanation": (
+            "Requires model_eqns = 2, num_fluids = 1, HLL or HLLD Riemann solver. No relativity with HLLD. "
+            "The relativistic enthalpy h = 1 + (Gamma + 1)p/rho carries no stiffness, so relativity requires pi_inf = 0."
+        ),
     },
     "check_surface_tension": {
         "title": "Surface Tension",
@@ -280,6 +319,11 @@ class CaseValidator:
 
     def get(self, key: str, default=None):
         """Get parameter value with default"""
+        if key.startswith("fluid_pp(") and "%jwl_" in key:
+            for old, new in (("jwl_A", "jwl_a"), ("jwl_B", "jwl_b"), ("jwl_R1", "jwl_r1"), ("jwl_R2", "jwl_r2")):
+                if key.endswith("%" + old) or key.endswith("%" + new):
+                    alternate = key.rsplit("%", 1)[0] + "%" + (new if key.endswith("%" + old) else old)
+                    return self.params.get(key, self.params.get(alternate, default))
         return self.params.get(key, default)
 
     def is_set(self, key: str) -> bool:
@@ -380,6 +424,14 @@ class CaseValidator:
 
         if not igr:
             return
+
+        # m_igr.fpp discards qv (qv_igr), so a nonzero value would be silently dropped from
+        # the pressure rather than applied.
+        num_fluids = self.get("num_fluids")
+        if num_fluids is not None:
+            for i in range(1, num_fluids + 1):
+                qv = self.get(f"fluid_pp({i})%qv")
+                self.prohibit(qv is not None and qv != 0, f"igr does not support fluid_pp({i})%qv (heat of formation); it is discarded")
 
         igr_order = self.get("igr_order")
         self.prohibit(igr_order not in [None, 3, 5], "igr_order must be 3 or 5")
@@ -514,6 +566,7 @@ class CaseValidator:
         thermal = self.get("thermal")
         model_eqns = self.get("model_eqns")
         cyl_coord = self.get("cyl_coord", "F") == "T"
+        num_fluids = self.get("num_fluids", 1)
 
         self.prohibit(nb is None or nb < 1, "The Ensemble-Averaged Bubble Model requires nb >= 1")
         self.prohibit(polydisperse and nb == 1, "Polydisperse bubble dynamics requires nb > 1")
@@ -522,6 +575,27 @@ class CaseValidator:
         self.prohibit(model_eqns == 3, "Bubble models untested with 6-equation model (model_eqns = 3)")
         self.prohibit(model_eqns == 1, "Bubble models untested with pi-gamma model (model_eqns = 1)")
         self.prohibit(cyl_coord, "Bubble models untested in cylindrical coordinates")
+        # The ensemble-averaged closure is written for one carrier liquid: the void fraction occupies
+        # the last advection slot and the liquid keeps its own coefficients, undiluted. Above two
+        # fluids the mixture rule has no derivation behind it (MFlowCode/MFC#1786).
+        self.prohibit(
+            num_fluids is not None and num_fluids > 2,
+            "The Ensemble-Averaged Bubble Model is derived for a single carrier liquid; num_fluids must be <= 2",
+        )
+
+        # The subgrid void fraction enters the closure as 1/(1 - alpha), an O(alpha) expansion that only
+        # holds in the dilute limit. Outside it the Euler-Euler model is not recommended, so warn rather
+        # than refuse (MFlowCode/MFC#1793).
+        void_idx = num_fluids if num_fluids else 1
+        num_patches = self.get("num_patches", 0) or 0
+        for i in range(1, num_patches + 1):
+            alpha = self.get(f"patch_icpp({i})%alpha({void_idx})")
+            self.warn(
+                alpha is not None and alpha > DILUTE_VOID_FRACTION_MAX,
+                f"patch_icpp({i})%alpha({void_idx}) = {alpha} is not a dilute void fraction; the "
+                f"Ensemble-Averaged Bubble Model is an O(alpha) expansion and is not recommended above "
+                f"{DILUTE_VOID_FRACTION_MAX}",
+            )
 
         # BUBBLE PHYSICS PARAMETERS
         # Validate bubble reference parameters (bub_pp%)
@@ -898,6 +972,131 @@ class CaseValidator:
             elif model_id is not None and model_id > 0:
                 self.prohibit(True, f"patch_icpp({i})%model_id is set but geometry ({geometry}) is not an STL model (21)")
 
+    def _check_initial_states_inside_eos(self, num_fluids, eos_names):
+        """Every patch must start each state-dependent fluid where rho e > 0 and c^2 > 0; the solver has no clamp."""
+        num_patches = self.get("num_patches", 0) or 0
+        for i in range(1, num_fluids + 1):
+            eos_ = self.get(f"fluid_pp({i})%eos")
+            g = lambda k: self.get(f"fluid_pp({i})%{k}")  # noqa: E731
+            if eos_ == eos_names["mie_gruneisen"]:
+                coefficients = lambda r: eos.eos_coefficients(r, g("mg_rho0"), g("mg_c0"), g("mg_s"), g("mg_gruneisen"), g("mg_gruneisen_a") or 0.0, g("mg_s2") or 0.0, g("mg_s3") or 0.0)  # noqa: E731
+            elif eos_ == eos_names["jwl"]:
+                coefficients = lambda r: eos.jwl_coefficients(r, g("jwl_rho0"), g("jwl_a"), g("jwl_b"), g("jwl_r1"), g("jwl_r2"), g("jwl_omega"))  # noqa: E731
+            elif eos_ == eos_names.get("vinet"):
+                coefficients = lambda r: eos.coefficients_from_curve(r, eos.vinet_reference(r, g("vinet_rho0"), g("vinet_k0"), g("vinet_k0p")), g("vinet_gruneisen"))  # noqa: E731
+            else:
+                continue
+            for j in range(1, num_patches + 1):
+                ar, a, p = (self.get(f"patch_icpp({j})%alpha_rho({i})"), self.get(f"patch_icpp({j})%alpha({i})"), self.get(f"patch_icpp({j})%pres"))
+                if not all(isinstance(x, (int, float)) for x in (ar, a, p)) or a <= 0:
+                    continue
+                try:
+                    gamma, pi, dpi, dgamma = coefficients(ar / a)
+                except TypeError:
+                    continue  # incomplete parameters are reported by the rules above
+                except (ValueError, OverflowError, ZeroDivisionError) as err:
+                    self.prohibit(True, f"patch_icpp({j}) starts fluid {i} outside its equation of state: rho = {ar/a:.4g} ({err})")
+                    continue
+                rho_e = gamma * p + pi
+                c2 = ((gamma + 1.0) * p + pi) / (ar / a) - dpi - p * dgamma
+                self.prohibit(
+                    rho_e <= 0 or c2 <= 0,
+                    f"patch_icpp({j}) starts fluid {i} outside its equation of state: rho = {ar/a:.4g}, p = {p:.4g} gives " f"rho e = {rho_e:.3g} and Gamma c^2 = {c2:.3g}; both must be positive",
+                )
+
+    def check_eos_selector(self):
+        """Restricts fluid_pp(i)%eos to implemented backends and enforces their parameter requirements"""
+        num_fluids = self.get("num_fluids")
+        if num_fluids is None:
+            return
+        eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
+        eos_ideal_gas = eos_names["ideal_gas"]
+        # The state-dependent families: selector value -> (parameter prefix, its parameters)
+        families = {
+            eos_names["mie_gruneisen"]: ("mg", ("rho0", "c0", "s", "gruneisen")),
+            eos_names["jwl"]: ("jwl", ("a", "b", "r1", "r2", "omega", "rho0")),
+            eos_names["vinet"]: ("vinet", ("k0", "k0p", "rho0", "gruneisen")),
+        }
+        optional = {"mg": ("gruneisen_a", "t0", "s2", "s3"), "jwl": ("t0",), "vinet": ("gruneisen_a", "t0")}
+        bub_fac = 1 if self.get("bubbles_euler", "F") == "T" else 0
+        state_dependent = {}
+        for i in range(1, num_fluids + 1 + bub_fac):
+            eos = self.get(f"fluid_pp({i})%eos")
+            effective = eos if eos is not None else eos_names["stiffened_gas"]
+            for old, new in (("jwl_A", "jwl_a"), ("jwl_B", "jwl_b"), ("jwl_R1", "jwl_r1"), ("jwl_R2", "jwl_r2")):
+                left, right = f"fluid_pp({i})%{old}", f"fluid_pp({i})%{new}"
+                self.prohibit(left in self.params and right in self.params and self.params[left] != self.params[right], f"{left} and {right} name the same Fortran parameter and must agree")
+            pt_only = ("Q", "E0", "air_e0", "air_rho0", "air_p0", "ej_rho_ref", "delta_e")
+            self.prohibit(
+                effective != eos_names["jwl_pt"] and any(self.get(f"fluid_pp({i})%jwl_{key}") is not None for key in pt_only),
+                f"fluid_pp({i})%jwl_Q, jwl_E0, jwl_air_*, jwl_ej_rho_ref and jwl_delta_e require eos = 'jwl_pt'",
+            )
+            for value, (prefix, keys) in families.items():
+                self.prohibit(
+                    (effective != value and not (effective == eos_names["jwl_pt"] and prefix == "jwl"))
+                    and any(self.get(f"fluid_pp({i})%{prefix}_{k}") is not None for k in keys + optional.get(prefix, ())),
+                    f"fluid_pp({i})%{prefix}_* are only read when fluid_pp({i})%eos = '{ {v: n for n, v in eos_names.items()}[value] }'",
+                )
+            if eos is None:
+                continue
+            self.prohibit(eos not in eos_names.values(), f"fluid_pp({i})%eos must be one of {', '.join(repr(n) for n in eos_names)}")
+            self.prohibit(
+                eos == eos_ideal_gas and self.get(f"fluid_pp({i})%pi_inf") is not None,
+                f"fluid_pp({i})%eos = 'ideal_gas' has no stiffness; do not set fluid_pp({i})%pi_inf",
+            )
+            if eos not in families:
+                continue
+            prefix, keys = families[eos]
+            state_dependent[i] = prefix
+            name = {v: n for n, v in eos_names.items()}[eos]
+            par = {k: self.get(f"fluid_pp({i})%{prefix}_{k}") for k in keys}
+            self.prohibit(
+                any(p is None for p in par.values()),
+                f"fluid_pp({i})%eos = '{name}' requires fluid_pp({i})%{prefix}_{{{', '.join(keys)}}}",
+            )
+            for k in ("gamma", "pi_inf"):
+                self.prohibit(
+                    self.get(f"fluid_pp({i})%{k}") is not None,
+                    f"fluid_pp({i})%{k} is not read with eos = '{name}'; the reference curve replaces it",
+                )
+            if any(p is None for p in par.values()):
+                continue
+            if prefix == "mg":
+                self.prohibit(par["rho0"] <= 0 or par["c0"] <= 0 or par["gruneisen"] <= 0, f"fluid_pp({i})%mg_rho0, mg_c0 and mg_gruneisen must be positive")
+                self.prohibit(par["s"] < 1, f"fluid_pp({i})%mg_s must be >= 1 (u_s = c0 + s u_p; s < 1 gives no shock)")
+            elif prefix == "jwl":
+                self.prohibit(par["a"] <= 0 or par["omega"] <= 0 or par["rho0"] <= 0, f"fluid_pp({i})%jwl_a, jwl_omega and jwl_rho0 must be positive")
+                self.prohibit(not par["r1"] > par["r2"] > 0, f"fluid_pp({i})%jwl_r1 > jwl_r2 > 0 is required")
+            else:
+                self.prohibit(par["k0"] <= 0 or par["rho0"] <= 0 or par["gruneisen"] <= 0, f"fluid_pp({i})%vinet_k0, vinet_rho0 and vinet_gruneisen must be positive")
+                self.prohibit(par["k0p"] <= 1, f"fluid_pp({i})%vinet_k0p must exceed 1")
+        if self.get("T_wrt", "F") == "T":
+            for i in range(1, (self.get("num_fluids") or 0) + 1):
+                cv = self.get(f"fluid_pp({i})%cv")
+                self.prohibit(cv is None or cv <= 0, f"T_wrt = T needs fluid_pp({i})%cv > 0")
+        has_jwl_pt = any(self.get(f"fluid_pp({i})%eos") == eos_names["jwl_pt"] for i in range(1, num_fluids + 1))
+        self.prohibit(has_jwl_pt and bool(state_dependent), "jwl_pt cannot be combined with per-phase mie_gruneisen, jwl or vinet")
+        self.prohibit(has_jwl_pt and self.get("T_wrt", "F") == "T", "jwl_pt uses jwl_wrt for closure-consistent temperature output")
+        self.prohibit(has_jwl_pt and self.get("reactive_burn", "F") == "T", "jwl_pt uses its own reaction models; reactive_burn requires per-phase EOS fluids")
+        if not state_dependent:
+            return
+        # A temperature integrates from the reference state, so it needs T at rho0 as well as cv.
+        rta = self.get("rburn%ta")
+        for i, prefix in state_dependent.items():
+            if self.get("T_wrt", "F") == "T" or (i == 1 and self._is_numeric(rta) and rta > 0):
+                t0 = self.get(f"fluid_pp({i})%{prefix}_t0")
+                self.prohibit(t0 is None or t0 <= 0, f"the temperature of fluid {i} needs fluid_pp({i})%{prefix}_t0 > 0")
+        self._check_initial_states_inside_eos(num_fluids, eos_names)
+        # The per-phase evaluation is wired through the 5-equation paths only; every feature below still
+        # reads the stiffened-gas coefficients directly.
+        self.prohibit(self.get("model_eqns") not in (2, 3), "a state-dependent eos (mie_gruneisen, jwl, vinet) requires model_eqns = 2 or 3")
+        self.prohibit(self.get("riemann_solver") not in (1, 2, 5), "a state-dependent eos (mie_gruneisen, jwl, vinet) requires riemann_solver = 1, 2 or 5")
+        self.prohibit(self.get("wave_speeds") == 2, "a state-dependent eos (mie_gruneisen, jwl, vinet) requires wave_speeds = 1 (the PVRS estimate is stiffened-gas only)")
+        for j in range(1, (self.get("num_patches") or 0) + 1):
+            self.prohibit(self.get(f"patch_icpp({j})%hcid") in (202, 203), f"patch_icpp({j})%hcid = 202/203 read fluid_pp(1)%gamma, which a state-dependent eos does not set")
+        for flag in ("bubbles_euler", "bubbles_lagrange", "igr", "relativity", "mhd", "chemistry", "relax"):
+            self.prohibit(self.get(flag, "F") == "T", f"a state-dependent eos (mie_gruneisen, jwl, vinet) is not supported with {flag} = T")
+
     def check_stiffened_eos(self):
         """Checks constraints on stiffened equation of state fluids parameters"""
         num_fluids = self.get("num_fluids")
@@ -915,11 +1114,6 @@ class CaseValidator:
             gamma = self.get(f"fluid_pp({i})%gamma")
             pi_inf = self.get(f"fluid_pp({i})%pi_inf")
             cv = self.get(f"fluid_pp({i})%cv")
-
-            # eos is a plain INT param (no `choices` restriction), so an out-of-enum
-            # value such as 99 is not caught for free elsewhere.
-            if eos is not None:
-                self.prohibit(eos not in [1, 2], f"fluid_pp({i})%eos must be eos_stiffened_gas (1) or eos_jwl (2)")
 
             # Positivity checks
             if gamma is not None:
@@ -1101,6 +1295,11 @@ class CaseValidator:
         self.prohibit(mhd and num_fluids != 1, "MHD is only available for single-component flows (num_fluids = 1)")
         self.prohibit(mhd and model_eqns != 2, "MHD is only available for the 5-equation model (model_eqns = 2)")
         self.prohibit(relativity and not mhd, "relativity requires mhd to be enabled")
+        pi_inf = self.get("fluid_pp(1)%pi_inf")
+        self.prohibit(
+            relativity and pi_inf is not None and pi_inf != 0,
+            "relativity assumes an ideal gas; fluid_pp(1)%pi_inf must be 0",
+        )
         self.prohibit(Bx0 is not None and not mhd, "Bx0 must not be set if MHD is not enabled")
         self.prohibit(mhd and n is not None and n == 0 and Bx0 is None, "Bx0 must be set in 1D MHD simulations")
         self.prohibit(mhd and n is not None and n > 0 and Bx0 is not None, "Bx0 must not be set in 2D/3D MHD simulations")
@@ -2009,7 +2208,10 @@ class CaseValidator:
         # Exactly two fluids (reactant = 1, product = 2) sharing the stiffened-gas EOS and
         # differing only in qv; violating these silently corrupts the mass/energy balance.
         self.prohibit(self.get("num_fluids") != 2, "reactive_burn requires num_fluids = 2 (reactant then product) to be set")
-        for prop in ("gamma", "pi_inf"):
+        # A state-dependent family carries its own curve; the shared-EOS check is a stiffened-gas one.
+        names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
+        state_dependent = any(self.get(f"fluid_pp({k})%eos") in (names["mie_gruneisen"], names["jwl"], names["vinet"]) for k in (1, 2))
+        for prop in () if state_dependent else ("gamma", "pi_inf"):
             v1 = self.get(f"fluid_pp(1)%{prop}")
             v2 = self.get(f"fluid_pp(2)%{prop}")
             if not self._is_numeric(v1) or not self._is_numeric(v2):
@@ -2039,6 +2241,11 @@ class CaseValidator:
         self.prohibit(not self._is_numeric(rn) or rn < 0, "reactive_burn requires rburn%n >= 0 (pressure-drive exponent)")
         rta = self.get("rburn%ta")
         self.prohibit(self._is_numeric(rta) and rta < 0, "reactive_burn requires rburn%ta >= 0 (activation temperature [K]; 0 disables the Arrhenius factor)")
+        rsub = self.get("rburn%substeps")
+        self.prohibit(
+            self._is_numeric(rsub) and rsub < 0,
+            "reactive_burn requires rburn%substeps >= 0 (operator-split sub-steps per time step; 0 adds the source to the flow RHS)",
+        )
         cv1 = self.get("fluid_pp(1)%cv")
         self.prohibit(
             self._is_numeric(rta) and rta > 0 and (not self._is_numeric(cv1) or cv1 <= 0),
@@ -2768,6 +2975,7 @@ class CaseValidator:
         self.check_hypoelasticity()
         self.check_phase_change()
         self.check_ibm()
+        self.check_eos_selector()
         self.check_stiffened_eos()
         self.check_eos_parameter_sanity()
         self.check_surface_tension()

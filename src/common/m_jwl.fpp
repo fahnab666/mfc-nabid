@@ -246,36 +246,39 @@ contains
     end subroutine s_jwl_pt_ecold
 
     !> Explicit common temperature T(rho_p) and dT/drho_p from thermal equilibrium and energy conservation. The exact JWL identity
-    !! d(e_cold)/drho_p = pref/rho_p^2 makes dT analytic.
-    subroutine s_jwl_pt_reduced_T(rho, e, Y, rho_p, A, B, R1, R2, rho0, air_pi_inf, cv_j, cv_a, T, dT)
+    !! d(e_cold)/drho_p = pref/rho_p^2 makes dT analytic. Carry rho_gap = rho_p - Y*rho explicitly: subtracting specific volumes
+    !! loses the trace ambient phase near pure products.
+    subroutine s_jwl_pt_reduced_T(rho, e, Y, rho_gap, A, B, R1, R2, rho0, air_pi_inf, cv_j, cv_a, T, dT)
 
         $:GPU_ROUTINE(function_name='s_jwl_pt_reduced_T',parallelism='[seq]', cray_noinline=True)
 
-        real(wp), intent(in)  :: rho, e, Y, rho_p, A, B, R1, R2, rho0, air_pi_inf, cv_j, cv_a
+        real(wp), intent(in)  :: rho, e, Y, rho_gap, A, B, R1, R2, rho0, air_pi_inf, cv_j, cv_a
         real(wp), intent(out) :: T, dT
-        real(wp)              :: cvm, ecd, pref
+        real(wp)              :: rho_p, cvm, ecd, pref
 
+        rho_p = Y*rho + rho_gap
         cvm = Y*cv_j + (1._wp - Y)*cv_a
         call s_jwl_pt_ecold(rho_p, A, B, R1, R2, rho0, ecd, pref)
-        T = (e - Y*ecd - air_pi_inf*(1._wp/rho - Y/rho_p))/cvm
+        T = (e - Y*ecd - air_pi_inf*(rho_gap/(rho*rho_p)))/cvm
         dT = -(Y/cvm)*(pref/rho_p**2 + air_pi_inf/rho_p**2)
 
     end subroutine s_jwl_pt_reduced_T
 
     !> Scalar residual R(rho_p) = p_products - p_ambient and its analytic derivative dR, returning the phase states (T, p_p, p_a,
     !! rho_a) for reuse. ok = .false. on an unphysical (non-positive ambient volume) trial.
-    subroutine s_jwl_pt_residual(rho, e, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, p_p, &
-                                 & p_a, rho_a, ok)
+    subroutine s_jwl_pt_residual(rho, e, Y, rho_gap, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, &
+                                 & p_p, p_a, rho_a, ok)
 
         $:GPU_ROUTINE(function_name='s_jwl_pt_residual',parallelism='[seq]', cray_noinline=True)
 
-        real(wp), intent(in)  :: rho, e, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a
+        real(wp), intent(in)  :: rho, e, Y, rho_gap, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a
         real(wp), intent(out) :: R, dR, T, p_p, p_a, rho_a
         logical, intent(out)  :: ok
-        real(wp)              :: u, dT, V, e1, e2, pref, dpref, drho_a
+        real(wp)              :: rho_p, u, dT, V, e1, e2, pref, dpref, drho_a
 
+        rho_p = Y*rho + rho_gap
         ok = .true.
-        u = 1._wp/rho - Y/rho_p  ! (1 - Y)/rho_a
+        u = rho_gap/(rho*rho_p)  ! (1 - Y)/rho_a
         if (u <= sgm_eps .or. rho_p <= 0._wp) then
             ok = .false.
             R = huge(1._wp); dR = 1._wp
@@ -285,7 +288,7 @@ contains
         rho_a = (1._wp - Y)/u
         drho_a = -(Y/rho_p**2)*rho_a**2/(1._wp - Y)
 
-        call s_jwl_pt_reduced_T(rho, e, Y, rho_p, A, B, R1, R2, rho0, air_pi_inf, cv_j, cv_a, T, dT)
+        call s_jwl_pt_reduced_T(rho, e, Y, rho_gap, A, B, R1, R2, rho0, air_pi_inf, cv_j, cv_a, T, dT)
 
         V = rho0/rho_p
         e1 = exp(-R1*V)
@@ -326,20 +329,21 @@ contains
 
     !> Analytic equilibrium sound speed by the implicit function theorem on R(rho_p) = 0: F_rp = dR/drho_p (analytic), drho_p/dq =
     !! -F_q/F_rp for q in {rho, e}, then c2 = dp/drho|_e + (p/rho^2) dp/de|_rho evaluated through the mixture pressure.
-    subroutine s_jwl_pt_equilibrium_c2(rho, e, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, c2, ok)
+    subroutine s_jwl_pt_equilibrium_c2(rho, e, Y, rho_gap, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, c2, ok)
 
         $:GPU_ROUTINE(function_name='s_jwl_pt_equilibrium_c2',parallelism='[seq]', cray_noinline=True)
 
-        real(wp), intent(in)  :: rho, e, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a
+        real(wp), intent(in)  :: rho, e, Y, rho_gap, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a
         real(wp), intent(out) :: c2
         logical, intent(out)  :: ok
-        real(wp)              :: R, F_rp, T, p_p, p_a, rho_a, cvm
+        real(wp)              :: rho_p, R, F_rp, T, p_p, p_a, rho_a, cvm
         real(wp)              :: dT_rp, dT_rho, dT_e, dra_rho
         real(wp)              :: dpp_rp, dpp_T, F_rho, F_e, drp_drho, drp_de
         real(wp)              :: V, e1, e2, pref, dpref, dp_drho, dp_de, pmix
 
-        call s_jwl_pt_residual(rho, e, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, F_rp, T, p_p, &
-                               & p_a, rho_a, ok)
+        rho_p = Y*rho + rho_gap
+        call s_jwl_pt_residual(rho, e, Y, rho_gap, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, F_rp, T, &
+                               & p_p, p_a, rho_a, ok)
         if (.not. ok .or. abs(F_rp) < 1.e-30_wp) then
             ok = .false.; c2 = 0._wp
             return
@@ -370,7 +374,7 @@ contains
         dp_drho = dpp_rp*drp_drho + dpp_T*(dT_rp*drp_drho + dT_rho)
         dp_de = dpp_rp*drp_de + dpp_T*(dT_rp*drp_de + dT_e)
 
-        pmix = (Y*rho/rho_p)*p_p + (1._wp - Y*rho/rho_p)*p_a
+        pmix = (Y*rho/rho_p)*p_p + (rho_gap/rho_p)*p_a
         c2 = dp_drho + (pmix/rho**2)*dp_de
         ok = .true.
 
@@ -381,15 +385,15 @@ contains
     !! start (deep-tension stiffened states admit a spurious second root), then Numerical-Recipes rtsafe converges on the bracket
     !! even where R is non-monotone. ierr: 1 no physical state, 4 no sign change, 3 cap without tolerance.
     subroutine s_jwl_pt_bracketed_solve(rho, e, Y, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, p, T, &
-                                        & rho_p_out, ierr)
+                                        & rho_gap_out, ierr)
 
         $:GPU_ROUTINE(function_name='s_jwl_pt_bracketed_solve',parallelism='[seq]', cray_noinline=True)
 
         real(wp), intent(in)  :: rho, e, Y, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a
-        real(wp), intent(out) :: p, T, rho_p_out
+        real(wp), intent(out) :: p, T, rho_gap_out
         integer, intent(out)  :: ierr
         real(wp)              :: Rlo, rho_p, R, dR, p_p, p_a, rho_a
-        real(wp)              :: Tl, dTl, cand, scale, x, xlo, xhi, dRdx, rho_p_lo, dxold
+        real(wp)              :: Tl, dTl, cand, scale, x, xlo, xhi, dRdx, dxold
         real(wp)              :: relR, relbest, xbest, xl, xh, dxnew, x_cb, xprev, Rprev, bestd
         integer               :: stall, it, k
         logical               :: found, ok
@@ -397,23 +401,22 @@ contains
         real(wp), parameter   :: tol = 1.e-11_wp, u_floor = 1.e-12_wp
 
         ierr = 0
-        p = 0._wp; T = 0._wp; rho_p_out = rho
+        p = 0._wp; T = 0._wp; rho_gap_out = (1._wp - Y)*rho
 
         if (1._wp/rho - u_floor <= 0._wp) then
             ierr = 1
             return
         end if
-        rho_p_lo = Y/(1._wp/rho - u_floor)
-        xlo = log(rho_p_lo - Y*rho)
+        xlo = log(Y*rho**2*u_floor/(1._wp - rho*u_floor))
         xhi = log(10._wp*rho0 - Y*rho)
 
         ! Upper bound must keep T > 0: shrink onto the T = 0 boundary in x.
-        call s_jwl_pt_reduced_T(rho, e, Y, Y*rho + exp(xhi), A, B, R1, R2, rho0, air_pi_inf, cv_j, cv_a, Tl, dTl)
+        call s_jwl_pt_reduced_T(rho, e, Y, exp(xhi), A, B, R1, R2, rho0, air_pi_inf, cv_j, cv_a, Tl, dTl)
         if (Tl <= 0._wp) then
             cand = xlo
             do k = 1, 100
                 x = 0.5_wp*(cand + xhi)
-                call s_jwl_pt_reduced_T(rho, e, Y, Y*rho + exp(x), A, B, R1, R2, rho0, air_pi_inf, cv_j, cv_a, Tl, dTl)
+                call s_jwl_pt_reduced_T(rho, e, Y, exp(x), A, B, R1, R2, rho0, air_pi_inf, cv_j, cv_a, Tl, dTl)
                 if (Tl > 0._wp) then
                     cand = x
                 else
@@ -422,7 +425,7 @@ contains
             end do
             xhi = cand
         end if
-        call s_jwl_pt_reduced_T(rho, e, Y, Y*rho + exp(xlo), A, B, R1, R2, rho0, air_pi_inf, cv_j, cv_a, Tl, dTl)
+        call s_jwl_pt_reduced_T(rho, e, Y, exp(xlo), A, B, R1, R2, rho0, air_pi_inf, cv_j, cv_a, Tl, dTl)
         if (Tl <= 0._wp .or. xhi <= xlo) then
             ierr = 1
             return
@@ -439,12 +442,12 @@ contains
         ! Uniform scan in x; keep the sign-change bracket nearest x_cb.
         found = .false.; bestd = huge(1._wp)
         xprev = xlo
-        call s_jwl_pt_residual(rho, e, Y, Y*rho + exp(xlo), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, Rprev, &
-                               & dR, T, p_p, p_a, rho_a, ok)
+        call s_jwl_pt_residual(rho, e, Y, exp(xlo), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, Rprev, dR, T, &
+                               & p_p, p_a, rho_a, ok)
         do k = 1, nscan
             x = xlo + (xhi - xlo)*real(k, wp)/real(nscan, wp)
-            call s_jwl_pt_residual(rho, e, Y, Y*rho + exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, &
-                                   & dR, T, p_p, p_a, rho_a, ok)
+            call s_jwl_pt_residual(rho, e, Y, exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, &
+                                   & p_p, p_a, rho_a, ok)
             if (ok .and. R*Rprev < 0._wp) then
                 cand = 0.5_wp*(xprev + x)
                 if (abs(cand - x_cb) < bestd) then
@@ -469,8 +472,8 @@ contains
         x = 0.5_wp*(xl + xh)
         if (x_cb > min(xl, xh) .and. x_cb < max(xl, xh)) x = x_cb
         dxold = abs(xh - xl); dxnew = dxold
-        call s_jwl_pt_residual(rho, e, Y, Y*rho + exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, &
-                               & T, p_p, p_a, rho_a, ok)
+        call s_jwl_pt_residual(rho, e, Y, exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, p_p, &
+                               & p_a, rho_a, ok)
         dRdx = dR*exp(x)
         xbest = x; relbest = huge(1._wp); stall = 0
         do it = 1, itmax
@@ -484,13 +487,12 @@ contains
                 dxnew = R/dRdx
                 x = x - dxnew
             end if
-            rho_p = Y*rho + exp(x)
-            call s_jwl_pt_residual(rho, e, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, &
+            call s_jwl_pt_residual(rho, e, Y, exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, &
                                    & p_p, p_a, rho_a, ok)
             if (.not. ok) then  ! stepped out of the domain
                 x = 0.5_wp*(xl + xh)
-                call s_jwl_pt_residual(rho, e, Y, Y*rho + exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, &
-                                       & R, dR, T, p_p, p_a, rho_a, ok)
+                call s_jwl_pt_residual(rho, e, Y, exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, &
+                                       & T, p_p, p_a, rho_a, ok)
             end if
             dRdx = dR*exp(x)
             scale = max(abs(p_p), abs(p_a), jwl_pt_p_scale)
@@ -516,7 +518,7 @@ contains
         ! Return the best iterate seen.
         x = xbest
         rho_p = Y*rho + exp(x)
-        call s_jwl_pt_residual(rho, e, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, p_p, &
+        call s_jwl_pt_residual(rho, e, Y, exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, p_p, &
                                & p_a, rho_a, ok)
         if (.not. ok .or. T <= 0._wp) then
             ierr = 1
@@ -527,8 +529,8 @@ contains
         else
             ierr = max(ierr, 3)
         end if
-        p = (Y*rho/rho_p)*p_p + (1._wp - Y*rho/rho_p)*p_a
-        rho_p_out = rho_p
+        p = (Y*rho/rho_p)*p_p + (exp(x)/rho_p)*p_a
+        rho_gap_out = exp(x)
 
     end subroutine s_jwl_pt_bracketed_solve
 
@@ -541,8 +543,8 @@ contains
 
         real(wp), intent(in)  :: rho, e, Y, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a
         real(wp), intent(out) :: p, T, c2
-        real(wp)              :: p_cb, T_cb, c2_cb, c2f_cb, rho_p0, R0, dR, Tr, p_p, p_a, rho_a
-        real(wp)              :: rho_p, c2_eq, Tr2, p_p2, p_a2, rho_a2, c2_cw
+        real(wp)              :: p_cb, T_cb, c2_cb, c2f_cb, rho_p0, rho_gap0, R0, dR, Tr, p_p, p_a, rho_a
+        real(wp)              :: rho_gap, c2_eq, Tr2, p_p2, p_a2, rho_a2, c2_cw
         logical               :: ok
         integer               :: ierr
 
@@ -556,8 +558,9 @@ contains
         c2 = max(c2_cw, min(air_gamma, omega0)*max(p_cb + (1._wp - Y)*air_pi_inf, jwl_pt_p_scale)/rho)
 
         call s_jwl_pt_cb_base(rho, e, Y, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, rho_p0)
-        call s_jwl_pt_residual(rho, e, Y, rho_p0, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R0, dR, Tr, p_p, &
-                               & p_a, rho_a, ok)
+        rho_gap0 = rho_p0 - Y*rho
+        call s_jwl_pt_residual(rho, e, Y, rho_gap0, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R0, dR, Tr, &
+                               & p_p, p_a, rho_a, ok)
         ! Gate on the residual relative to the true equilibrium pressure p_p (not p_cb, whose
         ! magnitude is set by pi_inf for a stiffened ambient). At equilibrium the two partial
         ! pressures agree and the mixture pressure is that common value.
@@ -565,18 +568,18 @@ contains
             ! One Newton correction makes the returned pressure O(tau_gate^2) accurate; keep
             ! the pre-step state if the step leaves the physical bracket.
             p = 0.5_wp*(p_p + p_a)
-            rho_p = rho_p0 - R0/dR
-            call s_jwl_pt_residual(rho, e, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R0, dR, Tr2, &
-                                   & p_p2, p_a2, rho_a2, ok)
+            rho_gap = rho_gap0 - R0/dR
+            call s_jwl_pt_residual(rho, e, Y, rho_gap, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R0, dR, &
+                                   & Tr2, p_p2, p_a2, rho_a2, ok)
             if (ok) then
-                rho_p0 = rho_p
+                rho_gap0 = rho_gap
                 p = 0.5_wp*(p_p2 + p_a2)
                 T = Tr2
             else
                 T = Tr
             end if
-            call s_jwl_pt_equilibrium_c2(rho, e, Y, rho_p0, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, c2_eq, &
-                                         & ok)
+            call s_jwl_pt_equilibrium_c2(rho, e, Y, rho_gap0, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, &
+                                         & c2_eq, ok)
             if (ok .and. c2_eq > 0._wp) then
                 c2 = c2_eq
             else
@@ -585,11 +588,12 @@ contains
             return
         end if
 
-        call s_jwl_pt_bracketed_solve(rho, e, Y, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, p, T, rho_p, ierr)
+        call s_jwl_pt_bracketed_solve(rho, e, Y, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, p, T, rho_gap, ierr)
         ! ierr 3 (converged to ~1e-6, not 1e-11) is still a genuine equilibrium; only ierr 1/4
         ! (no physical state / no sign change) or a non-positive T mean no PT equilibrium exists.
         if ((ierr == 0 .or. ierr == 3) .and. T > 0._wp) then
-            call s_jwl_pt_equilibrium_c2(rho, e, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, c2_eq, ok)
+            call s_jwl_pt_equilibrium_c2(rho, e, Y, rho_gap, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, &
+                                         & c2_eq, ok)
             if (ok .and. c2_eq > 0._wp) then
                 c2 = c2_eq
             else
@@ -607,17 +611,19 @@ contains
 
     !> Inverse scalar residual R_inv(rho_p) = p_products - p_target with T fixed by the ambient law at the target pressure, and its
     !! analytic derivative.
-    subroutine s_jwl_pt_residual_inv(rho, p, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, ok)
+    subroutine s_jwl_pt_residual_inv(rho, p, Y, rho_gap, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, &
+                                     & ok)
 
         $:GPU_ROUTINE(function_name='s_jwl_pt_residual_inv',parallelism='[seq]', cray_noinline=True)
 
-        real(wp), intent(in)  :: rho, p, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a
+        real(wp), intent(in)  :: rho, p, Y, rho_gap, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a
         real(wp), intent(out) :: R, dR, T
         logical, intent(out)  :: ok
-        real(wp)              :: u, rho_a, drho_a, dT, V, e1, e2, pref, dpref
+        real(wp)              :: rho_p, u, rho_a, drho_a, dT, V, e1, e2, pref, dpref
 
+        rho_p = Y*rho + rho_gap
         ok = .true.
-        u = 1._wp/rho - Y/rho_p
+        u = rho_gap/(rho*rho_p)
         if (u <= sgm_eps .or. rho_p <= 0._wp) then
             ok = .false.; R = huge(1._wp); dR = 1._wp; T = 0._wp
             return
@@ -646,7 +652,7 @@ contains
         real(wp), intent(out) :: e
         integer, intent(out)  :: ierr
         real(wp)              :: rho_p, rho_a, u, T, R, dR, dRdx, x, xl, xh, xlo, xhi
-        real(wp)              :: rho_p_lo, cand, dxold, dxnew, Rlo, Rhi, scale, relR, relbest, xbest, ecd, pref
+        real(wp)              :: cand, dxold, dxnew, Rlo, Rhi, scale, relR, relbest, xbest, ecd, pref
         integer               :: it, k, stall
         logical               :: ok
         integer, parameter    :: itmax = 100, nscan = 128
@@ -659,17 +665,16 @@ contains
             return
         end if
 
-        rho_p_lo = Y/(1._wp/rho - u_floor)
-        xlo = log(rho_p_lo - Y*rho)
+        xlo = log(Y*rho**2*u_floor/(1._wp - rho*u_floor))
         xhi = log(10._wp*rho0 - Y*rho)
-        call s_jwl_pt_residual_inv(rho, p, Y, Y*rho + exp(xlo), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, &
-                                   & Rlo, dR, T, ok)
+        call s_jwl_pt_residual_inv(rho, p, Y, exp(xlo), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, Rlo, dR, &
+                                   & T, ok)
         if (.not. ok) then
             ierr = 1
             return
         end if
-        call s_jwl_pt_residual_inv(rho, p, Y, Y*rho + exp(xhi), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, &
-                                   & Rhi, dR, T, ok)
+        call s_jwl_pt_residual_inv(rho, p, Y, exp(xhi), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, Rhi, dR, &
+                                   & T, ok)
         if (.not. ok) then
             ierr = 1
             return
@@ -678,8 +683,8 @@ contains
             cand = xlo
             do k = 1, nscan
                 x = xlo + (xhi - xlo)*real(k, wp)/real(nscan, wp)
-                call s_jwl_pt_residual_inv(rho, p, Y, Y*rho + exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, &
-                                           & cv_a, R, dR, T, ok)
+                call s_jwl_pt_residual_inv(rho, p, Y, exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, &
+                                           & dR, T, ok)
                 if (ok .and. R*Rlo < 0._wp) then
                     xhi = x; Rhi = R; xlo = cand
                     exit
@@ -698,8 +703,7 @@ contains
             xl = xhi; xh = xlo
         end if
         x = 0.5_wp*(xl + xh)
-        call s_jwl_pt_residual_inv(rho, p, Y, Y*rho + exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, &
-                                   & dR, T, ok)
+        call s_jwl_pt_residual_inv(rho, p, Y, exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, ok)
         dRdx = dR*exp(x); dxold = abs(xh - xl); dxnew = dxold
         xbest = x; relbest = huge(1._wp); stall = 0
         do it = 1, itmax
@@ -708,13 +712,12 @@ contains
             else
                 dxold = dxnew; dxnew = R/dRdx; x = x - dxnew
             end if
-            rho_p = Y*rho + exp(x)
-            call s_jwl_pt_residual_inv(rho, p, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, &
-                                       & ok)
+            call s_jwl_pt_residual_inv(rho, p, Y, exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, &
+                                       & T, ok)
             if (.not. ok) then
                 x = 0.5_wp*(xl + xh)
-                call s_jwl_pt_residual_inv(rho, p, Y, Y*rho + exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, &
-                                           & cv_a, R, dR, T, ok)
+                call s_jwl_pt_residual_inv(rho, p, Y, exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, &
+                                           & dR, T, ok)
             end if
             dRdx = dR*exp(x)
             scale = max(abs(p) + air_pi_inf, jwl_pt_p_scale)
@@ -736,14 +739,14 @@ contains
 
         x = xbest
         rho_p = Y*rho + exp(x)
-        u = 1._wp/rho - Y/rho_p
+        u = exp(x)/(rho*rho_p)
         if (u <= sgm_eps .or. T <= 0._wp) then
             ierr = 1
             return
         end if
         rho_a = (1._wp - Y)/u
         T = (p + air_pi_inf)/(air_gamma*rho_a*cv_a)
-        call s_jwl_pt_residual_inv(rho, p, Y, rho_p, A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, ok)
+        call s_jwl_pt_residual_inv(rho, p, Y, exp(x), A, B, R1, R2, omega0, rho0, air_gamma, air_pi_inf, cv_j, cv_a, R, dR, T, ok)
         if (abs(R)/max(abs(p) + air_pi_inf, jwl_pt_p_scale) >= 1.e-6_wp) ierr = 3
         call s_jwl_pt_ecold(rho_p, A, B, R1, R2, rho0, ecd, pref)
         e = Y*(ecd + cv_j*T) + (1._wp - Y)*(cv_a*T + air_pi_inf/rho_a)
@@ -925,7 +928,7 @@ contains
         n_air = 0
         air_idx = 0
         do i = 1, num_fluids
-            if (fluid_pp(i)%eos == eos_jwl .and. .not. f_is_default(fluid_pp(i)%jwl_rho0)) then
+            if (fluid_pp(i)%eos == eos_jwl_pt .and. .not. f_is_default(fluid_pp(i)%jwl_rho0)) then
                 if (f_is_default(fluid_pp(i)%jwl_E0) .and. .not. f_is_default(fluid_pp(i)%jwl_Q)) then
                     fluid_pp(i)%jwl_E0 = fluid_pp(i)%jwl_rho0*fluid_pp(i)%jwl_Q
                 else if (.not. f_is_default(fluid_pp(i)%jwl_E0) .and. f_is_default(fluid_pp(i)%jwl_Q)) then
@@ -946,26 +949,26 @@ contains
             jwl_ej_rho_refs(i) = fluid_pp(i)%jwl_ej_rho_ref
             jwl_delta_es(i) = 0._wp
             if (.not. f_is_default(fluid_pp(i)%jwl_delta_e)) jwl_delta_es(i) = fluid_pp(i)%jwl_delta_e
-            if (fluid_pp(i)%eos == eos_jwl) then
+            if (fluid_pp(i)%eos == eos_jwl_pt) then
                 jwl_idx = i
                 n_jwl = n_jwl + 1
                 if (f_is_default(fluid_pp(i)%jwl_A) .or. f_is_default(fluid_pp(i)%jwl_B) .or. f_is_default(fluid_pp(i)%jwl_R1) &
                     & .or. f_is_default(fluid_pp(i)%jwl_R2) .or. f_is_default(fluid_pp(i)%jwl_omega) &
                     & .or. f_is_default(fluid_pp(i)%jwl_rho0) .or. f_is_default(fluid_pp(i)%jwl_E0)) then
-                    call s_mpi_abort('fluid_pp%eos = eos_jwl requires jwl_A, jwl_B, jwl_R1, jwl_R2, ' &
+                    call s_mpi_abort('fluid_pp%eos = eos_jwl_pt requires jwl_A, jwl_B, jwl_R1, jwl_R2, ' &
                                      & // 'jwl_omega, jwl_rho0, and either jwl_Q or jwl_E0 to be set.')
                 end if
                 if (.not. f_is_default(fluid_pp(i)%jwl_Q)) then
                     jwl_E0_from_Q = fluid_pp(i)%jwl_rho0*fluid_pp(i)%jwl_Q
                     if (.not. f_approx_equal(fluid_pp(i)%jwl_E0, jwl_E0_from_Q, 1.e-8_wp)) then
-                        call s_mpi_abort('fluid_pp%eos = eos_jwl requires jwl_E0 = jwl_rho0*jwl_Q when both jwl_E0 and jwl_Q are set.')
+                        call s_mpi_abort('fluid_pp%eos = eos_jwl_pt requires jwl_E0 = jwl_rho0*jwl_Q when both jwl_E0 and jwl_Q are set.')
                     end if
                 end if
                 if (f_is_default(fluid_pp(i)%jwl_air_rho0)) then
-                    call s_mpi_abort('fluid_pp%eos = eos_jwl requires jwl_air_rho0 to be set.')
+                    call s_mpi_abort('fluid_pp%eos = eos_jwl_pt requires jwl_air_rho0 to be set.')
                 end if
                 if (f_is_default(fluid_pp(i)%jwl_air_e0) .and. f_is_default(fluid_pp(i)%jwl_air_p0)) then
-                    call s_mpi_abort('fluid_pp%eos = eos_jwl requires either jwl_air_e0 or jwl_air_p0 to be set.')
+                    call s_mpi_abort('fluid_pp%eos = eos_jwl_pt requires either jwl_air_e0 or jwl_air_p0 to be set.')
                 end if
                 if (fluid_pp(i)%jwl_R1 <= 0._wp .or. fluid_pp(i)%jwl_R2 <= 0._wp .or. fluid_pp(i)%jwl_omega <= 0._wp &
                     & .or. fluid_pp(i)%jwl_rho0 <= 0._wp .or. fluid_pp(i)%jwl_E0 <= 0._wp .or. fluid_pp(i)%jwl_air_rho0 <= 0._wp) &
@@ -980,11 +983,11 @@ contains
         end do
 
         if (n_jwl > 1) then
-            call s_mpi_abort('At most one fluid may use eos_jwl; found more than one.')
+            call s_mpi_abort('At most one fluid may use eos_jwl_pt; found more than one.')
         end if
 
         if (jwl_idx > 0 .and. model_eqns /= model_eqns_5eq) then
-            call s_mpi_abort('eos_jwl is only supported with model_eqns_5eq.')
+            call s_mpi_abort('eos_jwl_pt is only supported with model_eqns_5eq.')
         end if
 
         jwl_cv_prod = 0._wp

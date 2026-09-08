@@ -16,7 +16,6 @@ module m_global_parameters
     use m_helper_basic
     ! Shared state: generated_decls, generated_case_opt_decls, sys_size, eqn_idx, chemistry, shear_*
     use m_global_parameters_common
-    ! $:USE_GPU_MODULE()
 
     implicit none
 
@@ -86,7 +85,6 @@ module m_global_parameters
     logical                :: bodyForces
     real(wp), dimension(3) :: accel_bf
     $:GPU_DECLARE(create='[accel_bf]')
-    ! $:GPU_DECLARE(create='[k_x,w_x,p_x,g_x,k_y,w_y,p_y,g_y,k_z,w_z,p_z,g_z]')
 
     !> Source fields for the spatially supported body force. `spatial_bf` and
     !> `bf_spatial_support` are auto-generated in generated_decls.fpp.
@@ -123,7 +121,7 @@ module m_global_parameters
     $:GPU_DECLARE(create='[bc_x%vb1, bc_x%vb2, bc_x%vb3, bc_x%ve1, bc_x%ve2, bc_x%ve3]')
     $:GPU_DECLARE(create='[bc_y%vb1, bc_y%vb2, bc_y%vb3, bc_y%ve1, bc_y%ve2, bc_y%ve3]')
     $:GPU_DECLARE(create='[bc_z%vb1, bc_z%vb2, bc_z%vb3, bc_z%ve1, bc_z%ve2, bc_z%ve3]')
-    $:GPU_DECLARE(create='[ib_bc_x%beg, ib_bc_y%beg, ib_bc_z%beg]')
+    $:GPU_DECLARE(create='[ib_bc_x%beg, ib_bc_x%end, ib_bc_y%beg, ib_bc_y%end, ib_bc_z%beg, ib_bc_z%end]')
 #elif defined(MFC_OpenMP)
     $:GPU_DECLARE(create='[bc_x, bc_y, bc_z]')
     $:GPU_DECLARE(create='[ib_bc_x, ib_bc_y, ib_bc_z]')
@@ -455,6 +453,28 @@ contains
 
         ! Fluids physical parameters (sim-specific; Re(:) and G=0._wp differ from post)
         do i = 1, num_fluids_max
+            fluid_pp(i)%eos = eos_stiffened_gas
+            fluid_pp(i)%mg_rho0 = dflt_real
+            fluid_pp(i)%mg_c0 = dflt_real
+            fluid_pp(i)%mg_s = dflt_real
+            fluid_pp(i)%mg_gruneisen = dflt_real
+            fluid_pp(i)%mg_gruneisen_a = 0._wp
+            fluid_pp(i)%mg_t0 = 0._wp
+            fluid_pp(i)%mg_s2 = 0._wp
+            fluid_pp(i)%mg_s3 = 0._wp
+            fluid_pp(i)%jwl_a = dflt_real
+            fluid_pp(i)%jwl_b = dflt_real
+            fluid_pp(i)%jwl_r1 = dflt_real
+            fluid_pp(i)%jwl_r2 = dflt_real
+            fluid_pp(i)%jwl_omega = dflt_real
+            fluid_pp(i)%jwl_rho0 = dflt_real
+            fluid_pp(i)%jwl_t0 = 0._wp
+            fluid_pp(i)%vinet_k0 = dflt_real
+            fluid_pp(i)%vinet_k0p = dflt_real
+            fluid_pp(i)%vinet_rho0 = dflt_real
+            fluid_pp(i)%vinet_gruneisen = dflt_real
+            fluid_pp(i)%vinet_gruneisen_a = 0._wp
+            fluid_pp(i)%vinet_t0 = 0._wp
             fluid_pp(i)%gamma = dflt_real
             fluid_pp(i)%pi_inf = dflt_real
             fluid_pp(i)%cv = 0._wp
