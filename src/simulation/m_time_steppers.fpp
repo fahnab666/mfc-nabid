@@ -681,10 +681,17 @@ contains
         real(wp)               :: dt_local
         integer                :: j, k, l     !< Generic loop iterators
         integer                :: fl, ib_idx  !< Fluid and particle loop iterators
-        real(wp)               :: h_ib, speed_ib
+        real(wp)               :: h_ib, speed_ib, accel_ib, motion_ib, disc_ib
+        real(wp), parameter    :: ib_motion_fraction = 0.25_wp
 
         if (.not. igr) then
             call s_convert_conservative_to_primitive_variables(q_cons_ts(1)%vf, q_T_sf, q_prim_vf, idwint)
+
+            ! Refresh the interface load before choosing dt. Otherwise the
+            ! acceleration constraint would use the preceding RK-stage force;
+            ! at the first impact of a strong shock that value may still be
+            ! zero even though the current pressure field is already loaded.
+            if (moving_immersed_boundary_flag) call s_compute_ib_forces(q_prim_vf, fluid_pp)
         end if
 
         dt_local = huge(1.0_wp)
@@ -745,16 +752,41 @@ contains
         ! Resolve soft-sphere contact independently of the fluid acoustic CFL.
         if (collision_model == 1) dt_local = min(dt_local, collision_time/real(collision_steps_per_contact, wp))
 
-        ! Covered cells do not enter the fluid CFL. Bound body translation and
-        ! surface rotation separately so fresh-cell reconstruction stays local.
+        ! Covered cells do not enter the fluid CFL. Bound the predicted motion
+        ! of every two-way-coupled body, rather than only its current velocity.
+        ! This is important for a light body initially at rest: a shock can make
+        ! |force|/mass large before the velocity-only constraint becomes active.
+        ! The positive root below enforces
+        !
+        !   speed*dt + 1/2*accel*dt**2 <= ib_motion_fraction*h_ib.
+        !
+        ! Rotational velocity, angular acceleration, and centripetal surface
+        ! acceleration are included conservatively at the particle radius.
         if (moving_immersed_boundary_flag .and. num_ibs > 0) then
             h_ib = min(minval(dx(0:m)), minval(dy(0:n)))
             if (p > 0) h_ib = min(h_ib, minval(dz(0:p)))
-            $:GPU_PARALLEL_LOOP(private='[ib_idx, speed_ib]', copyin='[h_ib]', reduction='[[dt_local]]', reductionOp='[min]')
+            motion_ib = ib_motion_fraction*h_ib
+            $:GPU_PARALLEL_LOOP(private='[ib_idx, speed_ib, accel_ib, disc_ib]', copyin='[motion_ib]', reduction='[[dt_local]]', &
+                                & reductionOp='[min]')
             do ib_idx = 1, num_ibs
                 if (patch_ib(ib_idx)%moving_ibm == 0) cycle
                 speed_ib = norm2(patch_ib(ib_idx)%vel) + max(0._wp, patch_ib(ib_idx)%radius)*norm2(patch_ib(ib_idx)%angular_vel)
-                if (speed_ib > 0._wp) dt_local = min(dt_local, 0.25_wp*h_ib/speed_ib)
+                accel_ib = 0._wp
+                if (patch_ib(ib_idx)%moving_ibm == 2 .and. patch_ib(ib_idx)%mass > sgm_eps) then
+                    accel_ib = norm2(patch_ib(ib_idx)%force)/patch_ib(ib_idx)%mass
+                    if (patch_ib(ib_idx)%moment > sgm_eps) then
+                        accel_ib = accel_ib + max(0._wp, &
+                                                  & patch_ib(ib_idx)%radius)*norm2(patch_ib(ib_idx)%torque)/patch_ib(ib_idx)%moment
+                    end if
+                    accel_ib = accel_ib + max(0._wp, patch_ib(ib_idx)%radius)*norm2(patch_ib(ib_idx)%angular_vel)**2
+                end if
+
+                if (accel_ib > sgm_eps) then
+                    disc_ib = sqrt(speed_ib*speed_ib + 2._wp*accel_ib*motion_ib)
+                    dt_local = min(dt_local, 2._wp*motion_ib/(speed_ib + disc_ib))
+                else if (speed_ib > sgm_eps) then
+                    dt_local = min(dt_local, motion_ib/speed_ib)
+                end if
             end do
             $:END_GPU_PARALLEL_LOOP()
         end if

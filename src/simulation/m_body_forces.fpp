@@ -69,6 +69,12 @@ contains
             call s_initialize_body_force_with_spatial_support
         end if
 
+        ! Make constant/time-dependent acceleration available before the first
+        ! adaptive timestep is selected. Previously accel_bf was first updated
+        ! while evaluating the fluid RHS, after s_compute_dt; a light two-way
+        ! coupled IB therefore could receive an unrestricted first-step impulse.
+        if (bf_x .or. bf_y .or. bf_z) call s_compute_acceleration(mytime)
+
         if (.not. synthetic_turbulence) return
         if (synth_n_shells <= 0) return
 

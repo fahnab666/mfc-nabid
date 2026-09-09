@@ -707,6 +707,8 @@ contains
             patch_ib(i)%vel(:) = 0._wp
             patch_ib(i)%angles(:) = 0._wp
             patch_ib(i)%angular_vel(:) = 0._wp
+            patch_ib(i)%force(:) = 0._wp
+            patch_ib(i)%torque(:) = 0._wp
             patch_ib(i)%mass = dflt_real
             patch_ib(i)%moment = dflt_real
             patch_ib(i)%centroid_offset(:) = 0._wp
