@@ -248,14 +248,14 @@ contains
 
         #:if not MFC_CASE_OPTIMIZATION and USING_AMD
             real(wp), dimension(3)                       :: Gs
-            real(wp), dimension(3)                       :: alpha_rho_IP, alpha_IP
+            real(wp), dimension(3)                       :: alpha_rho_IP, alpha_IP, alpha_rho_GP
             real(wp), dimension(3)                       :: r_IP, v_IP, pb_IP, mv_IP
             real(wp), dimension(18)                      :: nmom_IP
             real(wp), dimension(12)                      :: presb_IP, massv_IP
             real(wp), dimension(${AMD_NUM_SPECIES_MAX}$) :: Ys_IP
         #:else
             real(wp), dimension(num_fluids)  :: Gs
-            real(wp), dimension(num_fluids)  :: alpha_rho_IP, alpha_IP
+            real(wp), dimension(num_fluids)  :: alpha_rho_IP, alpha_IP, alpha_rho_GP
             real(wp), dimension(nb)          :: r_IP, v_IP, pb_IP, mv_IP
             real(wp), dimension(nb*nmom)     :: nmom_IP
             real(wp), dimension(nb*nnode)    :: presb_IP, massv_IP
@@ -363,10 +363,7 @@ contains
             $:END_GPU_PARALLEL_LOOP()
 
             ! Phase 2: apply the buffered image-point results as ghost-point corrections to q_prim_vf/q_cons_vf.
-            $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, pres_IP, pres_GP, vel_IP, vel_g, &
-                                & r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, G_K, Gs, gp, &
-                                & radial_vector, j, k, l, q, qv_K, c_IP, nbub, patch_id, Ys_IP, T_IP, mw_IP, e_IP, vel_sum_g, &
-                                & E_ghost, alpha_q, alpha_rho_q, e_q]')
+            $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, alpha_rho_GP, pres_IP, pres_GP, vel_IP, vel_g, &
                                 & r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, G_K, Gs, gp, &
                                 & radial_vector, j, k, l, q, qv_K, c_IP, nbub, patch_id, Ys_IP, T_IP, mw_IP, e_IP, vel_sum_g, &
                                 & E_ghost, alpha_q, alpha_rho_q, e_q]')
@@ -409,27 +406,6 @@ contains
                     alpha_rho_IP(1) = pres_IP*mw_IP/(T_IP*gas_constant)
                 end if
 
-                dyn_pres = 0._wp
-
-                ! Set q_prim_vf params at GP so that mixture vars calculated properly
-                $:GPU_LOOP(parallelism='[seq]')
-                do q = 1, num_fluids
-                    q_prim_vf(q)%sf(j, k, l) = alpha_rho_IP(q)
-                    q_prim_vf(eqn_idx%adv%beg + q - 1)%sf(j, k, l) = alpha_IP(q)
-                end do
-
-                if (surface_tension) then
-                    q_prim_vf(eqn_idx%c)%sf(j, k, l) = c_IP
-                end if
-
-                ! set the pressure
-                if (patch_ib(patch_id)%moving_ibm <= 1) then
-                    q_prim_vf(eqn_idx%E)%sf(j, k, l) = pres_IP
-                else
-                    call s_compute_ghost_point_pressure(gp, patch_id, alpha_rho_IP, pres_IP, pres_GP)
-                    q_prim_vf(eqn_idx%E)%sf(j, k, l) = pres_GP
-                end if
-
                 ! If in simulation, use acc mixture subroutines
                 if (hypoelasticity) then
                     call s_convert_species_to_mixture_variables_kernel(rho, gamma, pi_inf, qv_K, alpha_IP, alpha_rho_IP, Re_K, &
@@ -437,6 +413,29 @@ contains
                 else
                     call s_convert_species_to_mixture_variables_kernel(rho, gamma, pi_inf, qv_K, alpha_IP, alpha_rho_IP, Re_K)
                 end if
+
+                dyn_pres = 0._wp
+                if (surface_tension) q_prim_vf(eqn_idx%c)%sf(j, k, l) = c_IP
+
+                ! Pressure and density at a moving ghost point must remain thermodynamically consistent.
+                if (patch_ib(patch_id)%moving_ibm <= 1) then
+                    pres_GP = pres_IP
+                    alpha_rho_GP = alpha_rho_IP
+                else
+                    call s_compute_ghost_point_pressure(gp, patch_id, alpha_rho_IP, pres_IP, pres_GP)
+                    $:GPU_LOOP(parallelism='[seq]')
+                    do q = 1, num_fluids
+                        alpha_rho_GP(q) = alpha_rho_IP(q)*(pres_GP + isentrope_B(q))/(pres_IP + isentrope_B(q))
+                    end do
+                    call s_compute_mixture_coefficients(alpha_rho_GP, alpha_IP, rho, gamma, pi_inf, qv_K)
+                end if
+                q_prim_vf(eqn_idx%E)%sf(j, k, l) = pres_GP
+
+                $:GPU_LOOP(parallelism='[seq]')
+                do q = 1, num_fluids
+                    q_prim_vf(q)%sf(j, k, l) = alpha_rho_GP(q)
+                    q_prim_vf(eqn_idx%adv%beg + q - 1)%sf(j, k, l) = alpha_IP(q)
+                end do
 
                 ! get the vector that points from the centroid to the ghost
                 radial_vector(1) = physical_loc(1) - (patch_ib(patch_id)%x_centroid + real(ghost_points(i)%x_periodicity, &
@@ -463,7 +462,7 @@ contains
                 ! Set continuity and adv vars
                 $:GPU_LOOP(parallelism='[seq]')
                 do q = 1, num_fluids
-                    q_cons_vf(q)%sf(j, k, l) = alpha_rho_IP(q)
+                    q_cons_vf(q)%sf(j, k, l) = alpha_rho_GP(q)
                     q_cons_vf(eqn_idx%adv%beg + q - 1)%sf(j, k, l) = alpha_IP(q)
                 end do
 
@@ -486,8 +485,7 @@ contains
                     end do
                     q_cons_vf(eqn_idx%E)%sf(j, k, l) = rho*e_IP + dyn_pres
                 else
-                    ! call s_compute_energy(pres_IP, alpha_rho_IP, alpha_IP, vel_sum_g, E_ghost)
-                    call s_compute_energy(q_prim_vf(eqn_idx%E)%sf(j, k, l), alpha_rho_IP, alpha_IP, vel_sum_g, E_ghost)
+                    call s_compute_energy(pres_GP, alpha_rho_GP, alpha_IP, vel_sum_g, E_ghost)
                     q_cons_vf(eqn_idx%E)%sf(j, k, l) = E_ghost
                 end if
                 ! Set bubble vars
@@ -534,8 +532,8 @@ contains
                     $:GPU_LOOP(parallelism='[seq]')
                     do q = eqn_idx%int_en%beg, eqn_idx%int_en%end
                         alpha_q = alpha_IP(q - eqn_idx%int_en%beg + 1)
-                        alpha_rho_q = alpha_rho_IP(q - eqn_idx%int_en%beg + 1)
-                        call s_phase_internal_energy(pres_IP, alpha_q, alpha_rho_q, q - eqn_idx%int_en%beg + 1, e_q)
+                        alpha_rho_q = alpha_rho_GP(q - eqn_idx%int_en%beg + 1)
+                        call s_phase_internal_energy(pres_GP, alpha_q, alpha_rho_q, q - eqn_idx%int_en%beg + 1, e_q)
                         q_cons_vf(q)%sf(j, k, l) = e_q
                     end do
                 end if
