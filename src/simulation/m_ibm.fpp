@@ -215,6 +215,15 @@ contains
         type(ghost_point)      :: gp
         type(ghost_point)      :: innerp
 
+        ! Stage image-point reads separately from ghost-cell writes. Without
+        ! this staging, one GPU thread can overwrite a ghost cell while another
+        ! thread is still using that cell in its interpolation stencil.
+        real(wp), allocatable :: alpha_rho_IP_buf(:,:), alpha_IP_buf(:,:)
+        real(wp), allocatable :: pres_IP_buf(:), c_IP_buf(:), b_IP_buf(:), lam_IP_buf(:)
+        real(wp), allocatable :: vel_IP_buf(:,:)
+        real(wp), allocatable :: r_IP_buf(:,:), v_IP_buf(:,:), pb_IP_buf(:,:), mv_IP_buf(:,:)
+        real(wp), allocatable :: nmom_IP_buf(:,:), presb_IP_buf(:,:), massv_IP_buf(:,:), Ys_IP_buf(:,:)
+
         ! set the Moving IBM interior conservative variables
         $:GPU_PARALLEL_LOOP(private='[i, j, k, l, patch_id, patch_id_temp, rho, dyn_pres]', collapse=3)
         do l = 0, p
@@ -403,6 +412,59 @@ contains
         end if
 
         if (num_gps > 0) then
+            @:ALLOCATE(alpha_rho_IP_buf(1:num_fluids, 1:num_gps), alpha_IP_buf(1:num_fluids, 1:num_gps), pres_IP_buf(1:num_gps), &
+                       & c_IP_buf(1:num_gps), b_IP_buf(1:num_gps), lam_IP_buf(1:num_gps), vel_IP_buf(1:3, 1:num_gps), &
+                       & r_IP_buf(1:nb, 1:num_gps), v_IP_buf(1:nb, 1:num_gps), pb_IP_buf(1:nb, 1:num_gps), &
+                       & mv_IP_buf(1:nb, 1:num_gps), nmom_IP_buf(1:nb*nmom, 1:num_gps), presb_IP_buf(1:nb*nnode, 1:num_gps), &
+                       & massv_IP_buf(1:nb*nnode, 1:num_gps), Ys_IP_buf(1:num_species, 1:num_gps))
+
+            ! Phase 1: read every interpolation stencil before any ghost point is corrected.
+            $:GPU_PARALLEL_LOOP(private='[i, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, r_IP, v_IP, pb_IP, mv_IP, &
+                                & nmom_IP, presb_IP, massv_IP, Ys_IP, b_IP, lam_IP]')
+            do i = 1, num_gps
+                gp = ghost_points(i)
+                b_IP = 0._wp
+                lam_IP = 0._wp
+
+                if (bubbles_euler .and. .not. qbmm) then
+                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, r_IP, v_IP, &
+                                                   & pb_IP, mv_IP)
+                else if (qbmm .and. polytropic) then
+                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, r_IP, v_IP, &
+                                                   & pb_IP, mv_IP, nmom_IP)
+                else if (qbmm .and. .not. polytropic) then
+                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, r_IP, v_IP, &
+                                                   & pb_IP, mv_IP, nmom_IP, pb_in, mv_in, presb_IP, massv_IP)
+                else if (chemistry) then
+                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, Ys_IP=Ys_IP)
+                    #:if not MFC_CASE_OPTIMIZATION or jwl_active
+                    else if (jwl_idx > 0 .and. (jwl_afterburn .or. jwl_reactive)) then
+                        call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, b_IP=b_IP, &
+                                                       & lam_IP=lam_IP)
+                    #:endif
+                else
+                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP)
+                end if
+
+                alpha_rho_IP_buf(:,i) = alpha_rho_IP(1:num_fluids)
+                alpha_IP_buf(:,i) = alpha_IP(1:num_fluids)
+                pres_IP_buf(i) = pres_IP
+                vel_IP_buf(:,i) = vel_IP
+                c_IP_buf(i) = c_IP
+                b_IP_buf(i) = b_IP
+                lam_IP_buf(i) = lam_IP
+                r_IP_buf(:,i) = r_IP(1:nb)
+                v_IP_buf(:,i) = v_IP(1:nb)
+                pb_IP_buf(:,i) = pb_IP(1:nb)
+                mv_IP_buf(:,i) = mv_IP(1:nb)
+                nmom_IP_buf(:,i) = nmom_IP(1:nb*nmom)
+                presb_IP_buf(:,i) = presb_IP(1:nb*nnode)
+                massv_IP_buf(:,i) = massv_IP(1:nb*nnode)
+                Ys_IP_buf(:,i) = Ys_IP(1:num_species)
+            end do
+            $:END_GPU_PARALLEL_LOOP()
+
+            ! Phase 2: apply the buffered values to the ghost cells.
             $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, vel_g, vel_wall, &
                                 & r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, G_K, Gs, gp, &
                                 & innerp, norm, buf, radial_vector, rotation_velocity, j, k, l, q, qv_K, c_IP, nbub, patch_id, &
@@ -422,29 +484,21 @@ contains
                     physical_loc = [x_cc(j), y_cc(k), 0._wp]
                 end if
 
-                ! Interpolate primitive variables at image point associated w/ GP
-                if (bubbles_euler .and. .not. qbmm) then
-                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, r_IP, v_IP, &
-                                                   & pb_IP, mv_IP)
-                else if (qbmm .and. polytropic) then
-                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, r_IP, v_IP, &
-                                                   & pb_IP, mv_IP, nmom_IP)
-                else if (qbmm .and. .not. polytropic) then
-                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, r_IP, v_IP, &
-                                                   & pb_IP, mv_IP, nmom_IP, pb_in, mv_in, presb_IP, massv_IP)
-                else if (chemistry) then
-                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, Ys_IP=Ys_IP)
-                    #:if not MFC_CASE_OPTIMIZATION or jwl_active
-                    else if (jwl_idx > 0 .and. (jwl_afterburn .or. jwl_reactive)) then
-                        ! Reaction-progress variables are material scalars: the rigid-wall condition
-                        ! is zero normal flux, so the ghost value is the image-point value (same
-                        ! constant-extrapolation treatment as alpha; Fedkiw et al., JCP 154, 1999).
-                        call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP, b_IP=b_IP, &
-                                                       & lam_IP=lam_IP)
-                    #:endif
-                else
-                    call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP)
-                end if
+                alpha_rho_IP(1:num_fluids) = alpha_rho_IP_buf(:,i)
+                alpha_IP(1:num_fluids) = alpha_IP_buf(:,i)
+                pres_IP = pres_IP_buf(i)
+                vel_IP = vel_IP_buf(:,i)
+                c_IP = c_IP_buf(i)
+                b_IP = b_IP_buf(i)
+                lam_IP = lam_IP_buf(i)
+                r_IP(1:nb) = r_IP_buf(:,i)
+                v_IP(1:nb) = v_IP_buf(:,i)
+                pb_IP(1:nb) = pb_IP_buf(:,i)
+                mv_IP(1:nb) = mv_IP_buf(:,i)
+                nmom_IP(1:nb*nmom) = nmom_IP_buf(:,i)
+                presb_IP(1:nb*nnode) = presb_IP_buf(:,i)
+                massv_IP(1:nb*nnode) = massv_IP_buf(:,i)
+                Ys_IP(1:num_species) = Ys_IP_buf(:,i)
 
                 ! Injecting (burning) surface: replace the mirrored ghost composition with pure
                 ! injected fuel at the local pressure and the ambient (image-point) temperature.
@@ -658,6 +712,9 @@ contains
                 end if
             end do
             $:END_GPU_PARALLEL_LOOP()
+
+            @:DEALLOCATE(alpha_rho_IP_buf, alpha_IP_buf, pres_IP_buf, c_IP_buf, b_IP_buf, lam_IP_buf, vel_IP_buf, r_IP_buf, &
+                         & v_IP_buf, pb_IP_buf, mv_IP_buf, nmom_IP_buf, presb_IP_buf, massv_IP_buf, Ys_IP_buf)
         end if
 
     end subroutine s_ibm_correct_state
@@ -1258,6 +1315,7 @@ contains
         call nvtxStartRange("COMPUTE-GHOST-POINTS")
         ! recalculate the ghost point locations and coefficients
         call s_find_num_ghost_points(num_gps)
+        $:GPU_UPDATE(device='[num_gps]')
 
         ! The local active count can grow as moving IB neighborhoods cross
         ! rank boundaries. Grow only when needed and keep a nonzero device
@@ -1614,7 +1672,7 @@ contains
         real(wp), dimension(num_ibs, 3), intent(inout) :: forces, torques
 
 #ifdef MFC_MPI
-        integer                       :: i, j, k, pack_pos, unpack_pos, buf_size, ierr
+        integer                       :: i, j, k, l, pack_pos, unpack_pos, buf_size, ierr
         integer                       :: send_neighbor, recv_neighbor, recv_count, tag
         character(len=1), allocatable :: ib_force_send_buf(:), ib_force_recv_buf(:)
 
@@ -1637,11 +1695,13 @@ contains
                     ! send forces to +${X}$ neighbor; receive from -${X}$ neighbor. Add received values then
                     pack_pos = 0
                     if (num_ibs > 0) then
-                        $:GPU_PARALLEL_LOOP(private='[i]', copyin='[forces, torques]')
+                        $:GPU_PARALLEL_LOOP(private='[i, l]', copyin='[forces, torques]')
                         do i = 1, num_ibs
                             send_ids(i) = patch_ib(i)%gbl_patch_id
-                            send_ft(1:3,i) = forces(i,:)
-                            send_ft(4:6,i) = torques(i,:)
+                            do l = 1, 3
+                                send_ft(l, i) = forces(i, l)
+                                send_ft(l + 3, i) = torques(i, l)
+                            end do
                         end do
                         $:END_GPU_PARALLEL_LOOP()
                     end if
@@ -1659,16 +1719,18 @@ contains
                                         & MPI_COMM_WORLD, ierr)
                         call MPI_UNPACK(ib_force_recv_buf, buf_size, unpack_pos, recv_ft, 6*recv_count, mpi_p, MPI_COMM_WORLD, ierr)
                         if (num_ibs > 0) then
-                            $:GPU_PARALLEL_LOOP(private='[i, j]', copyin='[recv_ft, recv_ids]', copy='[forces, torques, &
+                            $:GPU_PARALLEL_LOOP(private='[i, j, l]', copyin='[recv_ft, recv_ids]', copy='[forces, torques, &
                                                 & recv_forces_snap, recv_torques_snap]')
                             do i = 1, recv_count
                                 call s_get_neighborhood_idx(recv_ids(i), j)
                                 if (j > 0) then
                                     ! add forces and subtract recv_snap prevent double-counting
-                                    forces(j,:) = forces(j,:) + recv_ft(1:3,i) - recv_forces_snap(j,:)
-                                    torques(j,:) = torques(j,:) + recv_ft(4:6,i) - recv_torques_snap(j,:)
-                                    recv_forces_snap(j,:) = recv_ft(1:3,i)
-                                    recv_torques_snap(j,:) = recv_ft(4:6,i)
+                                    do l = 1, 3
+                                        forces(j, l) = forces(j, l) + recv_ft(l, i) - recv_forces_snap(j, l)
+                                        torques(j, l) = torques(j, l) + recv_ft(l + 3, i) - recv_torques_snap(j, l)
+                                        recv_forces_snap(j, l) = recv_ft(l, i)
+                                        recv_torques_snap(j, l) = recv_ft(l + 3, i)
+                                    end do
                                 end if
                             end do
                             $:END_GPU_PARALLEL_LOOP()
@@ -1688,11 +1750,13 @@ contains
                 do k = 1, min(2*ib_neighborhood_radius, num_procs_${X}$ - 1)
                     pack_pos = 0
                     if (num_ibs > 0) then
-                        $:GPU_PARALLEL_LOOP(private='[i]', copyin='[forces, torques]')
+                        $:GPU_PARALLEL_LOOP(private='[i, l]', copyin='[forces, torques]')
                         do i = 1, num_ibs
                             send_ids(i) = patch_ib(i)%gbl_patch_id
-                            send_ft(1:3,i) = forces(i,:)
-                            send_ft(4:6,i) = torques(i,:)
+                            do l = 1, 3
+                                send_ft(l, i) = forces(i, l)
+                                send_ft(l + 3, i) = torques(i, l)
+                            end do
                         end do
                         $:END_GPU_PARALLEL_LOOP()
                     end if
@@ -1709,12 +1773,14 @@ contains
                                         & MPI_COMM_WORLD, ierr)
                         call MPI_UNPACK(ib_force_recv_buf, buf_size, unpack_pos, recv_ft, 6*recv_count, mpi_p, MPI_COMM_WORLD, ierr)
                         if (num_ibs > 0) then
-                            $:GPU_PARALLEL_LOOP(private='[i, j]', copyin='[recv_ft, recv_ids]', copy='[forces, torques]')
+                            $:GPU_PARALLEL_LOOP(private='[i, j, l]', copyin='[recv_ft, recv_ids]', copy='[forces, torques]')
                             do i = 1, recv_count
                                 call s_get_neighborhood_idx(recv_ids(i), j)
                                 if (j > 0) then
-                                    forces(j,:) = recv_ft(1:3,i)
-                                    torques(j,:) = recv_ft(4:6,i)
+                                    do l = 1, 3
+                                        forces(j, l) = recv_ft(l, i)
+                                        torques(j, l) = recv_ft(l + 3, i)
+                                    end do
                                 end if
                             end do
                             $:END_GPU_PARALLEL_LOOP()
@@ -1740,11 +1806,10 @@ contains
         logical                               :: is_new
         type(ib_patch_parameters)             :: tmp_patch
         integer, dimension(num_local_ibs_max) :: local_ib_idx_old
-        ! 26 neighbors max in 3D (8 in 2D); each gets its own recv buffer
-        integer, parameter             :: max_nbrs = 26
-        character(len=1), allocatable  :: send_buf(:), recv_bufs(:,:)
-        integer, dimension(2*max_nbrs) :: requests
-        integer, dimension(max_nbrs)   :: recv_neighbor_list
+        ! Every rank in the configured IB neighborhood gets its own receive buffer.
+        integer                       :: max_nbrs
+        character(len=1), allocatable :: send_buf(:), recv_bufs(:,:)
+        integer, allocatable          :: requests(:), recv_neighbor_list(:)
 
 #ifdef MFC_MPI
         if (num_procs > 1) then
@@ -1776,19 +1841,22 @@ contains
                     ! check if in local domain
                     if (f_local_rank_owns_location(centroid)) then
                         local_output_idx = local_output_idx + 1
+                        @:PROHIBIT(local_output_idx > num_local_ibs_max, &
+                                   & "Too many IBs on one processor rank; revise the case decomposition or increase num_local_ibs_max.")
                         local_ib_patch_ids(local_output_idx) = output_idx
                     end if
                 end if
             end do
             num_ibs = output_idx
             num_local_ibs = local_output_idx
-            $:GPU_UPDATE(device='[patch_ib]')
+            $:GPU_UPDATE(device='[patch_ib, num_ibs]')
             call s_update_ib_lookup()
 
             ! Broadcast newly-owned patches to all neighborhood neighbors
             patch_bytes = storage_size(tmp_patch)/8
             buf_size = storage_size(0)/8 + patch_bytes*num_local_ibs_max
-            allocate (send_buf(buf_size), recv_bufs(buf_size, max_nbrs))
+            max_nbrs = (2*ib_neighborhood_radius + 1)**num_dims - 1
+            allocate (send_buf(buf_size), recv_bufs(buf_size, max_nbrs), requests(2*max_nbrs), recv_neighbor_list(max_nbrs))
 
             ! Write placeholder count at position 0
             pack_pos = 0
@@ -1819,12 +1887,13 @@ contains
             ! Post all receives first, then sends
             nreqs = 0
             nbr_idx = 0
-            do dz = merge(-1, 0, num_dims == 3), merge(1, 0, num_dims == 3)
-                do dy = -1, 1
-                    do dx = -1, 1
+            do dz = merge(-ib_neighborhood_radius, 0, num_dims == 3), merge(ib_neighborhood_radius, 0, num_dims == 3)
+                do dy = -ib_neighborhood_radius, ib_neighborhood_radius
+                    do dx = -ib_neighborhood_radius, ib_neighborhood_radius
                         if (dx == 0 .and. dy == 0 .and. dz == 0) cycle
                         nbr_idx = nbr_idx + 1
-                        tag = 200 + (dx + 1)*9 + (dy + 1)*3 + (dz + 1)
+                        tag = 200 + (dx + ib_neighborhood_radius)*(2*ib_neighborhood_radius + 1)**2 + (dy &
+                                     & + ib_neighborhood_radius)*(2*ib_neighborhood_radius + 1) + dz + ib_neighborhood_radius
                         recv_neighbor = ib_neighbor_ranks(-dx, -dy, -dz)
                         recv_neighbor_list(nbr_idx) = MPI_PROC_NULL
                         if (recv_neighbor < 0) cycle
@@ -1836,11 +1905,12 @@ contains
                 end do
             end do
 
-            do dz = merge(-1, 0, num_dims == 3), merge(1, 0, num_dims == 3)
-                do dy = -1, 1
-                    do dx = -1, 1
+            do dz = merge(-ib_neighborhood_radius, 0, num_dims == 3), merge(ib_neighborhood_radius, 0, num_dims == 3)
+                do dy = -ib_neighborhood_radius, ib_neighborhood_radius
+                    do dx = -ib_neighborhood_radius, ib_neighborhood_radius
                         if (dx == 0 .and. dy == 0 .and. dz == 0) cycle
-                        tag = 200 + (dx + 1)*9 + (dy + 1)*3 + (dz + 1)
+                        tag = 200 + (dx + ib_neighborhood_radius)*(2*ib_neighborhood_radius + 1)**2 + (dy &
+                                     & + ib_neighborhood_radius)*(2*ib_neighborhood_radius + 1) + dz + ib_neighborhood_radius
                         send_neighbor = ib_neighbor_ranks(dx, dy, dz)
                         if (send_neighbor < 0) cycle
                         nreqs = nreqs + 1
@@ -1852,7 +1922,7 @@ contains
             call MPI_WAITALL(nreqs, requests, MPI_STATUSES_IGNORE, ierr)
 
             ! Unpack all received buffers
-            do nbr_idx = 1, merge(26, 8, num_dims == 3)
+            do nbr_idx = 1, max_nbrs
                 if (recv_neighbor_list(nbr_idx) == MPI_PROC_NULL) cycle
                 unpack_pos = 0
                 call MPI_UNPACK(recv_bufs(:,nbr_idx), buf_size, unpack_pos, recv_count, 1, MPI_INTEGER, MPI_COMM_WORLD, ierr)
@@ -1864,12 +1934,15 @@ contains
                         num_ibs = num_ibs + 1
                         @:ASSERT(num_ibs <= size(patch_ib), 'patch_ib overflow in neighborhood handoff')
                         patch_ib(num_ibs) = tmp_patch
+                        ! Mark it immediately so duplicate broadcasts received from
+                        ! another neighbor do not append the same global patch twice.
+                        ib_gbl_idx_lookup(tmp_patch%gbl_patch_id) = num_ibs
                     end if
                 end do
             end do
 
-            deallocate (send_buf, recv_bufs)
-            $:GPU_UPDATE(device='[patch_ib]')
+            deallocate (send_buf, recv_bufs, requests, recv_neighbor_list)
+            $:GPU_UPDATE(device='[patch_ib, num_ibs]')
             call s_update_ib_lookup()
         end if
 #endif
@@ -1888,22 +1961,18 @@ contains
 
     end subroutine s_get_neighborhood_idx
 
+    !> Rebuild the global-to-local lookup on the host, where patch_ib is current after compaction/MPI unpack, then mirror the
+    !! complete table. A device scatter can retain stale entries when num_ibs shrinks.
     subroutine s_update_ib_lookup()
 
         integer :: i
 
         ib_gbl_idx_lookup = -1
+        do i = 1, num_ibs
+            ib_gbl_idx_lookup(patch_ib(i)%gbl_patch_id) = i
+        end do
+
         $:GPU_UPDATE(device='[ib_gbl_idx_lookup]')
-
-        if (num_ibs > 0) then
-            $:GPU_PARALLEL_LOOP(private='[i]')
-            do i = 1, num_ibs
-                ib_gbl_idx_lookup(patch_ib(i)%gbl_patch_id) = i
-            end do
-            $:END_GPU_PARALLEL_LOOP()
-        end if
-
-        $:GPU_UPDATE(host='[ib_gbl_idx_lookup]')
 
     end subroutine s_update_ib_lookup
 
