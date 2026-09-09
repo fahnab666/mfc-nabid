@@ -932,13 +932,12 @@ contains
         real(wp), dimension(2, 2, 2)                         :: eta
         type(ghost_point)                                    :: gp
         integer                                              :: q, i, j, k, ii, jj, kk  !< Grid indexes and iterators
-        integer                                              :: donor_i, donor_j, donor_k, zlo, zhi, missing_donors
+        integer                                              :: donor_i, donor_j, donor_k, zlo, zhi, donor_pass, donor_radius
         real(wp)                                             :: donor_dist, best_dist
         logical                                              :: is_cell_center
 
-        missing_donors = 0
         $:GPU_PARALLEL_LOOP(private='[q, i, j, k, ii, jj, kk, dist, buf, gp, interp_coeffs, eta, alpha, is_cell_center, donor_i, &
-                            & donor_j, donor_k, zlo, zhi, donor_dist, best_dist]', reduction='[[missing_donors]]', reductionOp='[+]')
+                            & donor_j, donor_k, zlo, zhi, donor_pass, donor_radius, donor_dist, best_dist]')
         do q = 1, num_gps
             gp = ghost_points_in(q)
             ! Get the interpolation points
@@ -1019,36 +1018,55 @@ contains
             if (sum(interp_coeffs) <= 0._wp) then
                 best_dist = huge(1._wp)
                 donor_i = i; donor_j = j; donor_k = k
-                zlo = 0; zhi = 0
-                if (p > 0) then
-                    zlo = max(k - gp_layers, -buff_size)
-                    zhi = min(k + gp_layers + 1, p + buff_size - 1)
-                end if
-                do kk = zlo, zhi
-                    do jj = max(j - gp_layers, -buff_size), min(j + gp_layers + 1, n + buff_size - 1)
-                        do ii = max(i - gp_layers, -buff_size), min(i + gp_layers + 1, m + buff_size - 1)
-                            if (ib_markers%sf(ii, jj, kk) /= 0) cycle
-                            donor_dist = (x_cc(ii) - gp%ip_loc(1))**2 + (y_cc(jj) - gp%ip_loc(2))**2
-                            if (p > 0) donor_dist = donor_dist + (z_cc(kk) - gp%ip_loc(3))**2
-                            if (donor_dist < best_dist) then
-                                best_dist = donor_dist
-                                donor_i = ii; donor_j = jj; donor_k = kk
-                            end if
+                ! Preserve the established three-layer donor choice exactly.
+                ! Only a stencil that previously had no donor may inspect the
+                ! remainder of the already-exchanged primitive-variable halo.
+                do donor_pass = 1, 2
+                    donor_radius = gp_layers
+                    if (donor_pass == 2) donor_radius = max(gp_layers + 1, buff_size - 1)
+                    zlo = 0; zhi = 0
+                    if (p > 0) then
+                        zlo = max(k - donor_radius, -buff_size)
+                        zhi = min(k + donor_radius + 1, p + buff_size - 1)
+                    end if
+                    do kk = zlo, zhi
+                        do jj = max(j - donor_radius, -buff_size), min(j + donor_radius + 1, n + buff_size - 1)
+                            do ii = max(i - donor_radius, -buff_size), min(i + donor_radius + 1, m + buff_size - 1)
+                                if (ib_markers%sf(ii, jj, kk) /= 0) cycle
+                                donor_dist = (x_cc(ii) - gp%ip_loc(1))**2 + (y_cc(jj) - gp%ip_loc(2))**2
+                                if (p > 0) donor_dist = donor_dist + (z_cc(kk) - gp%ip_loc(3))**2
+                                if (donor_dist < best_dist) then
+                                    best_dist = donor_dist
+                                    donor_i = ii; donor_j = jj; donor_k = kk
+                                end if
+                            end do
                         end do
                     end do
+                    if (best_dist < huge(1._wp)) exit
                 end do
                 if (best_dist < huge(1._wp)) then
                     ghost_points_in(q)%ip_grid = [donor_i, donor_j, donor_k]
                     interp_coeffs(1, 1, 1) = 1._wp
                 else
-                    missing_donors = missing_donors + 1
+                    ! Sridhar & Capecelatro (2026), scenario II: when an
+                    ! image point lies inside a neighboring large particle and
+                    ! no fluid donor exists in the available halo, use the
+                    ! average of the surrounding grid points. These cells are
+                    ! internal to the union of solids, so they must provide a
+                    ! bounded continuation state rather than a fluid-interface
+                    ! reconstruction. Freshly uncovered cells are separately
+                    ! repopulated from established fluid in s_ibm_correct_state.
+                    if (p == 0) then
+                        interp_coeffs(:,:,1) = 0.25_wp
+                    else
+                        interp_coeffs = 0.125_wp
+                    end if
                 end if
             end if
 
             ghost_points_in(q)%interp_coeffs = interp_coeffs
         end do
         $:END_GPU_PARALLEL_LOOP()
-        if (missing_donors > 0) call s_mpi_abort("IBM image point has no fluid donor in the available halo")
 
     end subroutine s_compute_interpolation_coeffs
 

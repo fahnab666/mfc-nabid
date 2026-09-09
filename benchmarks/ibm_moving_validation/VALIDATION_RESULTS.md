@@ -11,6 +11,7 @@ The generated restart and Silo output files are intentionally excluded from Git.
 | `ibm_comoving_periodic` | Moving no-slip sphere and uniform fluid translating together across a periodic seam, 96 x 48 x 48, 200 steps | Passed: density, pressure, and velocity errors below 1.3e-15; force norm 9.4e-19 |
 | `impact.py` | Two-body collision with restitution coefficient 0.9 | Passed: zero net momentum drift; measured restitution coefficient 0.90152 |
 | `daoud_six` | Six-sphere Mach-3 shock/contact reproduction, 0.8 microseconds, 680 adaptive steps | Passed: all 41 saved fluid and particle states finite; positive fluid density and pressure; no invalid solid cells or saved particle overlap |
+| `ibm_enclosed_donor` | Two strongly overlapping moving spheres, run on one and two MPI ranks | Passed: completed without an image-point/donor abort; all 663,552 saved conserved values finite on both decompositions |
 
 ## Commands
 
@@ -25,6 +26,8 @@ OMP_NUM_THREADS=1 ./mfc.sh run build/validation/ibm_comoving_periodic/case.py -t
 
 OMP_NUM_THREADS=1 ./mfc.sh run build/validation/daoud_six/case.py -t pre_process simulation --case-optimization --no-gpu --no-build -n 8
 ./build/venv/bin/python3 benchmarks/ibm_moving_validation/check_outputs.py build/validation/daoud_six --stop 8e-7
+
+OMP_NUM_THREADS=1 ./mfc.sh run build/validation/ibm_enclosed_donor/case.py -t pre_process simulation --no-gpu --no-build -n 2
 ```
 
 The paper-derived case is a reduced local physics/stability validation, not a grid-convergence reproduction of the full published case. The full production checkpoint still requires validation on its target HPC/GPU configuration.
