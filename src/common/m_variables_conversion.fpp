@@ -14,7 +14,7 @@ module m_variables_conversion
     use m_helper_basic
     use m_helper
     use m_constants, only: riemann_solver_hll, riemann_solver_hlld, model_eqns_gamma_law, model_eqns_5eq, model_eqns_6eq, &
-        & avg_state_roe
+        & avg_state_roe, eos_jwl
     use m_thermochem, only: num_species, get_temperature, get_pressure, gas_constant, get_mixture_molecular_weight, &
         & get_mixture_energy_mass
 
@@ -31,11 +31,19 @@ module m_variables_conversion
         & f_hypoelastic_energy, f_relativistic_enthalpy, s_eos_coefficients, s_phase_coefficients, s_phase_pressure_on_isentrope, &
         & s_phase_temperature, f_is_state_dependent, s_phase_bulk_modulus, s_phase_density_on_isentrope, &
         & s_finalize_variables_conversion_module, gammas, isentrope_n, pi_infs, isentrope_B, cvs, qvs, qvps
+    public :: jwl_idx, jwl_air_idx, s_jwl_pt_state
 
     real(wp), allocatable, dimension(:)   :: Gs_vc
     integer, allocatable, dimension(:)    :: bubrs_vc
     real(wp), allocatable, dimension(:,:) :: Res_vc
     $:GPU_DECLARE(create='[bubrs_vc, Gs_vc, Res_vc]')
+
+    ! JWL mixture-closure data. The refactor keeps the closure beside the generic EOS path so all targets share one implementation.
+    integer               :: jwl_idx = 0, jwl_air_idx = 0
+    real(wp)              :: jwl_cv_prod = 0._wp, jwl_cv_air = 0._wp
+    real(wp), allocatable :: jwl_air_gammas(:), jwl_air_pi_infs(:), jwl_delta_es(:)
+    $:GPU_DECLARE(create='[jwl_idx, jwl_air_idx, jwl_cv_prod, jwl_cv_air]')
+    $:GPU_DECLARE(create='[jwl_air_gammas, jwl_air_pi_infs, jwl_delta_es]')
 
     integer :: is1b, is2b, is3b, is1e, is2e, is3e
     $:GPU_DECLARE(create='[is1b, is2b, is3b, is1e, is2e, is3e]')
@@ -71,7 +79,7 @@ contains
     end subroutine s_convert_to_mixture_variables
 
     !> Compute the pressure from the appropriate equation of state
-    subroutine s_compute_pressure(energy, alf, dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T, E_e_in, pres_mag)
+    subroutine s_compute_pressure(energy, alf, dyn_p, pi_inf, gamma, rho, qv, rhoYks, pres, T, E_e_in, pres_mag, jwl_Y)
 
         $:GPU_ROUTINE(function_name='s_compute_pressure',parallelism='[seq]', cray_noinline=True)
 
@@ -81,6 +89,7 @@ contains
         real(wp), intent(out)          :: pres
         real(wp), intent(inout)        :: T
         real(wp), intent(in), optional :: E_e_in, pres_mag
+        real(wp), intent(in), optional :: jwl_Y
 
         ! Chemistry
         real(wp), dimension(1:num_species), intent(in) :: rhoYks
@@ -107,7 +116,11 @@ contains
                 e_int = energy - dyn_p - E_e_in
             end if
 
-            pres = f_pressure(e_int, gamma, pi_inf, qv)
+            if (jwl_idx > 0 .and. present(jwl_Y)) then
+                call s_jwl_pt_state(rho, e_int/max(rho, sgm_eps), jwl_Y, jwl_idx, pres, T)
+            else
+                pres = f_pressure(e_int, gamma, pi_inf, qv)
+            end if
         #:else
             ! Reacting mixture pressure from temperature and species
             Y_rs(:) = rhoYks(:)/rho
@@ -277,8 +290,11 @@ contains
         @:ALLOCATE(qvs    (1:num_fluids))
         @:ALLOCATE(qvps    (1:num_fluids))
         @:ALLOCATE(Gs_vc     (1:num_fluids))
+        @:ALLOCATE(jwl_air_gammas(1:num_fluids), jwl_air_pi_infs(1:num_fluids), jwl_delta_es(1:num_fluids))
 
         state_dependent = .false.
+        jwl_idx = 0
+        jwl_air_idx = 0
         do i = 1, num_fluids
             gammas(i) = fluid_pp(i)%gamma
             isentrope_n(i) = f_isentrope_exponent(gammas(i))
@@ -297,6 +313,11 @@ contains
             qvs(i) = fluid_pp(i)%qv
             qvps(i) = fluid_pp(i)%qvp
             eoss(i) = fluid_pp(i)%eos
+            jwl_air_gammas(i) = 1._wp/max(fluid_pp(i)%gamma, sgm_eps)
+            jwl_air_pi_infs(i) = fluid_pp(i)%pi_inf/max(fluid_pp(i)%gamma + 1._wp, sgm_eps)
+            jwl_delta_es(i) = fluid_pp(i)%jwl_delta_e
+            if (fluid_pp(i)%eos == eos_jwl) jwl_idx = i
+            if (fluid_pp(i)%eos /= eos_jwl .and. jwl_air_idx == 0) jwl_air_idx = i
             eos_coeffs(i)%c0 = fluid_pp(i)%mg_c0
             eos_coeffs(i)%s = fluid_pp(i)%mg_s
             eos_coeffs(i)%s2 = fluid_pp(i)%mg_s2
@@ -336,6 +357,12 @@ contains
             end select
             if (f_is_state_dependent(i)) state_dependent = .true.
         end do
+        if (jwl_idx > 0 .and. jwl_air_idx > 0) then
+            jwl_cv_prod = cvs(jwl_idx)
+            jwl_cv_air = cvs(jwl_air_idx)
+            jwl_air_gammas(jwl_idx) = gammas(jwl_air_idx)
+            jwl_air_pi_infs(jwl_idx) = pi_infs(jwl_air_idx)/(gammas(jwl_air_idx) + 1._wp)
+        end if
         #:if MFC_CASE_OPTIMIZATION
             ! Baked in at build time, so a case that changed its EOS family since the build would silently
             ! run the wrong branch. The namelist still carries fluid_pp%eos, so check the two agree.
@@ -344,7 +371,8 @@ contains
         #:else
             any_state_dependent_eos = state_dependent
         #:endif
-        $:GPU_UPDATE(device='[gammas, isentrope_n, pi_infs, isentrope_B, cvs, qvs, qvps, Gs_vc, eoss, eos_coeffs]')
+        $:GPU_UPDATE(device='[gammas, isentrope_n, pi_infs, isentrope_B, cvs, qvs, qvps, Gs_vc, eoss, eos_coeffs, jwl_idx, &
+                     & jwl_air_idx, jwl_air_gammas, jwl_air_pi_infs, jwl_delta_es]')
         #:if not MFC_CASE_OPTIMIZATION
             $:GPU_UPDATE(device='[any_state_dependent_eos]')
         #:endif
@@ -654,8 +682,14 @@ contains
                         pres_mag = 0._wp
                     end if
 
-                    call s_compute_pressure(qK_cons_vf(eqn_idx%E)%sf(j, k, l), qK_cons_vf(eqn_idx%alf)%sf(j, k, l), dyn_pres_K, &
-                                            & pi_inf_K, gamma_K, rho_K, qv_K, rhoYks, pres, T, pres_mag=pres_mag)
+                    if (jwl_idx > 0 .and. jwl_idx <= num_fluids) then
+                        call s_compute_pressure(qK_cons_vf(eqn_idx%E)%sf(j, k, l), qK_cons_vf(eqn_idx%alf)%sf(j, k, l), &
+                                                & dyn_pres_K, pi_inf_K, gamma_K, rho_K, qv_K, rhoYks, pres, T, pres_mag=pres_mag, &
+                                                & jwl_Y=alpha_rho_K(jwl_idx)/max(rho_K, sgm_eps))
+                    else
+                        call s_compute_pressure(qK_cons_vf(eqn_idx%E)%sf(j, k, l), qK_cons_vf(eqn_idx%alf)%sf(j, k, l), &
+                                                & dyn_pres_K, pi_inf_K, gamma_K, rho_K, qv_K, rhoYks, pres, T, pres_mag=pres_mag)
+                    end if
 
                     qK_prim_vf(eqn_idx%E)%sf(j, k, l) = pres
 
@@ -749,6 +783,8 @@ contains
                     end if
 
                     if (hyper_cleaning) qK_prim_vf(eqn_idx%psi)%sf(j, k, l) = qK_cons_vf(eqn_idx%psi)%sf(j, k, l)
+                    if (jwl_afterburn) qK_prim_vf(eqn_idx%abn)%sf(j, k, l) = qK_cons_vf(eqn_idx%abn)%sf(j, k, l)
+                    if (jwl_reactive) qK_prim_vf(eqn_idx%rxn)%sf(j, k, l) = qK_cons_vf(eqn_idx%rxn)%sf(j, k, l)
                     if (bubbles_lagrange .and. lagrange_beta_index_vc > 0) then
                         qK_prim_vf(lagrange_beta_index_vc)%sf(j, k, l) = qK_cons_vf(lagrange_beta_index_vc)%sf(j, k, l)
                     end if
@@ -996,6 +1032,8 @@ contains
                     end if
 
                     if (hyper_cleaning) q_cons_vf(eqn_idx%psi)%sf(j, k, l) = q_prim_vf(eqn_idx%psi)%sf(j, k, l)
+                    if (jwl_afterburn) q_cons_vf(eqn_idx%abn)%sf(j, k, l) = q_prim_vf(eqn_idx%abn)%sf(j, k, l)
+                    if (jwl_reactive) q_cons_vf(eqn_idx%rxn)%sf(j, k, l) = q_prim_vf(eqn_idx%rxn)%sf(j, k, l)
                 end do
             end do
         end do
@@ -1246,7 +1284,8 @@ contains
 
         if (allocated(rho_sf)) deallocate (rho_sf, gamma_sf, pi_inf_sf)
 
-        @:DEALLOCATE(gammas, isentrope_n, pi_infs, isentrope_B, cvs, qvs, qvps, Gs_vc, eoss)
+        @:DEALLOCATE(gammas, isentrope_n, pi_infs, isentrope_B, cvs, qvs, qvps, Gs_vc, eoss, jwl_air_gammas, jwl_air_pi_infs, &
+                     & jwl_delta_es)
         if (allocated(bubrs_vc)) then
             @:DEALLOCATE(bubrs_vc)
         end if
@@ -1358,6 +1397,12 @@ contains
         real(wp)              :: rho, gamma, pi_inf, qv
 
         call s_compute_mixture_coefficients(alpha_rho_K, alpha_K, rho, gamma, pi_inf, qv)
+
+        if (jwl_idx > 0 .and. jwl_idx <= num_fluids .and. .not. bubbles_euler) then
+            call s_jwl_pt_energy(rho, pres, alpha_rho_K(jwl_idx)/max(rho, sgm_eps), jwl_idx, E)
+            E = E + 5.e-1_wp*rho*vel_sum
+            return
+        end if
 
         ! E = dyn_p + (1 - alf)(gamma p + pi_inf) + qv. Only the liquid's internal energy is diluted;
         ! qv is already an energy density.
@@ -1993,5 +2038,130 @@ contains
         c_fast = sqrt(0.5_wp*(term + sqrt(disc)))
 
     end subroutine s_compute_fast_magnetosonic_speed
+
+    !> Fast pressure-temperature equilibrium for a JWL product/ambient cell. The scalar solve is on product density; pure limits
+    !! stay on the generic EOS path and therefore remain bit-identical to upstream.
+    subroutine s_jwl_pt_state(rho, e, Y, i, pres, T, lambda)
+
+        real(wp), intent(in)           :: rho, e, Y
+        integer, intent(in)            :: i
+        real(wp), intent(out)          :: pres, T
+        real(wp), intent(in), optional :: lambda
+        real(wp)                       :: lo, hi, rp, f, fl, p, den, dpi, dgamma
+        real(wp)                       :: e_eff, lambda_l
+        integer                        :: n
+
+        lambda_l = 1._wp
+        if (present(lambda)) lambda_l = min(max(lambda, 0._wp), 1._wp)
+        e_eff = e + min(max(Y, 0._wp), 1._wp)*(1._wp - lambda_l)*jwl_delta_es(i)
+        if (Y <= 1.e-9_wp .or. Y >= 1._wp - 1.e-9_wp) then
+            call s_eos_coefficients(max(rho, sgm_eps), i, den, p, dpi, dgamma)
+            pres = den*rho*e_eff + p
+            T = max(pres, sgm_eps)/(max(den, sgm_eps)*max(cvs(i), sgm_eps)*max(rho, sgm_eps))
+            return
+        end if
+        lo = max(Y*rho*(1._wp + 1.e-8_wp), sgm_eps)
+        hi = max(lo*2._wp, 2._wp*rho)
+        call s_jwl_pt_residual(rho, e_eff, Y, hi, i, f, p, T)
+        do while (f > 0._wp .and. hi < 1.e6_wp*rho)
+            hi = 2._wp*hi
+            call s_jwl_pt_residual(rho, e_eff, Y, hi, i, f, p, T)
+        end do
+        call s_jwl_pt_residual(rho, e_eff, Y, lo, i, fl, p, T)
+        if (fl*f > 0._wp) then
+            pres = p
+            return
+        end if
+        do n = 1, 24
+            rp = 0.5_wp*(lo + hi)
+            call s_jwl_pt_residual(rho, e_eff, Y, rp, i, f, p, T)
+            if (abs(f) < 1.e-8_wp*max(abs(p), 1.e5_wp)) exit
+            if (f*fl > 0._wp) then
+                lo = rp
+                fl = f
+            else
+                hi = rp
+            end if
+        end do
+        pres = p
+
+    end subroutine s_jwl_pt_state
+
+    subroutine s_jwl_pt_residual(rho, e, Y, rp, i, residual, pres, T)
+
+        real(wp), intent(in)  :: rho, e, Y, rp
+        integer, intent(in)   :: i
+        real(wp), intent(out) :: residual, pres, T
+        real(wp)              :: ra, V, ea, eb, pref, ecold, den, ga, pia
+
+        ra = (1._wp - Y)/(1._wp/rho - Y/rp)
+        V = eos_coeffs(i)%rho0/rp
+        ea = eos_coeffs(i)%a*exp(-eos_coeffs(i)%r1*V)
+        eb = eos_coeffs(i)%b*exp(-eos_coeffs(i)%r2*V)
+        pref = ea + eb
+        ecold = (ea/eos_coeffs(i)%r1 + eb/eos_coeffs(i)%r2)/eos_coeffs(i)%rho0
+        ga = jwl_air_gammas(i)
+        pia = jwl_air_pi_infs(i)
+        den = Y/(eos_coeffs(i)%gruneisen0*rp) + (1._wp - Y)/(ga*ra)
+        pres = (e - Y*ecold + Y*pref/(eos_coeffs(i)%gruneisen0*rp) - (1._wp - Y)*pia/ga)/den
+        T = (pres - pref)/(eos_coeffs(i)%gruneisen0*rp*max(jwl_cv_prod, sgm_eps))
+        residual = T - (pres + pia)/(ga*ra*max(jwl_cv_air, sgm_eps))
+
+    end subroutine s_jwl_pt_residual
+
+    subroutine s_jwl_pt_energy(rho, pres, Y, i, e)
+
+        real(wp), intent(in)  :: rho, pres, Y
+        integer, intent(in)   :: i
+        real(wp), intent(out) :: e
+        real(wp)              :: lo, hi, rp, f, fl
+        integer               :: n
+
+        if (Y <= 1.e-9_wp .or. Y >= 1._wp - 1.e-9_wp) then
+            e = (pres - pi_infs(i) - qvs(i)*rho)/max(gammas(i)*rho, sgm_eps)
+            return
+        end if
+        lo = max(Y*rho*(1._wp + 1.e-8_wp), sgm_eps)
+        hi = max(2._wp*rho, 2._wp*lo)
+        call s_jwl_pt_inverse_residual(rho, pres, Y, lo, i, fl, e)
+        call s_jwl_pt_inverse_residual(rho, pres, Y, hi, i, f, e)
+        do while (fl*f > 0._wp .and. hi < 1.e6_wp*rho)
+            hi = 2._wp*hi
+            call s_jwl_pt_inverse_residual(rho, pres, Y, hi, i, f, e)
+        end do
+        do n = 1, 24
+            rp = 0.5_wp*(lo + hi)
+            call s_jwl_pt_inverse_residual(rho, pres, Y, rp, i, f, e)
+            if (f*fl > 0._wp) then
+                lo = rp
+                fl = f
+            else
+                hi = rp
+            end if
+        end do
+
+    end subroutine s_jwl_pt_energy
+
+    subroutine s_jwl_pt_inverse_residual(rho, pres, Y, rp, i, residual, e)
+
+        real(wp), intent(in)  :: rho, pres, Y, rp
+        integer, intent(in)   :: i
+        real(wp), intent(out) :: residual, e
+        real(wp)              :: ra, V, ea, eb, pref, ecold, ep, ga, pia
+
+        ra = (1._wp - Y)/(1._wp/rho - Y/rp)
+        V = eos_coeffs(i)%rho0/rp
+        ea = eos_coeffs(i)%a*exp(-eos_coeffs(i)%r1*V)
+        eb = eos_coeffs(i)%b*exp(-eos_coeffs(i)%r2*V)
+        pref = ea + eb
+        ecold = (ea/eos_coeffs(i)%r1 + eb/eos_coeffs(i)%r2)/eos_coeffs(i)%rho0
+        ep = ecold + (pres - pref)/(eos_coeffs(i)%gruneisen0*rp)
+        ga = jwl_air_gammas(i)
+        pia = jwl_air_pi_infs(i)
+        residual = (pres - pref)/(eos_coeffs(i)%gruneisen0*rp*max(jwl_cv_prod, sgm_eps)) - (pres + pia)/(ga*ra*max(jwl_cv_air, &
+                    & sgm_eps))
+        e = Y*ep + (1._wp - Y)*(pres + pia)/(ga*ra)
+
+    end subroutine s_jwl_pt_inverse_residual
 
 end module m_variables_conversion

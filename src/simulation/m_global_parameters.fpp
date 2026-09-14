@@ -463,6 +463,7 @@ contains
             fluid_pp(i)%jwl_omega = dflt_real
             fluid_pp(i)%jwl_rho0 = dflt_real
             fluid_pp(i)%jwl_t0 = 0._wp
+            call s_assign_jwl_defaults(fluid_pp(i))
             fluid_pp(i)%vinet_k0 = dflt_real
             fluid_pp(i)%vinet_k0p = dflt_real
             fluid_pp(i)%vinet_rho0 = dflt_real
