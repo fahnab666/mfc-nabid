@@ -286,6 +286,25 @@ DESCRIPTIONS = {
     "collision_time": "Amount of simulation time each collision will take to resolve",
     "ramp_ratio": "Maximum factor by which the adaptive time step may grow from one time step to the next",
     "ib_coefficient_of_friction": "coefficient of friction used in IB collisions",
+    # JWL reaction and diagnostic controls
+    "jwl_wrt": "Write JWL temperature, product fraction, and reaction progress",
+    "jwl_afterburn": "Enable JWL afterburn energy release",
+    "jwl_ab_model": "JWL afterburn rate model",
+    "jwl_q_ab": "Afterburn energy release per unit mass",
+    "jwl_ab_tau": "Afterburn rate time constant (used when jwl_ab_model = 1)",
+    "jwl_ab_A": "Afterburn Arrhenius-form rate pre-exponential factor",
+    "jwl_ab_theta": "Afterburn Arrhenius-form activation temperature",
+    "jwl_ab_n": "Afterburn Arrhenius-form pressure exponent",
+    "jwl_reactive": "Enable JWL++ pressure-driven reactive burn",
+    "jwl_G": "JWL++ reactive-burn rate constant",
+    "jwl_b_exp": "JWL++ reactive-burn pressure exponent",
+    "prog_burn": "Enable kinematic JWL program burn",
+    "pb_D_cj": "Programmed burn Chapman-Jouguet detonation velocity",
+    "pb_width": "Programmed burn reaction zone width",
+    "pb_x_det": "Programmed burn detonation point x-coordinate",
+    "pb_y_det": "Programmed burn detonation point y-coordinate",
+    "pb_z_det": "Programmed burn detonation point z-coordinate",
+    "pb_t_det": "Programmed burn detonation initiation time",
 }
 
 # Patterns for auto-generating descriptions of indexed parameters
