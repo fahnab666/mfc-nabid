@@ -2194,6 +2194,13 @@ class CaseValidator:
                     if alpha_rho is not None and self._is_numeric(alpha_rho):
                         self.prohibit(alpha_rho < 0, f"patch_icpp({istr})%alpha_rho({jstr}) must be non-negative (got {alpha_rho})")
 
+                # JWL++ reaction progress
+                jwl_reactive = self.get("jwl_reactive", "F") == "T"
+                rxn_val = self.get(f"patch_icpp({i})%rxn_val")
+                if rxn_val is not None and self._is_numeric(rxn_val):
+                    self.prohibit(rxn_val != 0 and not jwl_reactive, f"patch_icpp({istr})%rxn_val requires jwl_reactive")
+                    self.prohibit(rxn_val < 0 or rxn_val > 1, f"patch_icpp({istr})%rxn_val must be in [0, 1] (got {rxn_val})")
+
             # GEOMETRY
             # Patch dimensions must be positive (except in cylindrical coords where
             # length_y/length_z can be sentinel values like -1000000.0)
