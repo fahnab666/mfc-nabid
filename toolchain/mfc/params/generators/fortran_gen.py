@@ -74,6 +74,21 @@ SIM_GPU_DECL_VARS = {
     "jwl_afterburn",
     "jwl_reactive",
     "low_Mach",
+    "lso_R_gas",
+    "lso_conductivity",
+    "lso_mu",
+    "lso_n_passes_x",
+    "lso_n_passes_y",
+    "lso_n_passes_z",
+    "lso_a_x",
+    "lso_a_y",
+    "lso_a_z",
+    "lso2_n_passes_x",
+    "lso2_n_passes_y",
+    "lso2_n_passes_z",
+    "lso2_a_x",
+    "lso2_a_y",
+    "lso2_a_z",
     "m",
     "mapped_weno",
     "mixture_err",
@@ -372,7 +387,24 @@ _STRUCT_ROOTS = frozenset({"bc_x", "bc_y", "bc_z", "x_domain", "y_domain", "z_do
 # broadcast only, so these — including the 2D turb_pos/synth_L — are declared and
 # broadcast by hand in m_mpi_proxy.fpp. Skipped here so the scalar classifier does
 # not treat the base name as a missing-registry scalar.
-_MANUAL_ARRAY_RESIDUE = frozenset({"synth_n_waves_per_shell", "synth_k_shell", "synth_amp_shell", "turb_pos", "synth_L"})
+_MANUAL_ARRAY_RESIDUE = frozenset(
+    {
+        "synth_n_waves_per_shell",
+        "synth_k_shell",
+        "synth_amp_shell",
+        "turb_pos",
+        "synth_L",
+        "lso_a_x",
+        "lso_a_y",
+        "lso_a_z",
+        "lso2_a_x",
+        "lso2_a_y",
+        "lso2_a_z",
+        "lso_pp_a_x",
+        "lso_pp_a_y",
+        "lso_pp_a_z",
+    }
+)
 
 # Variables excluded from broadcast generation (derived post-broadcast or non-namelist).
 # muscl_eps was previously excluded here on the assumption that it was derived
@@ -574,6 +606,8 @@ def _emit_fortran_array_dims(lines: List[str], target: str) -> None:
     """
     for name in sorted(FORTRAN_ARRAY_DIMS):
         if name not in NAMELIST_VARS or target not in NAMELIST_VARS[name]:
+            continue
+        if name in _MANUAL_ARRAY_RESIDUE:
             continue
         dim = FORTRAN_ARRAY_DIMS[name]
         # Determine element type from registry (use the (1) example entry)

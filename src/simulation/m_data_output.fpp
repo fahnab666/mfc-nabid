@@ -24,10 +24,11 @@ module m_data_output
     implicit none
 
     private
+    character(LEN=8), public :: lso_file_prefix = ''
     public :: s_initialize_data_output_module, s_open_run_time_information_file, s_open_probe_files, &
         & s_write_run_time_information, s_write_data_files, s_write_serial_data_files, s_write_parallel_data_files, &
         & s_write_ib_data_file, s_write_probe_files, s_write_ib_state_file, s_write_ib_force_history, s_close_ib_force_history, &
-        & s_close_run_time_information_file, s_close_probe_files, s_finalize_data_output_module
+        & s_close_run_time_information_file, s_close_probe_files, s_finalize_data_output_module, s_write_lso_stat_file
     real(wp), public, allocatable, dimension(:,:) :: c_mass
     $:GPU_DECLARE(create='[c_mass]')
 
@@ -714,7 +715,7 @@ contains
 
             call s_initialize_mpi_data(q_cons_vf, qbmm_pb=pb_ts(1), qbmm_mv=mv_ts(1))
 
-            write (file_loc, '(I0,A,i7.7,A)') t_step, '_', proc_rank, '.dat'
+            write (file_loc, '(A,I0,A,i7.7,A)') trim(lso_file_prefix), t_step, '_', proc_rank, '.dat'
             file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc)
             inquire (FILE=trim(file_loc), EXIST=file_exist)
             if (file_exist .and. proc_rank == 0) then
@@ -786,7 +787,7 @@ contains
                 call s_initialize_mpi_data(q_cons_vf, qbmm_pb=pb_ts(1), qbmm_mv=mv_ts(1))
             end if
 
-            write (file_loc, '(I0,A)') t_step, '.dat'
+            write (file_loc, '(A,I0,A)') trim(lso_file_prefix), t_step, '.dat'
             file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
             inquire (FILE=trim(file_loc), EXIST=file_exist)
             if (file_exist .and. proc_rank == 0) then
@@ -1782,5 +1783,73 @@ contains
         end if
 
     end subroutine s_finalize_data_output_module
+
+    impure subroutine s_write_lso_stat_file(q_stat_vf, n_stat, t_step, fname)
+
+        type(scalar_field), intent(in)         :: q_stat_vf(:)
+        integer, intent(in)                    :: n_stat, t_step
+        character(LEN=*), intent(in), optional :: fname
+
+#ifdef MFC_MPI
+        integer                              :: ifile, ierr, data_size, i, j, k, l, mpi_view
+        integer, dimension(MPI_STATUS_SIZE)  :: status
+        integer(kind=MPI_OFFSET_KIND)        :: disp, m_MOK, n_MOK, p_MOK, WP_MOK, var_MOK, MOK
+        integer, dimension(num_dims)         :: sizes_glb, sizes_loc, start_stat
+        integer                              :: m_loc, n_loc, p_loc
+        real(stp), allocatable               :: stat_io_buf(:,:,:)
+        character(LEN=path_len + 2*name_len) :: file_loc
+        logical                              :: file_exist
+
+        if (lso_down_sample_factor > 1) then
+            m_loc = m_lso_ds; n_loc = n_lso_ds; p_loc = p_lso_ds
+            sizes_glb(1) = m_glb_lso_ds + 1; sizes_loc(1) = m_loc + 1; start_stat(1) = start_idx(1)/lso_down_sample_factor
+            if (num_dims >= 2) then
+                sizes_glb(2) = n_glb_lso_ds + 1; sizes_loc(2) = n_loc + 1; start_stat(2) = start_idx(2)/lso_down_sample_factor
+            end if
+            if (num_dims == 3) then
+                sizes_glb(3) = p_glb_lso_ds + 1; sizes_loc(3) = p_loc + 1; start_stat(3) = start_idx(3)/lso_down_sample_factor
+            end if
+        else
+            m_loc = m; n_loc = n; p_loc = p
+            sizes_glb(1) = m_glb + 1; sizes_loc(1) = m_loc + 1; start_stat(1) = start_idx(1)
+            if (num_dims >= 2) then
+                sizes_glb(2) = n_glb + 1; sizes_loc(2) = n_loc + 1; start_stat(2) = start_idx(2)
+            end if
+            if (num_dims == 3) then
+                sizes_glb(3) = p_glb + 1; sizes_loc(3) = p_loc + 1; start_stat(3) = start_idx(3)
+            end if
+        end if
+
+        data_size = (m_loc + 1)*(n_loc + 1)*(p_loc + 1)
+        m_MOK = int(sizes_glb(1), MPI_OFFSET_KIND); n_MOK = int(max(1, sizes_glb(2)), MPI_OFFSET_KIND)
+        p_MOK = int(max(1, sizes_glb(3)), MPI_OFFSET_KIND)
+        WP_MOK = int(storage_size(0._stp)/8, MPI_OFFSET_KIND); MOK = 1_MPI_OFFSET_KIND
+        if (present(fname)) then
+            write (file_loc, '(A,I0,A)') trim(fname), t_step, '.dat'
+        else
+            write (file_loc, '(A,I0,A)') 'lso_stat_', t_step, '.dat'
+        end if
+        file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
+        inquire (FILE=trim(file_loc), EXIST=file_exist)
+        if (file_exist .and. proc_rank == 0) call MPI_FILE_DELETE(file_loc, mpi_info_int, ierr)
+        call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+        allocate (stat_io_buf(0:m_loc,0:n_loc,0:p_loc))
+        do i = 1, n_stat
+            do l = 0, p_loc; do k = 0, n_loc; do j = 0, m_loc
+                stat_io_buf(j, k, l) = q_stat_vf(i)%sf(j, k, l)
+            end do; end do; end do
+            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_stat, MPI_ORDER_FORTRAN, mpi_p, mpi_view, ierr)
+            call MPI_TYPE_COMMIT(mpi_view, ierr)
+            var_MOK = int(i, MPI_OFFSET_KIND)
+            disp = m_MOK*n_MOK*p_MOK*WP_MOK*(var_MOK - 1)
+            call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, mpi_view, 'native', mpi_info_int, ierr)
+            call MPI_FILE_WRITE_ALL(ifile, stat_io_buf, data_size, mpi_io_p, status, ierr)
+            call MPI_TYPE_FREE(mpi_view, ierr)
+        end do
+        deallocate (stat_io_buf)
+        call MPI_FILE_CLOSE(ifile, ierr)
+#endif
+
+    end subroutine s_write_lso_stat_file
 
 end module m_data_output

@@ -231,17 +231,21 @@ module m_global_parameters
 
     !> @name LSO variable-weight Gaussian filter
     !> @{
-    integer, parameter :: lso_max_passes = 60         !< Maximum number of filter passes (must match Python LSO_MAX_PASSES)
-    logical            :: lso_filter                  !< Enable LSO filter at save steps
-    real(wp)           :: filter_sigma                !< Target Gaussian sigma in physical units
-    integer            :: lso_n_passes_x              !< Number of filter passes in x (derived from d_p/dx)
-    integer            :: lso_n_passes_y              !< Number of filter passes in y (derived from d_p/dy)
-    integer            :: lso_n_passes_z              !< Number of filter passes in z (derived from d_p/dz)
-    real(wp)           :: lso_a_x(5, lso_max_passes)  !< Per-pass stencil coefficients in x
-    real(wp)           :: lso_a_y(5, lso_max_passes)  !< Per-pass stencil coefficients in y
-    real(wp)           :: lso_a_z(5, lso_max_passes)  !< Per-pass stencil coefficients in z
-    $:GPU_DECLARE(create='[lso_filter, lso_n_passes_x, lso_n_passes_y, lso_n_passes_z]')
-    $:GPU_DECLARE(create='[lso_a_x, lso_a_y, lso_a_z]')
+    integer, parameter :: lso_max_passes = 60  !< Maximum number of filter passes (must match Python LSO_MAX_PASSES)
+    integer            :: n_lso_stat           !< Number of statistical product fields
+    integer            :: m_lso_ds, n_lso_ds, p_lso_ds
+    integer            :: m_glb_lso_ds, n_glb_lso_ds, p_glb_lso_ds
+    integer            :: lso_stat_phi_p_beg, lso_stat_phi_p_end
+    integer            :: lso_stat_rho_beg, lso_stat_rho_end
+    integer            :: lso_stat_rhoke_beg, lso_stat_rhoke_end
+    integer            :: lso_stat_up_beg, lso_stat_up_end
+    integer            :: lso_stat_rhou_beg, lso_stat_rhou_end
+    integer            :: lso_stat_rhouu_beg, lso_stat_rhouu_end
+    integer            :: lso_stat_rhouke_beg, lso_stat_rhouke_end
+    integer            :: lso_stat_rhouT_beg, lso_stat_rhouT_end
+    integer            :: lso_stat_tau_beg, lso_stat_tau_end
+    integer            :: lso_stat_q_beg, lso_stat_q_end
+    integer            :: lso_stat_rhotau_u_beg, lso_stat_rhotau_u_end
     !> @}
 
     !> @name Bubble modeling
@@ -541,6 +545,12 @@ contains
 
         ! LSO variable-weight Gaussian filter
         lso_filter = .false.
+        lso_filter_wrt = .false.
+        lso_down_sample_factor = 1
+        lso_stat_wrt = .false.
+        n_lso_stat = 0
+        m_lso_ds = 0; n_lso_ds = 0; p_lso_ds = 0
+        m_glb_lso_ds = 0; n_glb_lso_ds = 0; p_glb_lso_ds = 0
         filter_sigma = dflt_real
         lso_n_passes_x = 0
         lso_n_passes_y = 0
@@ -548,6 +558,26 @@ contains
         lso_a_x = 0.0_wp
         lso_a_y = 0.0_wp
         lso_a_z = 0.0_wp
+        lso2_n_passes_x = 0
+        lso2_n_passes_y = 0
+        lso2_n_passes_z = 0
+        lso2_a_x = 0.0_wp
+        lso2_a_y = 0.0_wp
+        lso2_a_z = 0.0_wp
+        lso_R_gas = 287.0_wp
+        lso_mu = 0.0_wp
+        lso_conductivity = 0.0_wp
+        lso_stat_phi_p_beg = 0; lso_stat_phi_p_end = 0
+        lso_stat_rho_beg = 0; lso_stat_rho_end = 0
+        lso_stat_rhoke_beg = 0; lso_stat_rhoke_end = 0
+        lso_stat_up_beg = 0; lso_stat_up_end = 0
+        lso_stat_rhou_beg = 0; lso_stat_rhou_end = 0
+        lso_stat_rhouu_beg = 0; lso_stat_rhouu_end = 0
+        lso_stat_rhouke_beg = 0; lso_stat_rhouke_end = 0
+        lso_stat_rhouT_beg = 0; lso_stat_rhouT_end = 0
+        lso_stat_tau_beg = 0; lso_stat_tau_end = 0
+        lso_stat_q_beg = 0; lso_stat_q_end = 0
+        lso_stat_rhotau_u_beg = 0; lso_stat_rhotau_u_end = 0
 
         ! Bubble modeling
         bubbles_euler = .false.

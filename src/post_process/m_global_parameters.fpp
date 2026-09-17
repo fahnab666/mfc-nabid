@@ -20,6 +20,8 @@ module m_global_parameters
 
     implicit none
 
+    integer, parameter :: lso_max_passes = 60
+
     !> @name Logistics
     !> @{
     integer :: num_procs  !< Number of processors
@@ -46,6 +48,23 @@ module m_global_parameters
     !> @{
     integer :: m_glb, n_glb, p_glb
     !> @}
+
+    ! LSO statistical-product layout and coarsened-grid dimensions are derived
+    ! from the case and are shared with the post-process filter module.
+    integer :: n_lso_stat
+    integer :: m_lso_ds, n_lso_ds, p_lso_ds
+    integer :: m_glb_lso_ds, n_glb_lso_ds, p_glb_lso_ds
+    integer :: lso_stat_phi_p_beg, lso_stat_phi_p_end
+    integer :: lso_stat_rho_beg, lso_stat_rho_end
+    integer :: lso_stat_rhoke_beg, lso_stat_rhoke_end
+    integer :: lso_stat_up_beg, lso_stat_up_end
+    integer :: lso_stat_rhou_beg, lso_stat_rhou_end
+    integer :: lso_stat_rhouu_beg, lso_stat_rhouu_end
+    integer :: lso_stat_rhouke_beg, lso_stat_rhouke_end
+    integer :: lso_stat_rhouT_beg, lso_stat_rhouT_end
+    integer :: lso_stat_tau_beg, lso_stat_tau_end
+    integer :: lso_stat_q_beg, lso_stat_q_end
+    integer :: lso_stat_rhotau_u_beg, lso_stat_rhotau_u_end
 
     ! num_dims, num_vels: in m_global_parameters_common
     !> @name Cell-boundary locations in the x-, y- and z-coordinate directions

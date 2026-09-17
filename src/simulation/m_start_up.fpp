@@ -781,13 +781,33 @@ contains
         ! Apply LSO Gaussian filter before writing.
         ! The filter kernels run on device data; afterwards copy filtered interior
         ! back to host so s_write_data_files reads the correct values.
-        if (lso_filter) then
-            call s_apply_lso_filter(q_cons_ts(stor)%vf)
+        if (lso_filter .and. lso_filter_wrt) then
+            call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf)
             do i = 1, sys_size
 #ifndef FRONTIER_UNIFIED
                 $:GPU_UPDATE(host='[q_cons_ts(stor)%vf(i)%sf]')
 #endif
             end do
+            lso_file_prefix = 'lso_'
+            if (lso_down_sample_factor > 1) then
+                call s_lso_stride_sample(q_filt_vf, q_filt_ds_vf)
+                if (ib) call s_lso_stride_sample(q_lso_mask_vf, q_lso_mask_ds_vf)
+                call s_lso_filter_stage2()
+                call s_write_data_files(q_filt_ds_vf, q_T_sf, q_prim_vf, save_count, bc_type)
+                if (ib .and. parallel_io) call s_write_lso_stat_file(q_lso_mask_ds_vf, 1, save_count, 'lso_mask_')
+            else
+                call s_write_data_files(q_filt_vf, q_T_sf, q_prim_vf, save_count, bc_type)
+                if (ib .and. parallel_io) call s_write_lso_stat_file(q_lso_mask_vf, 1, save_count, 'lso_mask_')
+            end if
+            lso_file_prefix = ''
+            if (lso_stat_wrt .and. n_lso_stat > 0 .and. parallel_io) then
+                if (lso_down_sample_factor > 1) then
+                    call s_lso_stat_stride_sample()
+                    call s_write_lso_stat_file(q_lso_stat_ds_vf, n_lso_stat, save_count)
+                else
+                    call s_write_lso_stat_file(q_lso_stat_vf, n_lso_stat, save_count)
+                end if
+            end if
         end if
 
         if (bubbles_lagrange) then
@@ -851,7 +871,41 @@ contains
         call s_initialize_mpi_proxy_module()
         call s_initialize_variables_conversion_module(enforce_density_floor=.true., preserve_qbmm_number=.true.)
         if (grid_geometry == 3) call s_initialize_fftw_module()
-        if (lso_filter) call s_initialize_lso_filter_module()
+
+        if (lso_filter_wrt .and. lso_down_sample_factor > 1) then
+            m_lso_ds = int((m + 1)/lso_down_sample_factor) - 1
+            m_glb_lso_ds = int((m_glb + 1)/lso_down_sample_factor) - 1
+            if (n > 0) then
+                n_lso_ds = int((n + 1)/lso_down_sample_factor) - 1
+                n_glb_lso_ds = int((n_glb + 1)/lso_down_sample_factor) - 1
+            else
+                n_lso_ds = 0; n_glb_lso_ds = 0
+            end if
+            if (p > 0) then
+                p_lso_ds = int((p + 1)/lso_down_sample_factor) - 1
+                p_glb_lso_ds = int((p_glb + 1)/lso_down_sample_factor) - 1
+            else
+                p_lso_ds = 0; p_glb_lso_ds = 0
+            end if
+        end if
+
+        if (lso_filter_wrt .and. lso_stat_wrt) then
+            lso_stat_phi_p_beg = 1; lso_stat_phi_p_end = 1
+            lso_stat_rho_beg = 2; lso_stat_rho_end = 2
+            lso_stat_rhoke_beg = 3; lso_stat_rhoke_end = 3
+            lso_stat_up_beg = 4; lso_stat_up_end = lso_stat_up_beg + num_dims - 1
+            lso_stat_rhou_beg = lso_stat_up_end + 1; lso_stat_rhou_end = lso_stat_rhou_beg + num_dims - 1
+            lso_stat_rhouu_beg = lso_stat_rhou_end + 1
+            lso_stat_rhouu_end = lso_stat_rhouu_beg + num_dims*(num_dims + 1)/2 - 1
+            lso_stat_rhouke_beg = lso_stat_rhouu_end + 1; lso_stat_rhouke_end = lso_stat_rhouke_beg + num_dims - 1
+            lso_stat_rhouT_beg = lso_stat_rhouke_end + 1; lso_stat_rhouT_end = lso_stat_rhouT_beg + num_dims - 1
+            lso_stat_tau_beg = lso_stat_rhouT_end + 1; lso_stat_tau_end = lso_stat_tau_beg + num_dims*(num_dims + 1)/2 - 1
+            lso_stat_q_beg = lso_stat_tau_end + 1; lso_stat_q_end = lso_stat_q_beg + num_dims - 1
+            lso_stat_rhotau_u_beg = lso_stat_q_end + 1
+            lso_stat_rhotau_u_end = lso_stat_rhotau_u_beg + num_dims - 1
+            n_lso_stat = lso_stat_rhotau_u_end
+        end if
+        if (lso_filter .and. (lso_filter_wrt .or. lso_stat_wrt)) call s_initialize_lso_filter_module()
 
         if (bubbles_euler) call s_initialize_bubbles_EE_module()
         if (ib) then
@@ -1100,6 +1154,8 @@ contains
 
         $:GPU_UPDATE(device='[acoustic_source, num_source]')
         $:GPU_UPDATE(device='[sigma, surface_tension]')
+        $:GPU_UPDATE(device='[lso_R_gas, lso_mu, lso_conductivity, lso_n_passes_x, lso_n_passes_y, lso_n_passes_z, &
+                     & lso_a_x, lso_a_y, lso_a_z, lso2_n_passes_x, lso2_n_passes_y, lso2_n_passes_z, lso2_a_x, lso2_a_y, lso2_a_z]')
 
         $:GPU_UPDATE(device='[dx, dy, dz, x_cb, x_cc, y_cb, y_cc, z_cb, z_cc]')
         $:GPU_UPDATE(device='[bc_x%beg, bc_x%end, bc_y%beg, bc_y%end, bc_z%beg, bc_z%end]')
@@ -1162,7 +1218,7 @@ contains
         if (int_comp > 0) call s_finalize_thinc_module()
         call s_finalize_variables_conversion_module()
         if (grid_geometry == 3) call s_finalize_fftw_module
-        if (lso_filter) call s_finalize_lso_filter_module()
+        if (lso_filter .and. (lso_filter_wrt .or. lso_stat_wrt)) call s_finalize_lso_filter_module()
         call s_finalize_mpi_common_module()
         call s_finalize_global_parameters_module()
         call s_finalize_boundary_common_module()

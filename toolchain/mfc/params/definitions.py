@@ -237,6 +237,12 @@ _SIMPLE_DESCS = {
     "ib_coefficient_of_friction": "Coefficient of friction for IB collisions",
     # LSO variable-weight filter
     "lso_filter": "Enable LSO variable-weight Gaussian filter (applied at save steps)",
+    "lso_filter_wrt": "Write LSO-filtered fields",
+    "lso_down_sample_factor": "Coarsening stride for LSO-filtered output",
+    "lso_stat_wrt": "Write LSO statistical products",
+    "lso_R_gas": "Specific gas constant used by LSO statistical products",
+    "lso_mu": "Dynamic viscosity used by LSO statistical products",
+    "lso_conductivity": "Thermal conductivity used by LSO statistical products",
     "filter_sigma": "Target Gaussian filter standard deviation (physical units, same as domain coordinates)",
     "acoustic_source": "Enable acoustic sources",
     # Output
@@ -1041,7 +1047,27 @@ def _load():
 
     # LSO variable-weight filter
     _r("lso_filter", LOG, {"filter"})
+    _r("lso_filter_wrt", LOG, {"filter"})
     _r("filter_sigma", REAL, {"filter"})
+    _r("lso_down_sample_factor", INT, {"filter"})
+    _r("lso_stat_wrt", LOG, {"filter"})
+    _r("lso_R_gas", REAL, {"filter"})
+    _r("lso_mu", REAL, {"filter"})
+    _r("lso_conductivity", REAL, {"filter"})
+    for n in ["lso_n_passes_x", "lso_n_passes_y", "lso_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso_a_x", "lso_a_y", "lso_a_z"]:
+        _r(f"{n}(1)", REAL, {"filter"})
+    for n in ["lso2_n_passes_x", "lso2_n_passes_y", "lso2_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso2_a_x", "lso2_a_y", "lso2_a_z"]:
+        _r(f"{n}(1)", REAL, {"filter"})
+    _r("lso_pp_filter", LOG, {"filter"})
+    _r("lso_closure_wrt", LOG, {"filter"})
+    for n in ["lso_pp_n_passes_x", "lso_pp_n_passes_y", "lso_pp_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso_pp_a_x", "lso_pp_a_y", "lso_pp_a_z"]:
+        _r(f"{n}(1)", REAL, {"filter"})
     for n in [
         "schlieren_wrt",
         "alpha_wrt",
@@ -1606,6 +1632,15 @@ FORTRAN_ARRAY_DIMS: dict[str, str] = {
     "mom_wrt": "3",
     "omega_wrt": "3",
     "vel_wrt": "3",
+    "lso_a_x": "5, 60",
+    "lso_a_y": "5, 60",
+    "lso_a_z": "5, 60",
+    "lso2_a_x": "5, 60",
+    "lso2_a_y": "5, 60",
+    "lso2_a_z": "5, 60",
+    "lso_pp_a_x": "5, 60",
+    "lso_pp_a_y": "5, 60",
+    "lso_pp_a_z": "5, 60",
 }
 
 # Derived-type namelist variables whose Fortran declarations come from generated_decls.fpp.
@@ -1730,6 +1765,68 @@ _nv(
     "mixture_err",
     "num_particle_clouds",
     "particle_cloud",
+)
+_nv(
+    _SIM_POST,
+    "lso_filter",
+    "lso_filter_wrt",
+    "filter_sigma",
+    "lso_down_sample_factor",
+    "lso_stat_wrt",
+    "lso_R_gas",
+    "lso_mu",
+    "lso_conductivity",
+    "lso_pp_filter",
+    "lso_closure_wrt",
+    "lso_n_passes_x",
+    "lso_n_passes_y",
+    "lso_n_passes_z",
+    "lso_a_x",
+    "lso_a_y",
+    "lso_a_z",
+    "lso2_n_passes_x",
+    "lso2_n_passes_y",
+    "lso2_n_passes_z",
+    "lso2_a_x",
+    "lso2_a_y",
+    "lso2_a_z",
+    "lso_pp_n_passes_x",
+    "lso_pp_n_passes_y",
+    "lso_pp_n_passes_z",
+    "lso_pp_a_x",
+    "lso_pp_a_y",
+    "lso_pp_a_z",
+)
+_decl(
+    _POST,
+    "lso_filter",
+    "lso_filter_wrt",
+    "filter_sigma",
+    "lso_down_sample_factor",
+    "lso_stat_wrt",
+    "lso_R_gas",
+    "lso_mu",
+    "lso_conductivity",
+    "lso_pp_filter",
+    "lso_closure_wrt",
+    "lso_n_passes_x",
+    "lso_n_passes_y",
+    "lso_n_passes_z",
+    "lso_a_x",
+    "lso_a_y",
+    "lso_a_z",
+    "lso2_n_passes_x",
+    "lso2_n_passes_y",
+    "lso2_n_passes_z",
+    "lso2_a_x",
+    "lso2_a_y",
+    "lso2_a_z",
+    "lso_pp_n_passes_x",
+    "lso_pp_n_passes_y",
+    "lso_pp_n_passes_z",
+    "lso_pp_a_x",
+    "lso_pp_a_y",
+    "lso_pp_a_z",
 )
 _nv(
     _PRE_SIM,
