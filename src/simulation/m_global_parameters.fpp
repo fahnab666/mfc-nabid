@@ -1003,6 +1003,11 @@ contains
 
         $:GPU_UPDATE(device='[hyper_cleaning, hyper_cleaning_speed, hyper_cleaning_tau]')
 
+        ! Read per-cell in s_convert_conservative_to_primitive_variables, so the device copy must
+        ! carry the host value; an unsynced .true. there indexes eqn_idx%abn/%rxn, which a non-JWL
+        ! case never assigns.
+        $:GPU_UPDATE(device='[jwl_afterburn, jwl_reactive]')
+
         #:if not MFC_CASE_OPTIMIZATION
             $:GPU_UPDATE(device='[wenojs, mapped_weno, wenoz, teno]')
             $:GPU_UPDATE(device='[wenoz_q]')

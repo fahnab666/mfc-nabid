@@ -372,7 +372,7 @@ contains
             any_state_dependent_eos = state_dependent
         #:endif
         $:GPU_UPDATE(device='[gammas, isentrope_n, pi_infs, isentrope_B, cvs, qvs, qvps, Gs_vc, eoss, eos_coeffs, jwl_idx, &
-                     & jwl_air_idx, jwl_air_gammas, jwl_air_pi_infs, jwl_delta_es]')
+                     & jwl_air_idx, jwl_cv_prod, jwl_cv_air, jwl_air_gammas, jwl_air_pi_infs, jwl_delta_es]')
         #:if not MFC_CASE_OPTIMIZATION
             $:GPU_UPDATE(device='[any_state_dependent_eos]')
         #:endif
@@ -508,6 +508,7 @@ contains
         real(wp)               :: G_K
         real(wp)               :: solid_partial_density
         real(wp)               :: pres
+        real(stp)              :: energy_K, alf_K          !< Local copies for s_compute_pressure (see gpuParallelization.md)
         integer                :: i, j, k, l               !< Generic loop iterators
         real(wp)               :: T
         real(wp)               :: pres_mag
@@ -522,8 +523,8 @@ contains
         integer                :: iter                     !< Newton-Raphson iteration counter
 
         $:GPU_PARALLEL_LOOP(collapse=3, private='[alpha_K, alpha_rho_K, Re_K, nRtmp, rho_K, gamma_K, pi_inf_K, qv_K, dyn_pres_K, &
-                            & rhoYks, B, pres, vftmp, nbub_sc, G_K, solid_partial_density, T, pres_mag, Ga, B2, m2, S, W, dW, E, &
-                            & D, f, dGa_dW, dp_dW, df_dW, iter]')
+                            & rhoYks, B, pres, energy_K, alf_K, vftmp, nbub_sc, G_K, solid_partial_density, T, pres_mag, Ga, B2, &
+                            & m2, S, W, dW, E, D, f, dGa_dW, dp_dW, df_dW, iter]')
         do l = ibounds(3)%beg, ibounds(3)%end
             do k = ibounds(2)%beg, ibounds(2)%end
                 do j = ibounds(1)%beg, ibounds(1)%end
@@ -682,13 +683,17 @@ contains
                         pres_mag = 0._wp
                     end if
 
+                    ! Copied into locals rather than passed as a field array element directly: s_compute_pressure now
+                    ! (transitively, via the JWL solve) contains a device routine with a seq loop, and passing an array
+                    ! element into such a routine is misaddressed by Cray OpenACC at -O2 (see gpuParallelization.md).
+                    energy_K = qK_cons_vf(eqn_idx%E)%sf(j, k, l)
+                    alf_K = qK_cons_vf(eqn_idx%alf)%sf(j, k, l)
                     if (jwl_idx > 0 .and. jwl_idx <= num_fluids) then
-                        call s_compute_pressure(qK_cons_vf(eqn_idx%E)%sf(j, k, l), qK_cons_vf(eqn_idx%alf)%sf(j, k, l), &
-                                                & dyn_pres_K, pi_inf_K, gamma_K, rho_K, qv_K, rhoYks, pres, T, pres_mag=pres_mag, &
-                                                & jwl_Y=alpha_rho_K(jwl_idx)/max(rho_K, sgm_eps))
+                        call s_compute_pressure(energy_K, alf_K, dyn_pres_K, pi_inf_K, gamma_K, rho_K, qv_K, rhoYks, pres, T, &
+                                                & pres_mag=pres_mag, jwl_Y=alpha_rho_K(jwl_idx)/max(rho_K, sgm_eps))
                     else
-                        call s_compute_pressure(qK_cons_vf(eqn_idx%E)%sf(j, k, l), qK_cons_vf(eqn_idx%alf)%sf(j, k, l), &
-                                                & dyn_pres_K, pi_inf_K, gamma_K, rho_K, qv_K, rhoYks, pres, T, pres_mag=pres_mag)
+                        call s_compute_pressure(energy_K, alf_K, dyn_pres_K, pi_inf_K, gamma_K, rho_K, qv_K, rhoYks, pres, T, &
+                                                & pres_mag=pres_mag)
                     end if
 
                     qK_prim_vf(eqn_idx%E)%sf(j, k, l) = pres
@@ -2043,6 +2048,8 @@ contains
     !! stay on the generic EOS path and therefore remain bit-identical to upstream.
     subroutine s_jwl_pt_state(rho, e, Y, i, pres, T, lambda)
 
+        $:GPU_ROUTINE(function_name='s_jwl_pt_state', parallelism='[seq]', cray_inline=True)
+
         real(wp), intent(in)           :: rho, e, Y
         integer, intent(in)            :: i
         real(wp), intent(out)          :: pres, T
@@ -2089,6 +2096,8 @@ contains
 
     subroutine s_jwl_pt_residual(rho, e, Y, rp, i, residual, pres, T)
 
+        $:GPU_ROUTINE(function_name='s_jwl_pt_residual', parallelism='[seq]', cray_inline=True)
+
         real(wp), intent(in)  :: rho, e, Y, rp
         integer, intent(in)   :: i
         real(wp), intent(out) :: residual, pres, T
@@ -2110,6 +2119,8 @@ contains
     end subroutine s_jwl_pt_residual
 
     subroutine s_jwl_pt_energy(rho, pres, Y, i, e)
+
+        $:GPU_ROUTINE(function_name='s_jwl_pt_energy', parallelism='[seq]', cray_inline=True)
 
         real(wp), intent(in)  :: rho, pres, Y
         integer, intent(in)   :: i
@@ -2143,6 +2154,8 @@ contains
     end subroutine s_jwl_pt_energy
 
     subroutine s_jwl_pt_inverse_residual(rho, pres, Y, rp, i, residual, e)
+
+        $:GPU_ROUTINE(function_name='s_jwl_pt_inverse_residual', parallelism='[seq]', cray_inline=True)
 
         real(wp), intent(in)  :: rho, pres, Y, rp
         integer, intent(in)   :: i

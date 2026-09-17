@@ -510,6 +510,31 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 > Setting `gamma = 1.4` for air is a common mistake; the correct value is `1.0 / (1.4 - 1.0) = 2.5`.
 > See @ref sec-stored-forms and @ref sec-material-values in the Equations reference for the full table.
 
+#### JWL Reaction Model
+
+| Parameter        | Type    | Description                                                        |
+| ---:             | :----:  |          :---                                                      |
+| `jwl_wrt`        | Logical | Write JWL temperature, product fraction, and reaction progress.    |
+| `jwl_afterburn`  | Logical | Enable JWL afterburn energy release.                               |
+| `jwl_ab_model`   | Integer | JWL afterburn rate model.                                          |
+| `jwl_q_ab`       | Real    | Afterburn energy release per unit mass.                            |
+| `jwl_ab_tau`     | Real    | Afterburn rate time constant (used when `jwl_ab_model = 1`).       |
+| `jwl_ab_A`       | Real    | Afterburn Arrhenius-form rate pre-exponential factor.              |
+| `jwl_ab_theta`   | Real    | Afterburn Arrhenius-form activation temperature.                   |
+| `jwl_ab_n`       | Real    | Afterburn Arrhenius-form pressure exponent.                        |
+| `jwl_reactive`   | Logical | Enable JWL++ pressure-driven reactive burn.                        |
+| `jwl_G`          | Real    | JWL++ reactive-burn rate constant.                                 |
+| `jwl_b_exp`      | Real    | JWL++ reactive-burn pressure exponent.                             |
+| `prog_burn`      | Logical | Enable kinematic JWL program burn.                                 |
+| `pb_D_cj`        | Real    | Programmed burn Chapman-Jouguet detonation velocity.               |
+| `pb_width`       | Real    | Programmed burn reaction zone width.                               |
+| `pb_x_det`       | Real    | Programmed burn detonation point x-coordinate.                     |
+| `pb_y_det`       | Real    | Programmed burn detonation point y-coordinate.                     |
+| `pb_z_det`       | Real    | Programmed burn detonation point z-coordinate.                     |
+| `pb_t_det`       | Real    | Programmed burn detonation initiation time.                        |
+
+`jwl_afterburn`, `jwl_reactive`, and `prog_burn` are independent burn models that may be combined; `jwl_afterburn` and `jwl_reactive` each add their own progress equation to the conservative state.
+
 ### 6. Simulation Algorithm {#sec-simulation-algorithm}
 
 See @ref equations "Equations" for the mathematical models these parameters control.
