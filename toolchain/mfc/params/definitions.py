@@ -980,6 +980,11 @@ def _load():
     for n in ["polytropic", "bubbles_euler", "polydisperse", "qbmm", "bubbles_lagrange"]:
         _r(n, LOG, {"bubbles"})
 
+    # Subgrid solid particles (Euler-Lagrange)
+    _r("particles_lagrange", LOG, {"particles"})
+    for a in ["rho0ref_particle", "cp_particle", "ksp_col", "nu_col", "E_col", "cor_col"]:
+        _r(f"particle_pp%{a}", REAL, {"particles"})
+
     # Viscosity
     _r("viscous", LOG, {"viscosity"})
 
@@ -1548,13 +1553,26 @@ def _load():
     # gravity_force, nBubs_glb, epsilonb, charwidth, valmaxvoid. T0/Thost/c0/rho0/x0
     # were removed from the Fortran type by upstream #1085/#1093 — they must NOT be
     # registered (namelist read would crash).
-    for a in ["heatTransfer_model", "massTransfer_model", "pressure_corrector", "write_bubbles", "write_bubbles_stats", "pressure_force", "gravity_force", "write_void_evol", "kahan_summation"]:
+    for a in ["heatTransfer_model", "massTransfer_model", "pressure_corrector", "kahan_summation"]:
         _r(f"lag_params%{a}", LOG, {"bubbles"})
-    for a in ["solver_approach", "cluster_type", "smooth_type", "nBubs_glb", "drag_model", "vel_model", "charNz"]:
+    for a in ["cluster_type", "smooth_type", "nBubs_glb"]:
         _r(f"lag_params%{a}", INT, {"bubbles"})
+    _r("lag_params%charNz", INT, {"bubbles", "particles"})
+    _r("lag_params%solver_approach", INT, {"bubbles", "particles"})
     for a in ["epsilonb", "valmaxvoid", "charwidth"]:
         _r(f"lag_params%{a}", REAL, {"bubbles"})
-    _r("lag_params%input_path", STR, {"bubbles"})
+    for a in ["vel_model", "drag_model"]:
+        _r(f"lag_params%{a}", INT, {"bubbles", "particles"})
+    for a in ["write_bubbles", "write_bubbles_stats", "write_void_evol", "pressure_force", "gravity_force"]:
+        _r(f"lag_params%{a}", LOG, {"bubbles", "particles"})
+    _r("lag_params%input_path", STR, {"bubbles", "particles"})
+    for a in ["nParticles_glb", "qs_drag_model", "stokes_drag", "added_mass_model", "interpolation_order", "N_collision_subcycles"]:
+        _r(f"lag_params%{a}", INT, {"particles"})
+    for a in ["collision_force", "subcycle_collisions", "qs_fluct_force"]:
+        _r(f"lag_params%{a}", LOG, {"particles"})
+    for f in range(1, NF + 1):
+        _r(f"lag_params%mu_ref({f})", REAL, {"particles"})
+        _r(f"lag_params%suth({f})", REAL, {"particles"})
 
     # chem_params
     for a in ["diffusion", "reactions", "adap_substeps"]:
@@ -1652,6 +1670,7 @@ FORTRAN_ARRAY_DIMS: dict[str, str] = {
 TYPED_DECLS: dict[str, tuple] = {
     "fluid_pp": ("type(physical_parameters)", "num_fluids_max", False, "Per-fluid stiffened-gas EOS parameters, Reynolds numbers, and shear modulus"),
     "bub_pp": ("type(subgrid_bubble_physical_parameters)", None, False, "Subgrid bubble physical parameters"),
+    "particle_pp": ("type(subgrid_particle_physical_parameters)", None, False, "Subgrid solid-particle physical parameters"),
     "patch_icpp": ("type(ic_patch_parameters)", "num_patches_max", False, "IC patch parameters"),
     "patch_bc": ("type(bc_patch_parameters)", "num_bc_patches_max", False, "Boundary condition patch parameters"),
     "patch_ib": ("type(ib_patch_parameters)", "num_ib_patches_max_namelist", True, "Immersed boundary patch parameters"),
@@ -1870,6 +1889,8 @@ _nv(
     "run_time_info",
     "bubble_model",
     "lag_params",
+    "particle_pp",
+    "particles_lagrange",
     "probe_wrt",
     "num_probes",
     "jwl_ab_model",

@@ -184,7 +184,6 @@ contains
             else
                 call s_apply_lso_pp_filter(q_cons_vf)
             end if
-            if (lso_stat_wrt .and. n_lso_stat > 0) call s_compute_lso_pp_stat_fields(q_cons_vf)
         end if
 
         ! seed the chemistry temperature over the INTERIOR only (mirrors the simulation,
@@ -205,6 +204,8 @@ contains
         end if
 
         call s_convert_conservative_to_primitive_variables(q_cons_vf, q_T_sf, q_prim_vf, idwbuff)
+
+        if (lso_pp_filter .and. lso_stat_wrt .and. n_lso_stat > 0) call s_compute_lso_pp_stat_fields(q_cons_vf)
 
     end subroutine s_perform_time_step
 

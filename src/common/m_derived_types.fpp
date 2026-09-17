@@ -466,6 +466,16 @@ module m_derived_types
         real(wp) :: R_g      !< gas constant of gas (bubble)
     end type subgrid_bubble_physical_parameters
 
+    !> Physical parameters for Lagrangian solid particles
+    type subgrid_particle_physical_parameters
+        real(wp) :: rho0ref_particle  !< Reference particle density
+        real(wp) :: cp_particle       !< Particle specific heat capacity
+        real(wp) :: ksp_col           !< Collision stiffness multiplier
+        real(wp) :: nu_col            !< Particle Poisson ratio
+        real(wp) :: E_col             !< Particle Young's modulus
+        real(wp) :: cor_col           !< Collision coefficient of restitution
+    end type subgrid_particle_physical_parameters
+
     type mpi_io_airfoil_ib_var
         integer, dimension(2)                    :: view
         type(vec3_dt), allocatable, dimension(:) :: var
@@ -587,26 +597,37 @@ module m_derived_types
     !> Lagrangian bubble parameters
     type bubbles_lagrange_parameters
 
-        integer                    :: solver_approach  !< 1: One-way coupling, 2: two-way coupling
-        integer                    :: cluster_type  !< Cluster model to find p_inf
-        logical                    :: pressure_corrector  !< Cell pressure correction term
-        integer                    :: smooth_type  !< Smoothing function. 1: Gaussian, 2:Delta 3x3
-        logical                    :: heatTransfer_model  !< Activate HEAT transfer model at the bubble-liquid interface
-        logical                    :: massTransfer_model  !< Activate MASS transfer model at the bubble-liquid interface
-        logical                    :: write_void_evol  !< Write files to track evolution of void fraction at each time step
-        logical                    :: write_bubbles  !< Write files to track the bubble evolution each time step
-        logical                    :: write_bubbles_stats  !< Write the maximum and minimum radius of each bubble
-        integer                    :: nBubs_glb  !< Global number of bubbles
-        integer                    :: vel_model  !< Particle velocity model
-        integer                    :: drag_model  !< Particle drag model
-        logical                    :: pressure_force  !< Include pressure force translational motion
-        logical                    :: gravity_force  !< Include gravity force in translational motion
-        logical                    :: kahan_summation  !< Use Kahan summation for void fraction accumulation (improves precision)
-        character(LEN=pathlen_max) :: input_path  !< Path to lag_bubbles.dat
-        real(wp)                   :: epsilonb  !< Standard deviation scaling for the gaussian function
-        real(wp)                   :: charwidth  !< Domain virtual depth (z direction, for 2D simulations)
-        integer                    :: charNz  !< Number of grid cells in characteristic depth
-        real(wp)                   :: valmaxvoid  !< Maximum void fraction permitted
+        integer :: solver_approach                     !< 1: One-way coupling, 2: two-way coupling
+        integer :: cluster_type                        !< Cluster model to find p_inf
+        logical :: pressure_corrector                  !< Cell pressure correction term
+        integer :: smooth_type                         !< Smoothing function. 1: Gaussian, 2:Delta 3x3
+        logical :: heatTransfer_model                  !< Activate HEAT transfer model at the bubble-liquid interface
+        logical :: massTransfer_model                  !< Activate MASS transfer model at the bubble-liquid interface
+        logical :: write_void_evol                     !< Write files to track evolution of void fraction at each time step
+        logical :: write_bubbles                       !< Write files to track the bubble evolution each time step
+        logical :: write_bubbles_stats                 !< Write the maximum and minimum radius of each bubble
+        integer :: nBubs_glb                           !< Global number of bubbles
+        integer :: vel_model                           !< Particle velocity model
+        integer :: drag_model                          !< Particle drag model
+        integer :: nParticles_glb                      !< Global number of solid particles
+        integer :: qs_drag_model                       !< Quasi-steady solid-particle drag model
+        integer :: stokes_drag                         !< Stokes drag model for solid particles
+        integer :: added_mass_model                    !< Added-mass model for solid particles
+        integer :: interpolation_order                 !< Particle-to-fluid interpolation order
+        integer :: N_collision_subcycles               !< Collision subcycles
+        logical :: pressure_force                      !< Include pressure force translational motion
+        logical :: gravity_force                       !< Include gravity force in translational motion
+        logical :: collision_force                     !< Enable solid-particle collisions
+        logical :: subcycle_collisions                 !< Subcycle solid-particle collisions
+        logical :: qs_fluct_force                      !< Enable quasi-steady force fluctuations
+        logical :: kahan_summation                     !< Use Kahan summation for void fraction accumulation (improves precision)
+        character(LEN=pathlen_max) :: input_path       !< Path to lag_bubbles.dat
+        real(wp), dimension(num_fluids_max) :: mu_ref  !< Reference viscosity for particle drag
+        real(wp), dimension(num_fluids_max) :: suth    !< Sutherland parameter for particle drag viscosity
+        real(wp) :: epsilonb                           !< Standard deviation scaling for the gaussian function
+        real(wp) :: charwidth                          !< Domain virtual depth (z direction, for 2D simulations)
+        integer :: charNz                              !< Number of grid cells in characteristic depth
+        real(wp) :: valmaxvoid                         !< Maximum void fraction permitted
     end type bubbles_lagrange_parameters
 
     !> Max and min number of cells in a direction of each combination of x-,y-, and z-

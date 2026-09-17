@@ -202,10 +202,12 @@ def compute_lso_params(
 
     Returns:
         dict with keys:
-            lso_n_passes_x/y/z  (int)
+            lso_n_passes_x/y/z  (int; inactive directions are zero)
             lso_a_x/y/z         (list of n_passes tuples of 5 floats)
     """
-    directions = [("x", dx), ("y", dy)]
+    directions = [("x", dx)]
+    if dy > 0.0:
+        directions.append(("y", dy))
     if dz > 0.0:
         directions.append(("z", dz))
 
@@ -218,7 +220,10 @@ def compute_lso_params(
         n_res = d_p / d
         print(f"  [LSO] {tag}-dir: N_res={n_res:.2f}, sigma_target={sigma_target:.2f} cells, " f"N_passes={n_passes}, L2_err={err:.2e}")
 
-    # For 2D, z-direction uses zero passes and dummy weights
+    # Inactive directions use zero passes and dummy weights.
+    if dy <= 0.0:
+        result["lso_n_passes_y"] = 0
+        result["lso_a_y"] = []
     if dz <= 0.0:
         result["lso_n_passes_z"] = 0
         result["lso_a_z"] = []
@@ -226,7 +231,7 @@ def compute_lso_params(
     return result
 
 
-def lso_namelist_lines(lso_params: dict) -> str:
+def lso_namelist_lines(lso_params: dict, prefix: str = "lso") -> str:
     """
     Format LSO parameters as Fortran namelist lines.
 
@@ -246,7 +251,7 @@ def lso_namelist_lines(lso_params: dict) -> str:
         n_passes = lso_params.get(f"lso_n_passes_{tag}", 0)
         coeffs = lso_params.get(f"lso_a_{tag}", [])
 
-        lines.append(f"lso_n_passes_{tag} = {n_passes}")
+        lines.append(f"{prefix}_n_passes_{tag} = {n_passes}")
 
         if n_passes > 0 and coeffs:
             # Build flat array in Fortran column-major order:
@@ -258,6 +263,6 @@ def lso_namelist_lines(lso_params: dict) -> str:
                         flat.append(f"{coeffs[i_pass][j_coeff]:.17e}")
                     else:
                         flat.append("0.0d0")
-            lines.append(f"lso_a_{tag} = {' '.join(flat)}")
+            lines.append(f"{prefix}_a_{tag} = {' '.join(flat)}")
 
     return "\n".join(lines) + "\n"

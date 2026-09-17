@@ -18,6 +18,8 @@ module m_data_output
     use m_sim_helpers
     use m_delay_file_access
     use m_ibm
+    use m_bubbles_EL
+    use m_particles_EL
     use m_boundary_common
     use m_constants, only: model_eqns_5eq, precision_single
 
@@ -114,6 +116,8 @@ contains
 
         if (bubbles_lagrange) then
             write (3, '(13X,A10)', advance="no") trim('N Bubbles')
+        else if (particles_lagrange) then
+            write (3, '(13X,A10)', advance="no") trim('N Particles')
         end if
 
         write (3, *)  ! new line
@@ -263,6 +267,8 @@ contains
 
             if (bubbles_lagrange) then
                 write (3, '(13X,I10)', advance="no") n_el_bubs_glb
+            else if (particles_lagrange) then
+                write (3, '(13X,I10)', advance="no") n_el_particles_glb
             end if
 
             write (3, *)  ! new line
@@ -351,7 +357,7 @@ contains
 
         ! Lagrangian beta (void fraction) written as q_cons_vf(sys_size+1) to match the parallel I/O path and allow post_process to
         ! read it.
-        if (bubbles_lagrange) then
+        if (bubbles_lagrange .or. particles_lagrange) then
             write (file_path, '(A,I0,A)') trim(t_step_dir) // '/q_cons_vf', sys_size + 1, '.dat'
 
             open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
@@ -697,6 +703,8 @@ contains
                 if (ib) then
                     call s_initialize_mpi_data(q_cons_vf, ib_markers=ib_markers, ib_mpi_data=MPI_IO_IB_DATA, qbmm_pb=pb_ts(1), &
                                                & qbmm_mv=mv_ts(1))
+                else if (present(beta)) then
+                    call s_initialize_mpi_data(q_cons_vf, beta=beta, qbmm_pb=pb_ts(1), qbmm_mv=mv_ts(1))
                 else
                     call s_initialize_mpi_data(q_cons_vf, qbmm_pb=pb_ts(1), qbmm_mv=mv_ts(1))
                 end if
@@ -769,6 +777,9 @@ contains
 
                         call MPI_FILE_WRITE_ALL(ifile, MPI_IO_DATA%var(i)%sf, data_size*mpi_io_type, mpi_io_p, status, ierr)
                     end do
+                end if
+                if (present(beta)) then
+                    call MPI_FILE_WRITE_ALL(ifile, MPI_IO_DATA%var(sys_size + 1)%sf, data_size*mpi_io_type, mpi_io_p, status, ierr)
                 end if
             end if
 

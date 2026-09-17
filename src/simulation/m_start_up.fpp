@@ -33,6 +33,7 @@ module m_start_up
     use m_viscous
     use m_bubbles_EE
     use m_bubbles_EL
+    use m_particles_EL
     use ieee_arithmetic
     use m_helper_basic
     use m_helper
@@ -782,7 +783,7 @@ contains
         ! The filter kernels run on device data; afterwards copy filtered interior
         ! back to host so s_write_data_files reads the correct values.
         if (lso_filter .and. lso_filter_wrt) then
-            call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf)
+            call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_prim_vf, q_T_sf)
             do i = 1, sys_size
 #ifndef FRONTIER_UNIFIED
                 $:GPU_UPDATE(host='[q_cons_ts(stor)%vf(i)%sf]')
@@ -824,6 +825,20 @@ contains
             $:GPU_UPDATE(host='[Rmax_stats, Rmin_stats, gas_p, gas_mv, intfc_vel]')
             call s_write_restart_lag_bubbles(save_count)  ! parallel
             if (lag_params%write_bubbles_stats) call s_write_lag_bubble_stats()
+        else if (particles_lagrange) then
+            $:GPU_UPDATE(host='[lag_part_id, particle_pos, particle_posPrev, particle_vel, particle_rad, particle_R0, &
+                         & Rmax_stats_part, Rmin_stats_part, particle_mass]')
+            do i = 1, n_el_particles_loc
+                if (ieee_is_nan(particle_rad(i, 1)) .or. particle_rad(i, 1) <= 0._wp) then
+                    call s_mpi_abort("Particle radius is negative or NaN, please reduce dt.")
+                end if
+            end do
+
+            $:GPU_UPDATE(host='[q_particles(1)%sf]')
+            call s_write_data_files(q_cons_ts(stor)%vf, q_T_sf, q_prim_vf, save_count, bc_type, q_particles(1))
+            $:GPU_UPDATE(host='[Rmax_stats_part, Rmin_stats_part]')
+            call s_write_restart_lag_particles(save_count)
+            if (lag_params%write_bubbles_stats) call s_write_lag_particle_stats()
         else
             call s_write_data_files(q_cons_ts(stor)%vf, q_T_sf, q_prim_vf, save_count, bc_type)
         end if
@@ -1032,6 +1047,7 @@ contains
         if (int_comp > 0) call s_initialize_thinc_module()
         call s_initialize_derived_variables()
         if (bubbles_lagrange) call s_initialize_bubbles_EL_module(q_cons_ts(1)%vf, bc_type)
+        if (particles_lagrange) call s_initialize_particles_EL_module(q_cons_ts(1)%vf, bc_type)
 
         if (hypoelasticity) call s_initialize_hypoelastic_module()
 
@@ -1224,6 +1240,7 @@ contains
         call s_finalize_boundary_common_module()
         if (relax) call s_finalize_relaxation_solver_module()
         if (bubbles_lagrange) call s_finalize_lagrangian_solver()
+        if (particles_lagrange) call s_finalize_particle_lagrangian_solver()
         if (viscous .and. (.not. igr)) then
             call s_finalize_viscous_module()
         end if

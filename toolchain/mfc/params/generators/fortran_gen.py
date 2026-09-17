@@ -542,6 +542,15 @@ def _emit_bub_pp(lines: List[str]) -> None:
     lines.append("        end if")
 
 
+def _emit_particle_pp(lines: List[str]) -> None:
+    """Emit the solid-particle physical-property broadcast."""
+    members = sorted(k.split("%", 1)[1] for k in REGISTRY.all_params if k.startswith("particle_pp%"))
+    lines.append("        if (particles_lagrange) then")
+    for mem in members:
+        lines.append(f"            call MPI_BCAST(particle_pp%{mem}, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)")
+    lines.append("        end if")
+
+
 def _emit_lag_params(lines: List[str]) -> None:
     """Emit the lag_params member broadcast block (sim-only, under bubbles_lagrange guard).
 
@@ -557,7 +566,7 @@ def _emit_lag_params(lines: List[str]) -> None:
     unhandled = set(lag_all) - set(lag_log) - set(lag_int) - set(lag_real) - set(lag_str)
     if unhandled:
         raise ValueError(f"lag_params members with unhandled ParamType (would be silently missing from the broadcast): {sorted(unhandled)}")
-    lines.append("        if (bubbles_lagrange) then")
+    lines.append("        if (bubbles_lagrange .or. particles_lagrange) then")
     for mem in sorted(lag_log):
         lines.append(f"            call MPI_BCAST(lag_params%{mem}, 1, MPI_LOGICAL, 0, MPI_COMM_WORLD, ierr)")
     for mem in sorted(lag_int):
@@ -698,8 +707,12 @@ def generate_bcast_fpp(target: str) -> str:
         lines.append("")
 
     if target == "sim":
+        if "particle_pp" in NAMELIST_VARS and "sim" in NAMELIST_VARS["particle_pp"]:
+            lines.append("        ! particle_pp members (under particles_lagrange guard)")
+            _emit_particle_pp(lines)
+            lines.append("")
         if "lag_params" in NAMELIST_VARS and "sim" in NAMELIST_VARS["lag_params"]:
-            lines.append("        ! lag_params members (under bubbles_lagrange guard)")
+            lines.append("        ! lag_params members (under bubble or particle guard)")
             _emit_lag_params(lines)
             lines.append("")
         if "chem_params" in NAMELIST_VARS and "sim" in NAMELIST_VARS["chem_params"]:

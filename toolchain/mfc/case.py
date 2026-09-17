@@ -113,9 +113,12 @@ class Case:
         cons.print(f"[yellow]INFO:[/yellow] Forwarded {len(self.params) - len(ignored)}/{len(self.params)} parameters.")
         cons.unindent()
 
-        # Inject LSO filter weights if lso_filter = T (simulation target only)
+        # Inject the same designed weights into simulation and post_process.  Post-process
+        # filtering has no IBM particle radius, so its width is defined directly by filter_sigma.
         if target.name == "simulation" and str(self.params.get("lso_filter", "F")).upper() == "T":
             dict_str += self.__get_lso_lines()
+        elif target.name == "post_process" and str(self.params.get("lso_pp_filter", "F")).upper() == "T":
+            dict_str += self.__get_lso_lines(prefix="lso_pp")
 
         return f"&user_inputs\n{dict_str}&end/\n"
 
@@ -151,18 +154,16 @@ class Case:
                 raise common.MFCException(f"{origin_txt}:\n{error_msg}")
             raise common.MFCException(f"Validation errors:\n{error_msg}")
 
-    def __get_lso_lines(self) -> str:
+    def __get_lso_lines(self, prefix: str = "lso") -> str:
         """Compute LSO filter weights and return formatted Fortran namelist lines."""
         from .lso_filter import compute_lso_params, lso_namelist_lines
 
         p = self.params
 
-        # Particle diameter from IBM patch
-        try:
-            radius = float(p["patch_ib(1)%radius"])
-        except KeyError:
-            raise common.MFCException("lso_filter = T requires patch_ib(1)%radius to be set.")
-        d_p = 2.0 * radius
+        # IBM cases use particle diameter for the design report. Shock-tube cases have no
+        # particle radius, so use the requested physical filter width for that diagnostic.
+        radius = p.get("patch_ib(1)%radius")
+        d_p = 2.0 * float(radius) if radius is not None else float(p.get("filter_sigma", 1.0))
 
         # Grid spacing (uniform grid assumed)
         m_cells = int(p.get("m", 0))
@@ -184,7 +185,7 @@ class Case:
         cons.print("[cyan]LSO filter:[/cyan] computing weights...")
         lso_params = compute_lso_params(d_p, dx, dy, dz, filter_sigma)
 
-        return lso_namelist_lines(lso_params)
+        return lso_namelist_lines(lso_params, prefix=prefix)
 
     def __get_ndims(self) -> int:
         return 1 + min(int(self.params.get("n", 0)), 1) + min(int(self.params.get("p", 0)), 1)

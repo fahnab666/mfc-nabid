@@ -38,6 +38,16 @@ contains
             call s_check_inputs_ib_injection
         end if
 
+        if (particles_lagrange) then
+            @:PROHIBIT(bubbles_lagrange, "particles_lagrange and bubbles_lagrange cannot both be enabled")
+            @:PROHIBIT(n == 0, "particles_lagrange requires at least 2D (n > 0)")
+            @:PROHIBIT(lag_params%nParticles_glb < 1, "lag_params%nParticles_glb must be positive")
+            @:PROHIBIT(lag_params%solver_approach /= 1 .and. lag_params%solver_approach /= 2, &
+                       & "lag_params%solver_approach must be 1 (one-way) or 2 (two-way)")
+            @:PROHIBIT(len_trim(lag_params%input_path) == 0, "lag_params%input_path must name a particle input file")
+            @:PROHIBIT(particle_pp%rho0ref_particle <= 0._wp, "particle_pp%rho0ref_particle must be positive")
+        end if
+
     end subroutine s_check_inputs
 
     !> Checks constraints on compiler options

@@ -139,10 +139,11 @@ module m_global_parameters
 
     !> @name MPI domain-decomposition state for Lagrangian-bubble exchange (#1290)
     !> @{
-    type(bounds_info), allocatable, dimension(:) :: pcomm_coords    !< Local rank physical domain bounds
-    type(int_bounds_info), dimension(3)          :: nidx            !< Neighbor index offsets per direction
-    integer, allocatable, dimension(:,:,:)       :: neighbor_ranks  !< MPI ranks of neighbors
-    $:GPU_DECLARE(create='[pcomm_coords]')
+    type(bounds_info), allocatable, dimension(:) :: pcomm_coords        !< Local rank physical domain bounds
+    type(bounds_info), allocatable, dimension(:) :: pcomm_coords_ghost  !< Interior bounds for particle ownership exchange
+    type(int_bounds_info), dimension(3)          :: nidx                !< Neighbor index offsets per direction
+    integer, allocatable, dimension(:,:,:)       :: neighbor_ranks      !< MPI ranks of neighbors
+    $:GPU_DECLARE(create='[pcomm_coords, pcomm_coords_ghost]')
     !> @}
     type(mpi_io_var), public                      :: MPI_IO_DATA
     type(mpi_io_ib_var), public                   :: MPI_IO_IB_DATA
@@ -317,14 +318,20 @@ module m_global_parameters
     !> @{!
     ! lag_params (decl + GPU_DECLARE) auto-generated in generated_decls.fpp; bubbles_lagrange GPU-declared in
     ! m_global_parameters_common
-    integer :: n_el_bubs_loc, n_el_bubs_glb  !< Number of Lagrangian bubbles (local and global)
-    logical :: moving_lag_bubbles
-    logical :: lag_pressure_force
-    logical :: lag_gravity_force
-    integer :: lag_vel_model, lag_drag_model
+    integer  :: n_el_bubs_loc, n_el_bubs_glb            !< Number of Lagrangian bubbles (local and global)
+    integer  :: n_el_particles_loc, n_el_particles_glb  !< Number of solid particles (local and global)
+    logical  :: moving_lag_bubbles
+    logical  :: moving_lag_particles
+    logical  :: lag_header
+    logical  :: lag_pressure_force
+    logical  :: lag_gravity_force
+    integer  :: lag_vel_model, lag_drag_model
+    real(wp) :: cp_particle, rho0ref_particle
     $:GPU_DECLARE(create='[n_el_bubs_loc, n_el_bubs_glb]')
-    $:GPU_DECLARE(create='[moving_lag_bubbles, lag_vel_model, lag_drag_model]')
+    $:GPU_DECLARE(create='[n_el_particles_loc, n_el_particles_glb]')
+    $:GPU_DECLARE(create='[moving_lag_bubbles, moving_lag_particles, lag_header, lag_vel_model, lag_drag_model]')
     $:GPU_DECLARE(create='[lag_pressure_force, lag_gravity_force]')
+    $:GPU_DECLARE(create='[cp_particle, rho0ref_particle]')
     !> @}
 
     !> @name Continuum damage model parameters
@@ -529,6 +536,13 @@ contains
         bub_pp%R_v = dflt_real; R_v = dflt_real
         bub_pp%R_g = dflt_real; R_g = dflt_real
 
+        particle_pp%rho0ref_particle = dflt_real
+        particle_pp%cp_particle = dflt_real
+        particle_pp%ksp_col = dflt_real
+        particle_pp%nu_col = dflt_real
+        particle_pp%E_col = dflt_real
+        particle_pp%cor_col = dflt_real
+
         ! Immersed Boundaries (sim-specific extras)
         ib_neighborhood_radius = 0
         collision_model = 0
@@ -696,6 +710,24 @@ contains
         lag_params%charNz = dflt_int
         lag_params%valmaxvoid = dflt_real
         lag_params%input_path = 'input/lag_bubbles.dat'
+        lag_params%nParticles_glb = dflt_int
+        lag_params%qs_drag_model = dflt_int
+        lag_params%stokes_drag = dflt_int
+        lag_params%added_mass_model = dflt_int
+        lag_params%interpolation_order = dflt_int
+        lag_params%N_collision_subcycles = dflt_int
+        lag_params%collision_force = .false.
+        lag_params%subcycle_collisions = .false.
+        lag_params%qs_fluct_force = .false.
+        lag_params%mu_ref(:) = dflt_real
+        lag_params%suth(:) = 0._wp
+        particles_lagrange = .false.
+        cp_particle = dflt_real
+        rho0ref_particle = dflt_real
+        n_el_particles_loc = 0
+        n_el_particles_glb = 0
+        moving_lag_particles = .false.
+        lag_header = .false.
         moving_lag_bubbles = .false.
         lag_vel_model = dflt_int
 
@@ -945,7 +977,7 @@ contains
         if (bubbles_euler .and. qbmm .and. .not. polytropic) then
             allocate (MPI_IO_DATA%view(1:sys_size + 2*nb*nnode))
             allocate (MPI_IO_DATA%var(1:sys_size + 2*nb*nnode))
-        else if (bubbles_lagrange) then
+        else if (bubbles_lagrange .or. particles_lagrange) then
             allocate (MPI_IO_DATA%view(1:sys_size + 1))
             allocate (MPI_IO_DATA%var(1:sys_size + 1))
         else
@@ -964,7 +996,7 @@ contains
                 allocate (MPI_IO_DATA%var(i)%sf(0:m,0:n,0:p))
                 MPI_IO_DATA%var(i)%sf => null()
             end do
-        else if (bubbles_lagrange) then
+        else if (bubbles_lagrange .or. particles_lagrange) then
             do i = 1, sys_size + 1
                 allocate (MPI_IO_DATA%var(i)%sf(0:m,0:n,0:p))
                 MPI_IO_DATA%var(i)%sf => null()
@@ -982,7 +1014,7 @@ contains
 
         if (ib) allocate (MPI_IO_IB_DATA%var%sf(0:m,0:n,0:p))
 
-        if (hypoelasticity .or. mhd .or. probe_wrt .or. ib .or. bubbles_lagrange) then
+        if (hypoelasticity .or. mhd .or. probe_wrt .or. ib .or. bubbles_lagrange .or. particles_lagrange) then
             fd_number = max(1, fd_order/2)
         end if
 
@@ -1015,7 +1047,7 @@ contains
         end if
 
         call s_configure_coordinate_bounds(recon_type, weno_polyn, muscl_polyn, igr_order, buff_size, idwint, idwbuff, viscous, &
-                                           & bubbles_lagrange, m, n, p, num_dims, igr, ib, fd_number)
+                                           & bubbles_lagrange, particles_lagrange, m, n, p, num_dims, igr, ib, fd_number)
         $:GPU_UPDATE(device='[idwint, idwbuff]')
 
         ! Configuring Coordinate Direction Indexes
@@ -1121,6 +1153,7 @@ contains
 
         ! #1290: per-rank physical comm-domain bounds for Lagrangian-bubble exchange
         @:ALLOCATE(pcomm_coords(1:num_dims))
+        @:ALLOCATE(pcomm_coords_ghost(1:num_dims))
 
     end subroutine s_initialize_parallel_io
 
@@ -1150,13 +1183,13 @@ contains
             end if
         end if
 
-        @:DEALLOCATE(pcomm_coords)
+        @:DEALLOCATE(pcomm_coords, pcomm_coords_ghost)
 
         ! Shared: deallocate proc_coords and start_idx
         call s_finalize_global_parameters_common
 
         if (parallel_io) then
-            if (bubbles_lagrange) then
+            if (bubbles_lagrange .or. particles_lagrange) then
                 do i = 1, sys_size + 1
                     MPI_IO_DATA%var(i)%sf => null()
                 end do
