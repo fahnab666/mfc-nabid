@@ -67,10 +67,10 @@ case = {
     # Uniform supersonic stream; the sphere generates the stationary bow shock.
     "bc_x%beg": -3,
     "bc_x%end": -3,
-    "bc_y%beg": -3,
-    "bc_y%end": -3,
-    "bc_z%beg": -3,
-    "bc_z%end": -3,
+    "bc_y%beg": -1,
+    "bc_y%end": -1,
+    "bc_z%beg": -1,
+    "bc_z%end": -1,
     # Stationary immersed sphere
     "ib": "T",
     "num_ibs": num_particles,
