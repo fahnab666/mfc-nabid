@@ -28,7 +28,6 @@ module m_data_output
         & s_write_run_time_information, s_write_data_files, s_write_serial_data_files, s_write_parallel_data_files, &
         & s_write_ib_data_file, s_write_probe_files, s_write_ib_state_file, s_write_ib_force_history, s_close_ib_force_history, &
         & s_close_run_time_information_file, s_close_probe_files, s_finalize_data_output_module
-
     real(wp), public, allocatable, dimension(:,:) :: c_mass
     $:GPU_DECLARE(create='[c_mass]')
 
