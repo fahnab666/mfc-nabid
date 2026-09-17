@@ -1154,8 +1154,8 @@ contains
 
         $:GPU_UPDATE(device='[acoustic_source, num_source]')
         $:GPU_UPDATE(device='[sigma, surface_tension]')
-        $:GPU_UPDATE(device='[lso_R_gas, lso_mu, lso_conductivity, lso_n_passes_x, lso_n_passes_y, lso_n_passes_z, &
-                     & lso_a_x, lso_a_y, lso_a_z, lso2_n_passes_x, lso2_n_passes_y, lso2_n_passes_z, lso2_a_x, lso2_a_y, lso2_a_z]')
+        $:GPU_UPDATE(device='[lso_R_gas, lso_mu, lso_conductivity, lso_n_passes_x, lso_n_passes_y, lso_n_passes_z, lso_a_x, &
+                     & lso_a_y, lso_a_z, lso2_n_passes_x, lso2_n_passes_y, lso2_n_passes_z, lso2_a_x, lso2_a_y, lso2_a_z]')
 
         $:GPU_UPDATE(device='[dx, dy, dz, x_cb, x_cc, y_cb, y_cc, z_cb, z_cc]')
         $:GPU_UPDATE(device='[bc_x%beg, bc_x%end, bc_y%beg, bc_y%end, bc_z%beg, bc_z%end]')
