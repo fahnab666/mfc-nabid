@@ -45,6 +45,7 @@ module m_start_up
     use m_model
     use m_particle_cloud
     use m_collisions
+    use m_lso_filter
     use m_compile_specific
     use m_checker_common
     use m_checker
@@ -777,6 +778,18 @@ contains
             save_count = t_step
         end if
 
+        ! Apply LSO Gaussian filter before writing.
+        ! The filter kernels run on device data; afterwards copy filtered interior
+        ! back to host so s_write_data_files reads the correct values.
+        if (lso_filter) then
+            call s_apply_lso_filter(q_cons_ts(stor)%vf)
+            do i = 1, sys_size
+#ifndef FRONTIER_UNIFIED
+                $:GPU_UPDATE(host='[q_cons_ts(stor)%vf(i)%sf]')
+#endif
+            end do
+        end if
+
         if (bubbles_lagrange) then
             $:GPU_UPDATE(host='[lag_id, mtn_pos, mtn_posPrev, mtn_vel, intfc_rad, intfc_vel, bub_R0, Rmax_stats, Rmin_stats, &
                          & bub_dphidt, gas_p, gas_mv, gas_mg, gas_betaT, gas_betaC]')
@@ -838,6 +851,7 @@ contains
         call s_initialize_mpi_proxy_module()
         call s_initialize_variables_conversion_module(enforce_density_floor=.true., preserve_qbmm_number=.true.)
         if (grid_geometry == 3) call s_initialize_fftw_module()
+        if (lso_filter) call s_initialize_lso_filter_module()
 
         if (bubbles_euler) call s_initialize_bubbles_EE_module()
         if (ib) then
@@ -1148,6 +1162,7 @@ contains
         if (int_comp > 0) call s_finalize_thinc_module()
         call s_finalize_variables_conversion_module()
         if (grid_geometry == 3) call s_finalize_fftw_module
+        if (lso_filter) call s_finalize_lso_filter_module()
         call s_finalize_mpi_common_module()
         call s_finalize_global_parameters_module()
         call s_finalize_boundary_common_module()
