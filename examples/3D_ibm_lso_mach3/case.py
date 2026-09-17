@@ -74,7 +74,7 @@ case = {
     # Stationary immersed sphere
     "ib": "T",
     "num_ibs": num_particles,
-    "fd_order": 2,
+    "fd_order": 4,
     "viscous": "T",
     # LSO filtering and 11-QOI statistical products
     "lso_filter": "T",
