@@ -156,22 +156,33 @@ contains
 
         call s_read_data_files(t_step)
 
-        if (t_step > t_step_start .and. lso_stat_wrt .and. n_lso_stat > 0) then
+        if (t_step > t_step_start .and. lso_stat_wrt .and. n_lso_stat > 0 .and. (lso_filter_wrt .or. .not. lso_pp_filter)) then
             call s_read_lso_fields(q_lso_pp_stat_vf, n_lso_stat, t_step, 'lso_stat_')
         end if
-        if (t_step > t_step_start .and. ib .and. (lso_pp_filter .or. lso_closure_wrt)) then
+        if (t_step > t_step_start .and. lso_pp_filter .and. ib) then
+            call s_lso_pp_mask_from_ib(q_lso_pp_w_vf)
+        else if (t_step > t_step_start .and. ib .and. lso_closure_wrt) then
             call s_read_lso_fields(q_lso_pp_w_vf, 1, t_step, 'lso_mask_')
         end if
 
         if (t_step > t_step_start .and. lso_pp_filter) then
-            do c = 1, n_lso_stat, sys_size
-                call s_apply_lso_pp_filter(q_lso_pp_stat_vf(c:min(c + sys_size - 1, n_lso_stat)))
-            end do
+            if (lso_stat_wrt .and. .not. lso_filter_wrt) then
+                if (ib) then
+                    call s_compute_lso_pp_stat_fields(q_cons_vf, q_lso_pp_w_vf)
+                else
+                    call s_compute_lso_pp_stat_fields(q_cons_vf)
+                end if
+            else
+                do c = 1, n_lso_stat, sys_size
+                    call s_apply_lso_pp_filter(q_lso_pp_stat_vf(c:min(c + sys_size - 1, n_lso_stat)))
+                end do
+            end if
             if (ib) then
                 call s_apply_lso_pp_filter_masked(q_cons_vf, q_lso_pp_w_vf)
             else
                 call s_apply_lso_pp_filter(q_cons_vf)
             end if
+            if (lso_stat_wrt .and. .not. lso_filter_wrt) call s_filter_lso_pp_stat_fields()
         end if
 
         ! seed the chemistry temperature over the INTERIOR only (mirrors the simulation,
