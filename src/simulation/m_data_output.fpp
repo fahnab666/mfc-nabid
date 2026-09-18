@@ -190,21 +190,24 @@ contains
                 do j = 0, m
                     ! Cells inside/on an immersed boundary hold ghost-derived, non-physical state.
                     if ((.not. ib) .or. (ib_markers%sf(j, k, l) == 0)) then
-                        call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, k, l)
+                        call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, &
+                                                  & k, l)
 
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
+                        call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
 
-                    ! How close each Mie-Gruneisen phase is to the compression its Hugoniot fit can represent.
-                    ! Past 1 there is no shock state to find and the reference curve is fiction, so it is reduced
-                    ! out of the kernel and turned into an abort on the host -- s_mpi_abort cannot be called here.
+                        ! How close each Mie-Gruneisen phase is to the compression its Hugoniot fit can represent.
+                        ! Past 1 there is no shock state to find and the reference curve is fiction, so it is reduced
+                        ! out of the kernel and turned into an abort on the host -- s_mpi_abort cannot be called here.
                         if (any_state_dependent_eos) then
-                        $:GPU_LOOP(parallelism='[seq]')
-                        do fl = 1, num_fluids
-                            if (eoss(fl) == eos_mie_gruneisen) then
-                                mu_frac = (alpha_rho(fl)/max(alpha(fl), sgm_eps)/eos_coeffs(fl)%rho0 - 1._wp)/eos_coeffs(fl)%mu_max
-                                mu_frac_max_loc = max(mu_frac_max_loc, mu_frac)
-                            end if
-                        end do
+                            $:GPU_LOOP(parallelism='[seq]')
+                            do fl = 1, num_fluids
+                                if (eoss(fl) == eos_mie_gruneisen) then
+                                    mu_frac = (alpha_rho(fl)/max(alpha(fl), &
+                                               & sgm_eps)/eos_coeffs(fl)%rho0 - 1._wp)/eos_coeffs(fl)%mu_max
+                                    mu_frac_max_loc = max(mu_frac_max_loc, mu_frac)
+                                end if
+                            end do
+                        end if
 
                         if (any_non_newtonian) then
                             Re(1) = 0._wp
@@ -319,10 +322,10 @@ contains
     impure subroutine s_report_icfl_violation(q_prim_vf)
 
         type(scalar_field), dimension(sys_size), intent(in) :: q_prim_vf
-        real(wp), dimension(num_fluids)                     :: alpha
+        real(wp), dimension(num_fluids)                     :: alpha, alpha_rho
         real(wp), dimension(num_vels)                       :: vel, vel_hit
         real(wp), dimension(2)                              :: Re
-        real(wp)                                            :: rho, vel_sum, pres, gamma, pi_inf, qv, c, H
+        real(wp)                                            :: rho, vel_sum, pres, gamma, pi_inf, qv, c
         real(wp)                                            :: rho_hit, pres_hit, c_hit
         real(wp)                                            :: icfl, vcfl, Rc, ccfl, icfl_hit
         integer                                             :: i, j, k, l, fl, j_hit, k_hit, l_hit
@@ -349,8 +352,8 @@ contains
                         if (ib_markers%sf(j, k, l) /= 0) cycle
                     end if
 
-                    call s_compute_enthalpy(q_prim_vf, pres, rho, gamma, pi_inf, Re, H, alpha, vel, vel_sum, qv, j, k, l)
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, H, alpha, vel_sum, 0._wp, c, qv)
+                    call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, k, l)
+                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
 
                     if (any_non_newtonian) then
                         Re(1) = 0._wp
@@ -410,8 +413,8 @@ contains
                 end if
             end do
             if (near1_id > 0) then
-                print '(A,I0,A,ES16.6,A,ES16.6,A,3(ES16.6,1X))', '  nearest particle    id=', near1_id, ' dist=', &
-                    & near1_dist, ' gap=', near1_dist - patch_ib(near1_id)%radius, ' vel=', patch_ib(near1_id)%vel
+                print '(A,I0,A,ES16.6,A,ES16.6,A,3(ES16.6,1X))', '  nearest particle    id=', near1_id, ' dist=', near1_dist, &
+                    & ' gap=', near1_dist - patch_ib(near1_id)%radius, ' vel=', patch_ib(near1_id)%vel
                 print '(A,3(ES16.6,1X))', '    centroid    = ', patch_ib(near1_id)%x_centroid, patch_ib(near1_id)%y_centroid, &
                     & patch_ib(near1_id)%z_centroid
                 print '(A,3(ES16.6,1X))', '    angular_vel = ', patch_ib(near1_id)%angular_vel
@@ -421,8 +424,8 @@ contains
                     & patch_ib(near1_id)%mass, ' moment=', patch_ib(near1_id)%moment
             end if
             if (near2_id > 0) then
-                print '(A,I0,A,ES16.6,A,ES16.6,A,3(ES16.6,1X))', '  2nd nearest particle id=', near2_id, ' dist=', &
-                    & near2_dist, ' gap=', near2_dist - patch_ib(near2_id)%radius, ' vel=', patch_ib(near2_id)%vel
+                print '(A,I0,A,ES16.6,A,ES16.6,A,3(ES16.6,1X))', '  2nd nearest particle id=', near2_id, ' dist=', near2_dist, &
+                    & ' gap=', near2_dist - patch_ib(near2_id)%radius, ' vel=', patch_ib(near2_id)%vel
                 print '(A,3(ES16.6,1X))', '    centroid    = ', patch_ib(near2_id)%x_centroid, patch_ib(near2_id)%y_centroid, &
                     & patch_ib(near2_id)%z_centroid
                 print '(A,3(ES16.6,1X))', '    angular_vel = ', patch_ib(near2_id)%angular_vel
@@ -435,7 +438,7 @@ contains
         ! diverging field, since ICFL blowups have been observed specifically near rank boundaries.
         print '(A)', '  x-neighborhood (dj, rho, pres, vel) around violating cell:'
         do j = max(-buff_size, j_hit - 3), min(m + buff_size, j_hit + 3)
-            call s_compute_enthalpy(q_prim_vf, pres, rho, gamma, pi_inf, Re, H, alpha, vel, vel_sum, qv, j, k_hit, l_hit)
+            call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, k_hit, l_hit)
             print '(A,I0,A,ES16.6,A,ES16.6,A,3(ES16.6,1X))', '    dj=', j - j_hit, ' rho=', rho, ' pres=', pres, ' vel=', vel
         end do
 

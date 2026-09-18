@@ -456,8 +456,6 @@ contains
         call cpu_time(start)
         call nvtxStartRange("TIMESTEP")
 
-        dbg_t_step = t_step  ! TEMPORARY DEBUG INSTRUMENTATION: see m_ibm
-
         ! Adaptive dt: initial stage
         if (adap_dt) call s_adaptive_dt_bubble(1)
 
@@ -706,10 +704,11 @@ contains
 
                     if (is_fluid_cell) then
                         if (igr) then
-                            call s_compute_cell_state(q_cons_ts(1)%vf, pres, rho, gamma, pi_inf, Re, alpha, vel, vel_sum, qv, j, &
-                                                      & k, l)
+                            call s_compute_cell_state(q_cons_ts(1)%vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, &
+                                                      & vel_sum, qv, j, k, l)
                         else
-                            call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, vel, vel_sum, qv, j, k, l)
+                            call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, &
+                                                      & qv, j, k, l)
                         end if
 
                         ! Compute mixture sound speed
@@ -785,10 +784,11 @@ contains
             real(wp), dimension(num_vels)   :: vel
             real(wp), dimension(num_fluids) :: alpha
         #:endif
-        real(wp), dimension(2) :: Re
-        real(wp), dimension(3) :: max_dt
-        integer, dimension(3)  :: ids
-        integer                :: num_bad, num_ids, ib_dist, gid, r, rz, i, j, k, l, jj, kk, ll, fl
+        real(wp), dimension(2)          :: Re
+        real(wp), dimension(3)          :: max_dt
+        real(wp), dimension(num_fluids) :: alpha_rho
+        integer, dimension(3)           :: ids
+        integer                         :: num_bad, num_ids, ib_dist, gid, r, rz, i, j, k, l, jj, kk, ll, fl
 
         do i = 1, sys_size
             if (igr) then
@@ -811,11 +811,13 @@ contains
                     end if
 
                     if (igr) then
-                        call s_compute_cell_state(q_cons_ts(1)%vf, pres, rho, gamma, pi_inf, Re, alpha, vel, vel_sum, qv, j, k, l)
+                        call s_compute_cell_state(q_cons_ts(1)%vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, &
+                                                  & qv, j, k, l)
                     else
-                        call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, vel, vel_sum, qv, j, k, l)
+                        call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, &
+                                                  & k, l)
                     end if
-                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c)
+                    call s_compute_speed_of_sound(pres, rho, gamma, pi_inf, alpha, c, alpha_rho)
                     if (any_non_newtonian) then
                         Re(1) = 0._wp
                         do fl = 1, num_fluids
