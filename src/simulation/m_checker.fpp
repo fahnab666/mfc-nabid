@@ -11,7 +11,7 @@ module m_checker
     use m_global_parameters
     use m_mpi_proxy
     use m_helper
-    use m_constants, only: recon_type_weno, recon_type_muscl
+    use m_constants, only: recon_type_weno, recon_type_muscl, eos_stiffened_gas, eos_ideal_gas
 
     implicit none
 
@@ -46,6 +46,16 @@ contains
                        & "lag_params%solver_approach must be 1 (one-way) or 2 (two-way)")
             @:PROHIBIT(len_trim(lag_params%input_path) == 0, "lag_params%input_path must name a particle input file")
             @:PROHIBIT(particle_pp%rho0ref_particle <= 0._wp, "particle_pp%rho0ref_particle must be positive")
+        end if
+
+        if (lso_filter .or. lso_filter_wrt .or. lso_stat_wrt) then
+            @:PROHIBIT(lso_filter_wrt .and. .not. lso_filter, "lso_filter_wrt requires lso_filter")
+            @:PROHIBIT(lso_stat_wrt .and. .not. lso_filter_wrt, "lso_stat_wrt requires lso_filter_wrt")
+            @:PROHIBIT(lso_stat_wrt .and. .not. parallel_io, "LSO statistical output requires parallel_io")
+            @:PROHIBIT(lso_stat_wrt .and. lso_R_gas <= 0._wp, "LSO statistics require lso_R_gas > 0")
+            @:PROHIBIT(lso_stat_wrt .and. .not. chemistry .and. fluid_pp(1)%eos /= eos_stiffened_gas &
+                       & .and. fluid_pp(1)%eos /= eos_ideal_gas .and. fluid_pp(1)%cv <= 0._wp, &
+                       & "LSO statistics with a state-dependent EOS require fluid_pp(1)%cv > 0")
         end if
 
     end subroutine s_check_inputs

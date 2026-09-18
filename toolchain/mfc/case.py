@@ -118,7 +118,7 @@ class Case:
         if target.name == "simulation" and str(self.params.get("lso_filter", "F")).upper() == "T":
             dict_str += self.__get_lso_lines()
         elif target.name == "post_process" and str(self.params.get("lso_pp_filter", "F")).upper() == "T":
-            dict_str += self.__get_lso_lines(prefix="lso_pp")
+            dict_str += self.__get_lso_pp_lines()
 
         return f"&user_inputs\n{dict_str}&end/\n"
 
@@ -154,38 +154,72 @@ class Case:
                 raise common.MFCException(f"{origin_txt}:\n{error_msg}")
             raise common.MFCException(f"Validation errors:\n{error_msg}")
 
-    def __get_lso_lines(self, prefix: str = "lso") -> str:
-        """Compute LSO filter weights and return formatted Fortran namelist lines."""
-        from .lso_filter import compute_lso_params, lso_namelist_lines
-
+    def __get_grid_spacing(self, down_sample_factor: int = 1):
         p = self.params
-
-        # IBM cases use particle diameter for the design report. Shock-tube cases have no
-        # particle radius, so use the requested physical filter width for that diagnostic.
-        radius = p.get("patch_ib(1)%radius")
-        d_p = 2.0 * float(radius) if radius is not None else float(p.get("filter_sigma", 1.0))
-
-        # Grid spacing (uniform grid assumed)
+        d_p = 2.0 * float(p.get("patch_ib(1)%radius", 0.0))
+        if d_p <= 0.0:
+            d_p = float(p.get("filter_sigma", 0.0))
         m_cells = int(p.get("m", 0))
         n_cells = int(p.get("n", 0))
         p_cells = int(p.get("p", 0))
-        x_beg = float(p.get("x_domain%beg", 0.0))
-        x_end = float(p.get("x_domain%end", 1.0))
-        y_beg = float(p.get("y_domain%beg", 0.0))
-        y_end = float(p.get("y_domain%end", 1.0))
-        z_beg = float(p.get("z_domain%beg", 0.0))
-        z_end = float(p.get("z_domain%end", 1.0))
+        if down_sample_factor > 1:
+            m_cells = (m_cells + 1) // down_sample_factor - 1
+            n_cells = (n_cells + 1) // down_sample_factor - 1 if n_cells > 0 else 0
+            p_cells = (p_cells + 1) // down_sample_factor - 1 if p_cells > 0 else 0
 
+        def extent(direction: str):
+            return float(p.get(f"{direction}_domain%beg", 0.0)), float(p.get(f"{direction}_domain%end", 1.0))
+
+        x_beg, x_end = extent("x")
+        y_beg, y_end = extent("y")
+        z_beg, z_end = extent("z")
         dx = (x_end - x_beg) / (m_cells + 1)
         dy = (y_end - y_beg) / (n_cells + 1) if n_cells > 0 else 0.0
         dz = (z_end - z_beg) / (p_cells + 1) if p_cells > 0 else 0.0
+        return d_p, dx, dy, dz
 
-        filter_sigma = float(p.get("filter_sigma", d_p / 2.0))
+    def __warn_lso_width(self, sigma: float, dx: float, dy: float, dz: float) -> None:
+        for tag, spacing in (("x", dx), ("y", dy), ("z", dz)):
+            if spacing > 0.0 and sigma / spacing > 40.0:
+                cons.print(f"[yellow]Warning:[/yellow] LSO: sigma = {sigma / spacing:.1f} cells in {tag} is near the ~45-cell stability limit.")
 
-        cons.print("[cyan]LSO filter:[/cyan] computing weights...")
-        lso_params = compute_lso_params(d_p, dx, dy, dz, filter_sigma)
+    def __get_lso_lines(self) -> str:
+        """Compute in-situ weights, including the optional coarse-grid second stage."""
+        from .lso_filter import compute_lso_params, lso_namelist_lines
 
-        return lso_namelist_lines(lso_params, prefix=prefix)
+        p = self.params
+        factor = int(p.get("lso_down_sample_factor", 1))
+        d_p, dx, dy, dz = self.__get_grid_spacing()
+        sigma = float(p.get("filter_sigma", d_p / 2.0))
+        if sigma <= 0.0:
+            raise common.MFCException("filter_sigma must be > 0.")
+        if factor > 1 and str(p.get("lso_filter_wrt", "F")).upper() == "T":
+            sigma1 = 8.0 * max(factor, 1.0) * max(d for d in (dx, dy, dz) if d > 0.0)
+            if sigma > 1.05 * sigma1:
+                _, cdx, cdy, cdz = self.__get_grid_spacing(down_sample_factor=factor)
+                sigma2 = math.sqrt(sigma * sigma - sigma1 * sigma1)
+                self.__warn_lso_width(sigma1, dx, dy, dz)
+                self.__warn_lso_width(sigma2, cdx, cdy, cdz)
+                lines = lso_namelist_lines(compute_lso_params(d_p, dx, dy, dz, sigma1))
+                return lines + lso_namelist_lines(compute_lso_params(d_p, cdx, cdy, cdz, sigma2), prefix="lso2_")
+        self.__warn_lso_width(sigma, dx, dy, dz)
+        return lso_namelist_lines(compute_lso_params(d_p, dx, dy, dz, sigma))
+
+    def __get_lso_pp_lines(self) -> str:
+        """Compute the post-process pass from input and target Gaussian widths."""
+        from .lso_filter import compute_lso_params, lso_namelist_lines
+
+        p = self.params
+        lso_filter_wrt = str(p.get("lso_filter_wrt", "F")).upper() == "T"
+        factor = int(p.get("lso_down_sample_factor", 1))
+        d_p, dx, dy, dz = self.__get_grid_spacing(down_sample_factor=factor if lso_filter_wrt and factor > 1 else 1)
+        sigma_in = float(p.get("lso_filter_sigma_in", p.get("filter_sigma", d_p / 2.0) if lso_filter_wrt else 0.0))
+        sigma_target = float(p.get("lso_filter_sigma_target", 0.0))
+        if sigma_in < 0.0 or sigma_target <= sigma_in:
+            raise common.MFCException("lso_filter_sigma_target must be greater than lso_filter_sigma_in >= 0.")
+        sigma2 = math.sqrt(sigma_target * sigma_target - sigma_in * sigma_in)
+        self.__warn_lso_width(sigma2, dx, dy, dz)
+        return lso_namelist_lines(compute_lso_params(d_p, dx, dy, dz, sigma2), prefix="lso_pp_")
 
     def __get_ndims(self) -> int:
         return 1 + min(int(self.params.get("n", 0)), 1) + min(int(self.params.get("p", 0)), 1)

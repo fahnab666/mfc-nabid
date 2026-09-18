@@ -111,6 +111,7 @@ case = {
     "patch_icpp(1)%alpha(1)": 1.0,
     "fluid_pp(1)%gamma": 1.0 / (gamma - 1.0),
     "fluid_pp(1)%eos": "ideal_gas",
+    "fluid_pp(1)%cv": 287.05 / (gamma - 1.0),
     "fluid_pp(1)%Re(1)": rho_inf * u_inf * D / 1.84e-5,
 }
 

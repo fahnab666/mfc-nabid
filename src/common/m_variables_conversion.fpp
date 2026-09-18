@@ -30,7 +30,7 @@ module m_variables_conversion
         & s_compute_mixture_coefficients_dt, s_compute_speed_of_sound_avg, s_compute_fast_magnetosonic_speed, f_elastic_energy, &
         & f_hypoelastic_energy, f_relativistic_enthalpy, s_eos_coefficients, s_phase_coefficients, s_phase_pressure_on_isentrope, &
         & s_phase_temperature, f_is_state_dependent, s_phase_bulk_modulus, s_phase_density_on_isentrope, &
-        & s_finalize_variables_conversion_module, gammas, isentrope_n, pi_infs, isentrope_B, cvs, qvs, qvps
+        & s_finalize_variables_conversion_module, gammas, isentrope_n, pi_infs, isentrope_B, cvs, qvs, qvps, eoss
     public :: jwl_idx, jwl_air_idx, s_jwl_pt_state
 
     real(wp), allocatable, dimension(:)   :: Gs_vc

@@ -243,6 +243,8 @@ _SIMPLE_DESCS = {
     "lso_R_gas": "Specific gas constant used by LSO statistical products",
     "lso_mu": "Dynamic viscosity used by LSO statistical products",
     "lso_conductivity": "Thermal conductivity used by LSO statistical products",
+    "lso_filter_sigma_in": "Gaussian sigma already applied to post-process input",
+    "lso_filter_sigma_target": "Target Gaussian sigma for post-process widening",
     "filter_sigma": "Target Gaussian filter standard deviation (physical units, same as domain coordinates)",
     "acoustic_source": "Enable acoustic sources",
     # Output
@@ -1054,6 +1056,8 @@ def _load():
     _r("lso_filter", LOG, {"filter"})
     _r("lso_filter_wrt", LOG, {"filter"})
     _r("filter_sigma", REAL, {"filter"})
+    _r("lso_filter_sigma_in", REAL, {"filter"})
+    _r("lso_filter_sigma_target", REAL, {"filter"})
     _r("lso_down_sample_factor", INT, {"filter"})
     _r("lso_stat_wrt", LOG, {"filter"})
     _r("lso_R_gas", REAL, {"filter"})

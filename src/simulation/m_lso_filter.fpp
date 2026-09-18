@@ -16,7 +16,7 @@ module m_lso_filter
     use m_global_parameters
     use m_mpi_common
     use m_constants
-    use m_variables_conversion, only: s_phase_temperature
+    use m_variables_conversion, only: s_phase_temperature, eoss, isentrope_B
     use m_ibm, only: ib_markers
     use m_nvtx
 
@@ -226,17 +226,17 @@ contains
         call nvtxStartRange("LSO-FILTER")
 
         call nvtxStartRange("LSO-FILTER-COPY")
+        $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
         do i = 1, sys_size
-            $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
-            do l = idwbuff(3)%beg, idwbuff(3)%end
-                do k = idwbuff(2)%beg, idwbuff(2)%end
-                    do j = idwbuff(1)%beg, idwbuff(1)%end
+            do l = 0, p
+                do k = 0, n
+                    do j = 0, m
                         q_filt_vf(i)%sf(j, k, l) = q_cons_vf(i)%sf(j, k, l)
                     end do
                 end do
             end do
-            $:END_GPU_PARALLEL_LOOP()
         end do
+        $:END_GPU_PARALLEL_LOOP()
         call nvtxEndRange
 
         if (ib) then
@@ -255,8 +255,8 @@ contains
                 end do
             end do
             $:END_GPU_PARALLEL_LOOP()
+            $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
             do i = 1, sys_size
-                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                 do l = 0, p
                     do k = 0, n
                         do j = 0, m
@@ -265,8 +265,8 @@ contains
                         end do
                     end do
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             end do
+            $:END_GPU_PARALLEL_LOOP()
             call nvtxEndRange
 
             call s_apply_lso_filter(q_filt_vf)
@@ -275,8 +275,8 @@ contains
             ! Normalize everywhere (the solid interior takes the fluid average). Under the two-stage
             ! pyramid the numerator and denominator stay unnormalized until s_lso_filter_stage2.
             if (lso2_n_passes_x <= 0) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, sys_size
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 0, n
                             do j = 0, m
@@ -285,8 +285,8 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             end if
         else
             call s_apply_lso_filter(q_filt_vf)
@@ -296,9 +296,11 @@ contains
             call nvtxStartRange("LSO-FILTER-STAT")
             ! Refresh q_cons_vf rank-boundary ghost cells before the Pass 2 centred differences:
             ! ghosts may otherwise hold an intermediate RK sub-step rather than the updated interior.
-            call s_lso_filter_ghost_refresh(q_cons_vf, 1)
-            if (n > 0) call s_lso_filter_ghost_refresh(q_cons_vf, 2)
-            if (p > 0) call s_lso_filter_ghost_refresh(q_cons_vf, 3)
+            if (viscous .and. lso_mu > 0._wp) then
+                call s_lso_filter_ghost_refresh(q_cons_vf, 1)
+                if (n > 0) call s_lso_filter_ghost_refresh(q_cons_vf, 2)
+                if (p > 0) call s_lso_filter_ghost_refresh(q_cons_vf, 3)
+            end if
             call s_compute_lso_stat_fields(q_cons_vf, q_prim_vf, q_T_sf)
             call s_apply_lso_stat_filter()
 #ifndef FRONTIER_UNIFIED
@@ -856,8 +858,8 @@ contains
         select case (mpi_dir)
         case (1)
             if (beg_bc == BC_GHOST_EXTRAP .or. (beg_bc < 0 .and. beg_bc /= BC_PERIODIC)) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 0, n
                             do j = 1, buff_size
@@ -865,11 +867,11 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             else if (beg_bc == BC_PERIODIC) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 0, n
                             do j = 1, buff_size
@@ -877,12 +879,12 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             end if
             if (end_bc == BC_GHOST_EXTRAP .or. (end_bc < 0 .and. end_bc /= BC_PERIODIC)) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 0, n
                             do j = 1, buff_size
@@ -890,11 +892,11 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             else if (end_bc == BC_PERIODIC) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 0, n
                             do j = 1, buff_size
@@ -902,15 +904,15 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             end if
 #ifdef MFC_MPI
 #endif
         case (2)
             if (beg_bc == BC_GHOST_EXTRAP .or. (beg_bc < 0 .and. beg_bc /= BC_PERIODIC)) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 1, buff_size
                             do j = 0, m
@@ -918,11 +920,11 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             else if (beg_bc == BC_PERIODIC) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 1, buff_size
                             do j = 0, m
@@ -930,12 +932,12 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             end if
             if (end_bc == BC_GHOST_EXTRAP .or. (end_bc < 0 .and. end_bc /= BC_PERIODIC)) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 1, buff_size
                             do j = 0, m
@@ -943,11 +945,11 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             else if (end_bc == BC_PERIODIC) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 1, buff_size
                             do j = 0, m
@@ -955,15 +957,15 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             end if
 #ifdef MFC_MPI
 #endif
         case (3)
             if (beg_bc == BC_GHOST_EXTRAP .or. (beg_bc < 0 .and. beg_bc /= BC_PERIODIC)) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 1, buff_size
                         do k = 0, n
                             do j = 0, m
@@ -971,11 +973,11 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             else if (beg_bc == BC_PERIODIC) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 1, buff_size
                         do k = 0, n
                             do j = 0, m
@@ -983,12 +985,12 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             end if
             if (end_bc == BC_GHOST_EXTRAP .or. (end_bc < 0 .and. end_bc /= BC_PERIODIC)) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 1, buff_size
                         do k = 0, n
                             do j = 0, m
@@ -996,11 +998,11 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             else if (end_bc == BC_PERIODIC) then
+                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
-                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 1, buff_size
                         do k = 0, n
                             do j = 0, m
@@ -1008,8 +1010,8 @@ contains
                             end do
                         end do
                     end do
-                    $:END_GPU_PARALLEL_LOOP()
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             end if
 #ifdef MFC_MPI
 #endif
@@ -1039,7 +1041,11 @@ contains
                 alpha_phase = max(real(q_prim_vf(eqn_idx%E + 1)%sf(j, k, l), wp), sgm_eps)
             end if
             rho_phase = real(q_prim_vf(eqn_idx%cont%beg)%sf(j, k, l), wp)/alpha_phase
-            call s_phase_temperature(rho_phase, pres, 1, T)
+            if (eoss(1) == eos_stiffened_gas .or. eoss(1) == eos_ideal_gas) then
+                T = (pres + isentrope_B(1))/(lso_R_gas*rho_phase)
+            else
+                call s_phase_temperature(rho_phase, pres, 1, T)
+            end if
         end if
 
     end subroutine s_lso_temperature

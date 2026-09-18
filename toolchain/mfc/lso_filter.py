@@ -175,7 +175,7 @@ def find_min_lso_passes(
         if err < conv_tol:
             return n_passes, err, coeffs
 
-    return max_passes, err, coeffs
+    raise ValueError(f"LSO design did not reach L2 tolerance {conv_tol:.3e} in {max_passes} passes; final error is {err:.3e}")
 
 
 def compute_lso_params(
@@ -205,6 +205,9 @@ def compute_lso_params(
             lso_n_passes_x/y/z  (int; inactive directions are zero)
             lso_a_x/y/z         (list of n_passes tuples of 5 floats)
     """
+    if d_p <= 0.0 or filter_sigma <= 0.0 or dx <= 0.0:
+        raise ValueError("d_p, filter_sigma, and dx must be positive")
+
     directions = [("x", dx)]
     if dy > 0.0:
         directions.append(("y", dy))

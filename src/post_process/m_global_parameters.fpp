@@ -355,6 +355,9 @@ contains
 
         fd_order = dflt_int
 
+        lso_down_sample_factor = 1
+        n_lso_stat = 0
+
         ! Bubble modeling (post-specific)
         nb = dflt_int
 
@@ -518,6 +521,7 @@ contains
             fd_number = max(1, fd_order/2)
             buff_size = buff_size + fd_number
         end if
+        if (lso_stat_wrt .or. lso_pp_filter .or. lso_closure_wrt) buff_size = max(buff_size, 4)
 
         ! Configuring Coordinate Direction Indexes
         idwint(1)%beg = 0; idwint(2)%beg = 0; idwint(3)%beg = 0

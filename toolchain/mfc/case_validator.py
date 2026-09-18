@@ -208,6 +208,13 @@ PHYSICS_DOCS = {
         "math": r"\mathrm{Re}_1 > 0, \quad \mathrm{Re}_2 > 0",
         "explanation": "Reynolds numbers must be positive. Not supported with model_eqns = 1.",
     },
+    "check_lso_filter": {
+        "title": "LSO Filtering",
+        "category": "Numerical Schemes",
+        "explanation": (
+            "LSO statistical products are written by simulation MPI I/O and consumed by post-process. " "Closure reconstruction currently supports one calorically perfect ideal or stiffened gas."
+        ),
+    },
     # Feature Compatibility
     "check_mhd": {
         "title": "Magnetohydrodynamics (MHD)",
@@ -1979,6 +1986,54 @@ class CaseValidator:
             if coord_a is not None and coord_b is not None:
                 self.prohibit(coord_a >= coord_b, f"{direction}_a must be less than {direction}_b with stretch_{direction} enabled")
 
+    def check_lso_filter(self, stage):
+        """Reject LSO configurations that otherwise produce missing or invalid output."""
+        enabled = any(self.get(key, "F") == "T" for key in ("lso_filter", "lso_filter_wrt", "lso_stat_wrt", "lso_pp_filter", "lso_closure_wrt"))
+        if not enabled:
+            return
+
+        lso_filter = self.get("lso_filter", "F") == "T"
+        filter_wrt = self.get("lso_filter_wrt", "F") == "T"
+        stat_wrt = self.get("lso_stat_wrt", "F") == "T"
+        pp_filter = self.get("lso_pp_filter", "F") == "T"
+        closure_wrt = self.get("lso_closure_wrt", "F") == "T"
+        parallel_io = self.get("parallel_io", "F") == "T"
+        sigma = self.get("filter_sigma")
+        factor = self.get("lso_down_sample_factor", 1) or 1
+        lso_R_gas = self.get("lso_R_gas", 287.0)
+        if lso_R_gas is None:
+            lso_R_gas = 287.0
+
+        self.prohibit(sigma is None or sigma <= 0, "LSO filtering requires filter_sigma > 0")
+        self.prohibit(any(self.get(f"stretch_{d}", "F") == "T" for d in "xyz"), "LSO filtering requires a uniform grid")
+        self.prohibit(factor < 1, "lso_down_sample_factor must be a positive integer")
+        if factor > 1:
+            for direction, key in (("x", "m"), ("y", "n"), ("z", "p")):
+                cells = self.get(key, 0)
+                if cells and (cells + 1) % factor != 0:
+                    self.prohibit(True, f"lso_down_sample_factor must divide {direction} cells + 1")
+        self.prohibit(filter_wrt and not lso_filter, "lso_filter_wrt = T requires lso_filter = T")
+        self.prohibit(stat_wrt and not filter_wrt, "lso_stat_wrt = T requires lso_filter_wrt = T")
+        self.prohibit(stat_wrt and not parallel_io, "LSO statistical output requires parallel_io = T")
+        eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
+        eos = self.get("fluid_pp(1)%eos", eos_names["stiffened_gas"])
+        cv = self.get("fluid_pp(1)%cv")
+        self.prohibit(stat_wrt and lso_R_gas <= 0, "LSO statistics require lso_R_gas > 0")
+        self.prohibit(
+            stat_wrt and self.get("chemistry", "F") != "T" and eos not in (eos_names["stiffened_gas"], eos_names["ideal_gas"]) and (cv is None or cv <= 0),
+            "LSO statistics with a state-dependent EOS require fluid_pp(1)%cv > 0",
+        )
+
+        if stage != "post_process":
+            return
+
+        self.prohibit(pp_filter and not filter_wrt, "lso_pp_filter = T requires lso_filter_wrt = T")
+        self.prohibit(closure_wrt and not stat_wrt, "lso_closure_wrt = T requires lso_stat_wrt = T")
+        if closure_wrt:
+            self.prohibit(self.get("num_fluids") != 1, "LSO closures currently require num_fluids = 1")
+            self.prohibit(self.get("chemistry", "F") == "T", "LSO closures do not support chemistry")
+            self.prohibit(eos not in (eos_names["stiffened_gas"], eos_names["ideal_gas"]), "LSO closures require a calorically perfect ideal or stiffened gas")
+
     def check_perturb_density(self):
         """Checks initial partial density perturbation constraints (pre-process)"""
         perturb_flow = self.get("perturb_flow", "F") == "T"
@@ -2907,6 +2962,7 @@ class CaseValidator:
     def validate_simulation(self):
         """Validate simulation-specific parameters"""
         self.validate_common()
+        self.check_lso_filter("simulation")
         self.check_geometry_precision_simulation()
         self.check_finite_difference()
         self.check_time_stepping()
@@ -2933,6 +2989,7 @@ class CaseValidator:
     def validate_pre_process(self):
         """Validate pre-process-specific parameters"""
         self.validate_common()
+        self.check_lso_filter("pre_process")
         self.check_restart()
         self.check_domain_extents()
         self.check_qbmm_pre_process()
@@ -2951,6 +3008,7 @@ class CaseValidator:
     def validate_post_process(self):
         """Validate post-process-specific parameters"""
         self.validate_common()
+        self.check_lso_filter("post_process")
         self.check_finite_difference()
         self.check_time_stepping()
         self.check_output_format()

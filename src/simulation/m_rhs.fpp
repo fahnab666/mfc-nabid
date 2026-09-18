@@ -863,9 +863,11 @@ contains
         end if
 
         if (particles_lagrange) then
-            call nvtxStartRange("RHS-EL-PARTICLES-DYN")
-            call s_compute_particle_EL_dynamics(q_cons_qp%vf(1:sys_size), q_prim_qp%vf(1:sys_size), bc_type, stage, rhs_vf)
-            call nvtxEndRange
+            if (particle_dynamics) then
+                call nvtxStartRange("RHS-EL-PARTICLES-DYN")
+                call s_compute_particle_EL_dynamics(q_cons_qp%vf(1:sys_size), q_prim_qp%vf(1:sys_size), bc_type, stage, rhs_vf)
+                call nvtxEndRange
+            end if
 
             if (lag_params%solver_approach == 2) then
                 call nvtxStartRange("RHS-EL-PARTICLES-SRC")

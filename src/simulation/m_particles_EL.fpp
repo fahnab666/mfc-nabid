@@ -77,6 +77,7 @@ module m_particles_EL
     type(scalar_field), dimension(:), allocatable :: q_particles
     type(scalar_field), dimension(:), allocatable :: kahan_comp        !< Kahan compensation for q_particles accumulation
     integer                                       :: q_particles_idx   !< Size of the q vector field for particle cell (q)uantities
+    logical                                       :: particle_dynamics
     integer, parameter                            :: alphaf_id = 1
     integer, parameter                            :: alphaupx_id = 2   !< x particle momentum index
     integer, parameter                            :: alphaupy_id = 3   !< y particle momentum index
@@ -197,11 +198,13 @@ contains
 
         ! Setting number of time-stages for selected time-stepping scheme
         lag_num_ts = time_stepper
+        moving_lag_particles = lag_params%vel_model > 0
+        particle_dynamics = moving_lag_particles .or. lag_params%solver_approach == 2 .or. lag_params%qs_fluct_force &
+            & .or. lag_params%collision_force .or. lag_params%write_bubbles
 
         ! Allocate space for the Eulerian fields needed to map the effect of the particles
         if (lag_params%solver_approach == 1) then
-            ! One-way coupling
-            q_particles_idx = 7  ! For tracking volume fraction, alpha_p u_p (x(2),y(3),z(4)), alpha_p u_p^2 (x(5),y(6),z(7))
+            q_particles_idx = merge(7, 1, particle_dynamics)
         else if (lag_params%solver_approach == 2) then
             ! Two-way coupling
             ! For tracking volume fraction(1), alpha_p u_p (x(2),y(3),z(4)), alpha_p u_p^2 (x(5),y(6),z(7)), x-mom(8), y-mom(9),
@@ -255,54 +258,41 @@ contains
             @:ACC_SETUP_SFs(kahan_comp(i))
         end do
 
-        @:ALLOCATE(field_vars(1:nField_vars))
-        do i = 1, nField_vars
-            @:ALLOCATE(field_vars(i)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
-                       & idwbuff(3)%beg:idwbuff(3)%end))
-            @:ACC_SETUP_SFs(field_vars(i))
-        end do
+        if (particle_dynamics) then
+            @:ALLOCATE(field_vars(1:nField_vars))
+            do i = 1, nField_vars
+                @:ALLOCATE(field_vars(i)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end))
+                @:ACC_SETUP_SFs(field_vars(i))
+            end do
 
-        @:ALLOCATE(rhs_old(1:sys_size))
-        do i = 1, sys_size
-            @:ALLOCATE(rhs_old(i)%sf(idwint(1)%beg:idwint(1)%end, idwint(2)%beg:idwint(2)%end, idwint(3)%beg:idwint(3)%end))
-            @:ACC_SETUP_SFs(rhs_old(i))
-        end do
+            @:ALLOCATE(rhs_old(1:sys_size))
+            do i = 1, sys_size
+                @:ALLOCATE(rhs_old(i)%sf(idwint(1)%beg:idwint(1)%end, idwint(2)%beg:idwint(2)%end, idwint(3)%beg:idwint(3)%end))
+                @:ACC_SETUP_SFs(rhs_old(i))
+            end do
 
-        @:ALLOCATE(weights_x_interp(1:nWeights_interp))
-        do i = 1, nWeights_interp
-            @:ALLOCATE(weights_x_interp(i)%sf(idwbuff(1)%beg:idwbuff(1)%end,1:1,1:1))
-            @:ACC_SETUP_SFs(weights_x_interp(i))
-        end do
+            @:ALLOCATE(weights_x_interp(1:nWeights_interp), weights_y_interp(1:nWeights_interp), &
+                       & weights_z_interp(1:nWeights_interp))
+            do i = 1, nWeights_interp
+                @:ALLOCATE(weights_x_interp(i)%sf(idwbuff(1)%beg:idwbuff(1)%end,1:1,1:1))
+                @:ALLOCATE(weights_y_interp(i)%sf(idwbuff(2)%beg:idwbuff(2)%end,1:1,1:1))
+                @:ALLOCATE(weights_z_interp(i)%sf(idwbuff(3)%beg:idwbuff(3)%end,1:1,1:1))
+                @:ACC_SETUP_SFs(weights_x_interp(i))
+                @:ACC_SETUP_SFs(weights_y_interp(i))
+                @:ACC_SETUP_SFs(weights_z_interp(i))
+            end do
 
-        @:ALLOCATE(weights_y_interp(1:nWeights_interp))
-        do i = 1, nWeights_interp
-            @:ALLOCATE(weights_y_interp(i)%sf(idwbuff(2)%beg:idwbuff(2)%end,1:1,1:1))
-            @:ACC_SETUP_SFs(weights_y_interp(i))
-        end do
-
-        @:ALLOCATE(weights_z_interp(1:nWeights_interp))
-        do i = 1, nWeights_interp
-            @:ALLOCATE(weights_z_interp(i)%sf(idwbuff(3)%beg:idwbuff(3)%end,1:1,1:1))
-            @:ACC_SETUP_SFs(weights_z_interp(i))
-        end do
-
-        @:ALLOCATE(weights_x_grad(1:nWeights_grad))
-        do i = 1, nWeights_grad
-            @:ALLOCATE(weights_x_grad(i)%sf(idwbuff(1)%beg:idwbuff(1)%end,1:1,1:1))
-            @:ACC_SETUP_SFs(weights_x_grad(i))
-        end do
-
-        @:ALLOCATE(weights_y_grad(1:nWeights_grad))
-        do i = 1, nWeights_grad
-            @:ALLOCATE(weights_y_grad(i)%sf(idwbuff(2)%beg:idwbuff(2)%end,1:1,1:1))
-            @:ACC_SETUP_SFs(weights_y_grad(i))
-        end do
-
-        @:ALLOCATE(weights_z_grad(1:nWeights_grad))
-        do i = 1, nWeights_grad
-            @:ALLOCATE(weights_z_grad(i)%sf(idwbuff(3)%beg:idwbuff(3)%end,1:1,1:1))
-            @:ACC_SETUP_SFs(weights_z_grad(i))
-        end do
+            @:ALLOCATE(weights_x_grad(1:nWeights_grad), weights_y_grad(1:nWeights_grad), weights_z_grad(1:nWeights_grad))
+            do i = 1, nWeights_grad
+                @:ALLOCATE(weights_x_grad(i)%sf(idwbuff(1)%beg:idwbuff(1)%end,1:1,1:1))
+                @:ALLOCATE(weights_y_grad(i)%sf(idwbuff(2)%beg:idwbuff(2)%end,1:1,1:1))
+                @:ALLOCATE(weights_z_grad(i)%sf(idwbuff(3)%beg:idwbuff(3)%end,1:1,1:1))
+                @:ACC_SETUP_SFs(weights_x_grad(i))
+                @:ACC_SETUP_SFs(weights_y_grad(i))
+                @:ACC_SETUP_SFs(weights_z_grad(i))
+            end do
+        end if
 
         ! Allocating space for lagrangian variables
         nParticles_glb = lag_params%nParticles_glb
@@ -328,9 +318,10 @@ contains
         @:ALLOCATE(gSum(1:nParticles_glb))
         @:ALLOCATE(gSum_sources(1:nParticles_glb))
 
-        @:ALLOCATE(linked_list(1:nParticles_glb))
-
-        @:ALLOCATE(particle_head(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, idwbuff(3)%beg:idwbuff(3)%end))
+        if (lag_params%collision_force) then
+            @:ALLOCATE(linked_list(1:nParticles_glb))
+            @:ALLOCATE(particle_head(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, idwbuff(3)%beg:idwbuff(3)%end))
+        end if
 
         @:ALLOCATE(keep_bubble(1:nParticles_glb))
         @:ALLOCATE(wrap_bubble_loc(1:nParticles_glb, 1:num_dims), wrap_bubble_dir(1:nParticles_glb, 1:num_dims))
@@ -348,8 +339,7 @@ contains
         if (lag_params%write_bubbles) call s_open_lag_bubble_evol()
         if (lag_params%write_bubbles_stats) call s_open_lag_particle_stats()
 
-        if (lag_params%vel_model > 0) then
-            moving_lag_particles = .true.
+        if (moving_lag_particles) then
             lag_pressure_force = lag_params%pressure_force
             lag_gravity_force = lag_params%gravity_force
             lag_vel_model = lag_params%vel_model
@@ -420,23 +410,24 @@ contains
             call s_compute_gaussian_source_contribution()
         end if
 
-        npts = (nWeights_interp - 1)/2
-        call s_compute_barycentric_weights(npts)  ! For interpolation
+        if (particle_dynamics) then
+            npts = (nWeights_interp - 1)/2
+            call s_compute_barycentric_weights(npts)
+            npts = (nWeights_grad - 1)/2
+            call s_compute_fornberg_fd_weights(npts)
 
-        npts = (nWeights_grad - 1)/2
-        call s_compute_fornberg_fd_weights(npts)  ! For finite differences
-
-        $:GPU_PARALLEL_LOOP(collapse=3, private='[i, j, k, l]')
-        do k = idwint(3)%beg, idwint(3)%end
-            do j = idwint(2)%beg, idwint(2)%end
-                do i = idwint(1)%beg, idwint(1)%end
-                    do l = 1, sys_size
-                        rhs_old(l)%sf(i, j, k) = 0._wp
+            $:GPU_PARALLEL_LOOP(collapse=3, private='[i, j, k, l]')
+            do k = idwint(3)%beg, idwint(3)%end
+                do j = idwint(2)%beg, idwint(2)%end
+                    do i = idwint(1)%beg, idwint(1)%end
+                        do l = 1, sys_size
+                            rhs_old(l)%sf(i, j, k) = 0._wp
+                        end do
                     end do
                 end do
             end do
-        end do
-        $:END_GPU_PARALLEL_LOOP()
+            $:END_GPU_PARALLEL_LOOP()
+        end if
 
     end subroutine s_initialize_particles_EL_module
 
@@ -2749,45 +2740,31 @@ contains
         @:DEALLOCATE(q_particles)
         @:DEALLOCATE(kahan_comp)
 
-        do i = 1, nField_vars
-            @:DEALLOCATE(field_vars(i)%sf)
-        end do
-        @:DEALLOCATE(field_vars)
+        if (allocated(field_vars)) then
+            do i = 1, nField_vars
+                @:DEALLOCATE(field_vars(i)%sf)
+            end do
+            @:DEALLOCATE(field_vars)
 
-        do i = 1, sys_size
-            @:DEALLOCATE(rhs_old(i)%sf)
-        end do
-        @:DEALLOCATE(rhs_old)
+            do i = 1, sys_size
+                @:DEALLOCATE(rhs_old(i)%sf)
+            end do
+            @:DEALLOCATE(rhs_old)
 
-        do i = 1, nWeights_interp
-            @:DEALLOCATE(weights_x_interp(i)%sf)
-        end do
-        @:DEALLOCATE(weights_x_interp)
+            do i = 1, nWeights_interp
+                @:DEALLOCATE(weights_x_interp(i)%sf)
+                @:DEALLOCATE(weights_y_interp(i)%sf)
+                @:DEALLOCATE(weights_z_interp(i)%sf)
+            end do
+            @:DEALLOCATE(weights_x_interp, weights_y_interp, weights_z_interp)
 
-        do i = 1, nWeights_interp
-            @:DEALLOCATE(weights_y_interp(i)%sf)
-        end do
-        @:DEALLOCATE(weights_y_interp)
-
-        do i = 1, nWeights_interp
-            @:DEALLOCATE(weights_z_interp(i)%sf)
-        end do
-        @:DEALLOCATE(weights_z_interp)
-
-        do i = 1, nWeights_grad
-            @:DEALLOCATE(weights_x_grad(i)%sf)
-        end do
-        @:DEALLOCATE(weights_x_grad)
-
-        do i = 1, nWeights_grad
-            @:DEALLOCATE(weights_y_grad(i)%sf)
-        end do
-        @:DEALLOCATE(weights_y_grad)
-
-        do i = 1, nWeights_grad
-            @:DEALLOCATE(weights_z_grad(i)%sf)
-        end do
-        @:DEALLOCATE(weights_z_grad)
+            do i = 1, nWeights_grad
+                @:DEALLOCATE(weights_x_grad(i)%sf)
+                @:DEALLOCATE(weights_y_grad(i)%sf)
+                @:DEALLOCATE(weights_z_grad(i)%sf)
+            end do
+            @:DEALLOCATE(weights_x_grad, weights_y_grad, weights_z_grad)
+        end if
 
         ! Deallocating space
         @:DEALLOCATE(lag_part_id)
@@ -2814,8 +2791,10 @@ contains
         @:DEALLOCATE(keep_bubble)
         @:DEALLOCATE(wrap_bubble_loc, wrap_bubble_dir)
 
-        @:DEALLOCATE(linked_list)
-        @:DEALLOCATE(particle_head)
+        if (allocated(linked_list)) then
+            @:DEALLOCATE(linked_list)
+            @:DEALLOCATE(particle_head)
+        end if
 
         if (lag_params%collision_force) then
             @:DEALLOCATE(self_periodic)

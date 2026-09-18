@@ -69,7 +69,7 @@ print(
             "precision": "double",
             "prim_vars_wrt": "T",
             "E_wrt": "T",
-            "parallel_io": "F",
+            "parallel_io": "T",
             # Left/post-shock state
             "patch_icpp(1)%geometry": 1,
             "patch_icpp(1)%x_centroid": 0.25,
@@ -89,6 +89,7 @@ print(
             # Ideal-gas convention: fluid_pp%gamma = 1 / (gamma_physical - 1).
             "fluid_pp(1)%gamma": 1.0 / (gamma - 1.0),
             "fluid_pp(1)%eos": "ideal_gas",
+            "fluid_pp(1)%cv": 1.0 / (gamma - 1.0),
         }
     )
 )

@@ -4029,6 +4029,38 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         cases.append(define_case_d(stack, "", {}))
         stack.pop()
 
+    def lso_filter_tests():
+        """Regression coverage for plain and IBM-normalized LSO output."""
+        dim2d = next(params for (dim_info, params) in get_dimensions() if dim_info[0] == ["x", "y"])
+        stack.push("2D", dim2d)
+        stack.push("LSO Filter", {"lso_filter": "T", "lso_filter_wrt": "T", "filter_sigma": 0.06, "fd_order": 1, "parallel_io": "F", "cons_vars_wrt": "T"})
+        cases.append(define_case_d(stack, "", {}))
+        cases.append(
+            define_case_d(
+                stack,
+                "IBM Circle",
+                {
+                    "n": 49,
+                    "ib": "T",
+                    "num_ibs": 1,
+                    "patch_ib(1)%geometry": 2,
+                    "patch_ib(1)%x_centroid": 0.5,
+                    "patch_ib(1)%y_centroid": 0.5,
+                    "patch_ib(1)%radius": 0.1,
+                    "patch_ib(1)%slip": "F",
+                    "patch_icpp(1)%vel(1)": 0.001,
+                    "patch_icpp(2)%vel(1)": 0.001,
+                    "patch_icpp(3)%vel(1)": 0.001,
+                    "filter_sigma": 0.1,
+                    "lso_down_sample_factor": 2,
+                },
+            )
+        )
+        stack.pop()
+        stack.pop()
+
+    lso_filter_tests()
+
     kernel_golden_tests()
 
     add_convergence_cases(cases)

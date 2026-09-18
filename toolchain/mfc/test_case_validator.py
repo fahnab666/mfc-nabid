@@ -10,6 +10,8 @@ exercises configurations that are meant to pass).
 import unittest
 
 from .case_validator import CaseConstraintError, CaseValidator
+from .lso_filter import find_min_lso_passes
+from .params.definitions import CONSTRAINTS
 
 # A minimal 1D case that passes simulation validation.
 BASE = {
@@ -153,6 +155,47 @@ class TestImmersedBoundaryFlags(ConstraintTestCase):
 
     def test_not_tripped_when_disabled(self):
         self.assertAccepts(BASE)
+
+
+class TestLsoFilterConstraints(unittest.TestCase):
+    BASE = {
+        "lso_filter": "T",
+        "lso_filter_wrt": "T",
+        "lso_stat_wrt": "T",
+        "filter_sigma": 0.1,
+        "lso_down_sample_factor": 1,
+        "parallel_io": "T",
+        "num_fluids": 1,
+        "fluid_pp(1)%eos": CONSTRAINTS["fluid_pp(1)%eos"]["names"]["ideal_gas"],
+        "fluid_pp(1)%cv": 1.0,
+    }
+
+    @staticmethod
+    def errors(params, stage):
+        validator = CaseValidator(params)
+        validator.check_lso_filter(stage)
+        return validator.errors
+
+    def test_stat_output_requires_filtered_mpi_output(self):
+        params = {**self.BASE, "lso_filter_wrt": "F"}
+        self.assertTrue(any("lso_stat_wrt" in error for error in self.errors(params, "simulation")))
+        params = {**self.BASE, "parallel_io": "F"}
+        self.assertTrue(any("parallel_io" in error for error in self.errors(params, "simulation")))
+        params = {**self.BASE, "lso_R_gas": 0.0}
+        self.assertTrue(any("lso_R_gas" in error for error in self.errors(params, "simulation")))
+        params = {**self.BASE, "fluid_pp(1)%eos": CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"], "fluid_pp(1)%cv": 0.0}
+        self.assertTrue(any("state-dependent EOS" in error for error in self.errors(params, "simulation")))
+
+    def test_post_closure_rejects_general_eos(self):
+        params = {**self.BASE, "lso_closure_wrt": "T", "fluid_pp(1)%eos": CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"]}
+        self.assertTrue(any("calorically perfect" in error for error in self.errors(params, "post_process")))
+
+    def test_supported_closure_is_accepted(self):
+        self.assertEqual(self.errors({**self.BASE, "lso_closure_wrt": "T"}, "post_process"), [])
+
+    def test_filter_design_fails_when_tolerance_is_unreachable(self):
+        with self.assertRaisesRegex(ValueError, "did not reach"):
+            find_min_lso_passes(1.0, conv_tol=0.0, max_passes=1, n_xi=16)
 
 
 class TestBodyForceSpatialSupport(ConstraintTestCase):
