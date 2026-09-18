@@ -313,12 +313,10 @@ contains
         $:END_GPU_PARALLEL_LOOP()
 
         if (num_gps > 0) then
-            @:ALLOCATE(alpha_rho_IP_buf(1:num_fluids, 1:num_gps), alpha_IP_buf(1:num_fluids, 1:num_gps), &
-                       & pres_IP_buf(1:num_gps), c_IP_buf(1:num_gps), vel_IP_buf(1:3, 1:num_gps), &
-                       & r_IP_buf(1:nb, 1:num_gps), v_IP_buf(1:nb, 1:num_gps), pb_IP_buf(1:nb, 1:num_gps), &
-                       & mv_IP_buf(1:nb, 1:num_gps), nmom_IP_buf(1:nb*nmom, 1:num_gps), &
-                       & presb_IP_buf(1:nb*nnode, 1:num_gps), massv_IP_buf(1:nb*nnode, 1:num_gps), &
-                       & Ys_IP_buf(1:num_species, 1:num_gps))
+            @:ALLOCATE(alpha_rho_IP_buf(1:num_fluids, 1:num_gps), alpha_IP_buf(1:num_fluids, 1:num_gps), pres_IP_buf(1:num_gps), &
+                       & c_IP_buf(1:num_gps), vel_IP_buf(1:3, 1:num_gps), r_IP_buf(1:nb, 1:num_gps), v_IP_buf(1:nb, 1:num_gps), &
+                       & pb_IP_buf(1:nb, 1:num_gps), mv_IP_buf(1:nb, 1:num_gps), nmom_IP_buf(1:nb*nmom, 1:num_gps), &
+                       & presb_IP_buf(1:nb*nnode, 1:num_gps), massv_IP_buf(1:nb*nnode, 1:num_gps), Ys_IP_buf(1:num_species, 1:num_gps))
 
             ! Phase 1: interpolate image-point primitives for every ghost point from the pre-correction field only. Kept in its
             ! own kernel (rather than fused with phase 2 below) so the kernel-launch boundary between them guarantees every
@@ -346,27 +344,27 @@ contains
                     call s_interpolate_image_point(q_prim_vf, gp, alpha_rho_IP, alpha_IP, pres_IP, vel_IP, c_IP)
                 end if
 
-                alpha_rho_IP_buf(:, i) = alpha_rho_IP(1:num_fluids)
-                alpha_IP_buf(:, i) = alpha_IP(1:num_fluids)
+                alpha_rho_IP_buf(:,i) = alpha_rho_IP(1:num_fluids)
+                alpha_IP_buf(:,i) = alpha_IP(1:num_fluids)
                 pres_IP_buf(i) = pres_IP
-                vel_IP_buf(:, i) = vel_IP
+                vel_IP_buf(:,i) = vel_IP
                 c_IP_buf(i) = c_IP
-                r_IP_buf(:, i) = r_IP(1:nb)
-                v_IP_buf(:, i) = v_IP(1:nb)
-                pb_IP_buf(:, i) = pb_IP(1:nb)
-                mv_IP_buf(:, i) = mv_IP(1:nb)
-                nmom_IP_buf(:, i) = nmom_IP(1:nb*nmom)
-                presb_IP_buf(:, i) = presb_IP(1:nb*nnode)
-                massv_IP_buf(:, i) = massv_IP(1:nb*nnode)
-                Ys_IP_buf(:, i) = Ys_IP(1:num_species)
+                r_IP_buf(:,i) = r_IP(1:nb)
+                v_IP_buf(:,i) = v_IP(1:nb)
+                pb_IP_buf(:,i) = pb_IP(1:nb)
+                mv_IP_buf(:,i) = mv_IP(1:nb)
+                nmom_IP_buf(:,i) = nmom_IP(1:nb*nmom)
+                presb_IP_buf(:,i) = presb_IP(1:nb*nnode)
+                massv_IP_buf(:,i) = massv_IP(1:nb*nnode)
+                Ys_IP_buf(:,i) = Ys_IP(1:num_species)
             end do
             $:END_GPU_PARALLEL_LOOP()
 
             ! Phase 2: apply the buffered image-point results as ghost-point corrections to q_prim_vf/q_cons_vf.
-            $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, alpha_rho_GP, pres_IP, pres_GP, vel_IP, vel_g, &
-                                & r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, G_K, Gs, gp, &
-                                & radial_vector, j, k, l, q, qv_K, c_IP, nbub, patch_id, Ys_IP, T_IP, mw_IP, e_IP, vel_sum_g, &
-                                & E_ghost, alpha_q, alpha_rho_q, e_q]')
+            $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, alpha_rho_GP, pres_IP, pres_GP, &
+                                & vel_IP, vel_g, r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, &
+                                & G_K, Gs, gp, radial_vector, j, k, l, q, qv_K, c_IP, nbub, patch_id, Ys_IP, T_IP, mw_IP, e_IP, &
+                                & vel_sum_g, E_ghost, alpha_q, alpha_rho_q, e_q]')
             do i = 1, num_gps
                 gp = ghost_points(i)
                 j = gp%loc(1)
@@ -379,19 +377,19 @@ contains
                 if (num_dims == 3) physical_loc(3) = z_cc(l)
 
                 ! Recover the image-point interpolation computed for this ghost point in phase 1
-                alpha_rho_IP(1:num_fluids) = alpha_rho_IP_buf(:, i)
-                alpha_IP(1:num_fluids) = alpha_IP_buf(:, i)
+                alpha_rho_IP(1:num_fluids) = alpha_rho_IP_buf(:,i)
+                alpha_IP(1:num_fluids) = alpha_IP_buf(:,i)
                 pres_IP = pres_IP_buf(i)
-                vel_IP = vel_IP_buf(:, i)
+                vel_IP = vel_IP_buf(:,i)
                 c_IP = c_IP_buf(i)
-                r_IP(1:nb) = r_IP_buf(:, i)
-                v_IP(1:nb) = v_IP_buf(:, i)
-                pb_IP(1:nb) = pb_IP_buf(:, i)
-                mv_IP(1:nb) = mv_IP_buf(:, i)
-                nmom_IP(1:nb*nmom) = nmom_IP_buf(:, i)
-                presb_IP(1:nb*nnode) = presb_IP_buf(:, i)
-                massv_IP(1:nb*nnode) = massv_IP_buf(:, i)
-                Ys_IP(1:num_species) = Ys_IP_buf(:, i)
+                r_IP(1:nb) = r_IP_buf(:,i)
+                v_IP(1:nb) = v_IP_buf(:,i)
+                pb_IP(1:nb) = pb_IP_buf(:,i)
+                mv_IP(1:nb) = mv_IP_buf(:,i)
+                nmom_IP(1:nb*nmom) = nmom_IP_buf(:,i)
+                presb_IP(1:nb*nnode) = presb_IP_buf(:,i)
+                massv_IP(1:nb*nnode) = massv_IP_buf(:,i)
+                Ys_IP(1:num_species) = Ys_IP_buf(:,i)
 
                 ! Injecting (burning) surface: replace the mirrored ghost composition with pure
                 ! injected fuel at the local pressure and the ambient (image-point) temperature.
@@ -541,7 +539,7 @@ contains
             $:END_GPU_PARALLEL_LOOP()
 
             @:DEALLOCATE(alpha_rho_IP_buf, alpha_IP_buf, pres_IP_buf, c_IP_buf, vel_IP_buf, r_IP_buf, v_IP_buf, pb_IP_buf, &
-                        & mv_IP_buf, nmom_IP_buf, presb_IP_buf, massv_IP_buf, Ys_IP_buf)
+                         & mv_IP_buf, nmom_IP_buf, presb_IP_buf, massv_IP_buf, Ys_IP_buf)
         end if
 
     end subroutine s_ibm_correct_state
@@ -1281,8 +1279,8 @@ contains
         $:GPU_PARALLEL_LOOP(private='[i, l]', copyin='[forces, torques]')
         do i = 1, num_ibs
             do l = 1, 3
-                patch_ib(i)%force(l) = forces(i,l)
-                patch_ib(i)%torque(l) = torques(i,l)
+                patch_ib(i)%force(l) = forces(i, l)
+                patch_ib(i)%torque(l) = torques(i, l)
             end do
         end do
         $:END_GPU_PARALLEL_LOOP()
@@ -1494,8 +1492,8 @@ contains
                     do i = 1, num_ibs
                         send_ids(i) = patch_ib(i)%gbl_patch_id
                         do l = 1, 3
-                            send_ft(l,i) = forces(i,l)
-                            send_ft(l + 3,i) = torques(i,l)
+                            send_ft(l, i) = forces(i, l)
+                            send_ft(l + 3, i) = torques(i, l)
                         end do
                     end do
                     $:END_GPU_PARALLEL_LOOP()
@@ -1519,10 +1517,10 @@ contains
                             if (j > 0) then
                                 ! add forces and subtract recv_snap prevent double-counting
                                 do l = 1, 3
-                                    forces(j,l) = forces(j,l) + recv_ft(l,i) - recv_forces_snap(j,l)
-                                    torques(j,l) = torques(j,l) + recv_ft(l + 3,i) - recv_torques_snap(j,l)
-                                    recv_forces_snap(j,l) = recv_ft(l,i)
-                                    recv_torques_snap(j,l) = recv_ft(l + 3,i)
+                                    forces(j, l) = forces(j, l) + recv_ft(l, i) - recv_forces_snap(j, l)
+                                    torques(j, l) = torques(j, l) + recv_ft(l + 3, i) - recv_torques_snap(j, l)
+                                    recv_forces_snap(j, l) = recv_ft(l, i)
+                                    recv_torques_snap(j, l) = recv_ft(l + 3, i)
                                 end do
                             end if
                         end do
@@ -1545,8 +1543,8 @@ contains
                     do i = 1, num_ibs
                         send_ids(i) = patch_ib(i)%gbl_patch_id
                         do l = 1, 3
-                            send_ft(l,i) = forces(i,l)
-                            send_ft(l + 3,i) = torques(i,l)
+                            send_ft(l, i) = forces(i, l)
+                            send_ft(l + 3, i) = torques(i, l)
                         end do
                     end do
                     $:END_GPU_PARALLEL_LOOP()
@@ -1568,8 +1566,8 @@ contains
                             call s_get_neighborhood_idx(recv_ids(i), j)
                             if (j > 0) then
                                 do l = 1, 3
-                                    forces(j,l) = recv_ft(l,i)
-                                    torques(j,l) = recv_ft(l + 3,i)
+                                    forces(j, l) = recv_ft(l, i)
+                                    torques(j, l) = recv_ft(l + 3, i)
                                 end do
                             end if
                         end do
@@ -1709,7 +1707,7 @@ contains
             call MPI_WAITALL(nreqs, requests, MPI_STATUSES_IGNORE, ierr)
 
             ! Unpack all received buffers
-            do nbr_idx = 1, ((2*ib_neighborhood_radius+1)**num_dims) - 1
+            do nbr_idx = 1, ((2*ib_neighborhood_radius + 1)**num_dims) - 1
                 if (recv_neighbor_list(nbr_idx) == MPI_PROC_NULL) cycle
                 unpack_pos = 0
                 call MPI_UNPACK(recv_bufs(:,nbr_idx), buf_size, unpack_pos, recv_count, 1, MPI_INTEGER, MPI_COMM_WORLD, ierr)
@@ -1742,17 +1740,17 @@ contains
         integer, intent(in) :: t_step
 
 #ifdef MFC_MPI
-        integer                                    :: ierr, patch_bytes, i, j, r, unpack_pos, unit_num
-        integer, dimension(0:num_procs - 1)        :: rank_counts, rank_counts_bytes, rank_displs_bytes
-        character(len=1), allocatable              :: send_buf(:), recv_buf(:)
-        type(ib_patch_parameters)                  :: other_patch
-        character(len=64)                           :: fname
-        logical                                     :: mismatch
-        integer, dimension(9)                       :: topo_local
-        integer, dimension(9, 0:num_procs - 1)      :: topo_all
-        integer                                     :: r2, jr, roster_unpack_pos
-        logical                                     :: found
-        type(ib_patch_parameters)                   :: roster_patch
+        integer                               :: ierr, patch_bytes, i, j, r, unpack_pos, unit_num
+        integer, dimension(0:num_procs - 1)   :: rank_counts, rank_counts_bytes, rank_displs_bytes
+        character(len=1), allocatable         :: send_buf(:), recv_buf(:)
+        type(ib_patch_parameters)             :: other_patch
+        character(len=64)                     :: fname
+        logical                               :: mismatch
+        integer, dimension(9)                 :: topo_local
+        integer, dimension(9,0:num_procs - 1) :: topo_all
+        integer                               :: r2, jr, roster_unpack_pos
+        logical                               :: found
+        type(ib_patch_parameters)             :: roster_patch
 
         if (num_procs == 1) return
 
@@ -1801,36 +1799,36 @@ contains
                 do i = 1, num_ibs
                     if (patch_ib(i)%gbl_patch_id /= other_patch%gbl_patch_id) cycle
 
-                    mismatch = (patch_ib(i)%x_centroid /= other_patch%x_centroid) .or. &
-                               & (patch_ib(i)%y_centroid /= other_patch%y_centroid) .or. &
-                               & (patch_ib(i)%z_centroid /= other_patch%z_centroid) .or. &
-                               & any(patch_ib(i)%vel /= other_patch%vel) .or. &
-                               & any(patch_ib(i)%angular_vel /= other_patch%angular_vel) .or. &
-                               & any(patch_ib(i)%angles /= other_patch%angles) .or. &
-                               & any(patch_ib(i)%force /= other_patch%force) .or. &
-                               & any(patch_ib(i)%torque /= other_patch%torque) .or. &
-                               & (patch_ib(i)%step_x_centroid /= other_patch%step_x_centroid) .or. &
-                               & (patch_ib(i)%step_y_centroid /= other_patch%step_y_centroid) .or. &
-                               & (patch_ib(i)%step_z_centroid /= other_patch%step_z_centroid) .or. &
-                               & any(patch_ib(i)%step_vel /= other_patch%step_vel) .or. &
-                               & any(patch_ib(i)%step_angular_vel /= other_patch%step_angular_vel) .or. &
-                               & any(patch_ib(i)%step_angles /= other_patch%step_angles)
+                    mismatch = (patch_ib(i)%x_centroid /= other_patch%x_centroid) &
+                                & .or. (patch_ib(i)%y_centroid /= other_patch%y_centroid) &
+                                & .or. (patch_ib(i)%z_centroid /= other_patch%z_centroid) &
+                                & .or. any(patch_ib(i)%vel /= other_patch%vel) &
+                                & .or. any(patch_ib(i)%angular_vel /= other_patch%angular_vel) &
+                                & .or. any(patch_ib(i)%angles /= other_patch%angles) &
+                                & .or. any(patch_ib(i)%force /= other_patch%force) &
+                                & .or. any(patch_ib(i)%torque /= other_patch%torque) &
+                                & .or. (patch_ib(i)%step_x_centroid /= other_patch%step_x_centroid) &
+                                & .or. (patch_ib(i)%step_y_centroid /= other_patch%step_y_centroid) &
+                                & .or. (patch_ib(i)%step_z_centroid /= other_patch%step_z_centroid) &
+                                & .or. any(patch_ib(i)%step_vel /= other_patch%step_vel) &
+                                & .or. any(patch_ib(i)%step_angular_vel /= other_patch%step_angular_vel) &
+                                & .or. any(patch_ib(i)%step_angles /= other_patch%step_angles)
 
                     if (mismatch) then
                         open (unit=unit_num, file=fname, position='append', action='write', status='unknown')
                         write (unit_num, '(A)') '===================================================================='
                         write (unit_num, '(A,I0,A,ES23.15,A,I0,A,I0,A,I0)') 'DIVERGENCE t_step=', t_step, ' mytime=', mytime, &
-                            & ' gbl_patch_id=', patch_ib(i)%gbl_patch_id, ' rank_A=', proc_rank, ' rank_B=', r
-                        write (unit_num, '(A,I0,A,I0,A,I0,A,I0,A,I0)') 'num_procs_x=', num_procs_x, ' num_procs_y=', &
-                            & num_procs_y, ' num_procs_z=', num_procs_z, ' ib_neighborhood_radius=', ib_neighborhood_radius, &
-                            & ' num_dims=', num_dims
-                        write (unit_num, '(A,I0,A,3I3,A,4I5,A,2I5)') '--- rank ', proc_rank, &
-                            & ' coords=', topo_all(1:3, proc_rank), ' bc_x(beg,end)/bc_y(beg,end)=', &
-                            & topo_all(4:5, proc_rank), topo_all(6:7, proc_rank), ' bc_z(beg,end)=', topo_all(8:9, proc_rank)
+                               & ' gbl_patch_id=', patch_ib(i)%gbl_patch_id, ' rank_A=', proc_rank, ' rank_B=', r
+                        write (unit_num, '(A,I0,A,I0,A,I0,A,I0,A,I0)') 'num_procs_x=', num_procs_x, ' num_procs_y=', num_procs_y, &
+                               & ' num_procs_z=', num_procs_z, ' ib_neighborhood_radius=', ib_neighborhood_radius, ' num_dims=', &
+                               & num_dims
+                        write (unit_num, '(A,I0,A,3I3,A,4I5,A,2I5)') '--- rank ', proc_rank, ' coords=', topo_all(1:3,proc_rank), &
+                               & ' bc_x(beg,end)/bc_y(beg,end)=', topo_all(4:5,proc_rank), topo_all(6:7,proc_rank), &
+                               & ' bc_z(beg,end)=', topo_all(8:9,proc_rank)
                         call s_debug_write_ib_state(unit_num, patch_ib(i))
-                        write (unit_num, '(A,I0,A,3I3,A,4I5,A,2I5)') '--- rank ', r, &
-                            & ' coords=', topo_all(1:3, r), ' bc_x(beg,end)/bc_y(beg,end)=', &
-                            & topo_all(4:5, r), topo_all(6:7, r), ' bc_z(beg,end)=', topo_all(8:9, r)
+                        write (unit_num, '(A,I0,A,3I3,A,4I5,A,2I5)') '--- rank ', r, ' coords=', topo_all(1:3,r), &
+                               & ' bc_x(beg,end)/bc_y(beg,end)=', topo_all(4:5,r), topo_all(6:7,r), ' bc_z(beg,end)=', &
+                               & topo_all(8:9,r)
                         call s_debug_write_ib_state(unit_num, other_patch)
 
                         ! Full roster: every rank's tracking status for this gbl_patch_id, not just the mismatching pair, so a
@@ -1842,13 +1840,13 @@ contains
                                 do jr = 1, num_ibs
                                     if (patch_ib(jr)%gbl_patch_id == patch_ib(i)%gbl_patch_id) then
                                         found = .true.
-                                        write (unit_num, '(A,I0,A,3I3)') 'rank ', r2, ' TRACKS coords=', topo_all(1:3, r2)
+                                        write (unit_num, '(A,I0,A,3I3)') 'rank ', r2, ' TRACKS coords=', topo_all(1:3,r2)
                                         call s_debug_write_ib_state(unit_num, patch_ib(jr))
                                         exit
                                     end if
                                 end do
-                                if (.not. found) write (unit_num, '(A,I0,A,3I3)') 'rank ', r2, &
-                                    & ' NOT TRACKED coords=', topo_all(1:3, r2)
+                                if (.not. found) write (unit_num, '(A,I0,A,3I3)') 'rank ', r2, ' NOT TRACKED coords=', &
+                                    & topo_all(1:3,r2)
                             else
                                 found = .false.
                                 roster_unpack_pos = rank_displs_bytes(r2)
@@ -1857,13 +1855,13 @@ contains
                                                     & MPI_BYTE, MPI_COMM_WORLD, ierr)
                                     if (roster_patch%gbl_patch_id == patch_ib(i)%gbl_patch_id) then
                                         found = .true.
-                                        write (unit_num, '(A,I0,A,3I3)') 'rank ', r2, ' TRACKS coords=', topo_all(1:3, r2)
+                                        write (unit_num, '(A,I0,A,3I3)') 'rank ', r2, ' TRACKS coords=', topo_all(1:3,r2)
                                         call s_debug_write_ib_state(unit_num, roster_patch)
                                         exit
                                     end if
                                 end do
-                                if (.not. found) write (unit_num, '(A,I0,A,3I3)') 'rank ', r2, &
-                                    & ' NOT TRACKED coords=', topo_all(1:3, r2)
+                                if (.not. found) write (unit_num, '(A,I0,A,3I3)') 'rank ', r2, ' NOT TRACKED coords=', &
+                                    & topo_all(1:3,r2)
                             end if
                         end do
 
@@ -1886,7 +1884,7 @@ contains
 
         write (unit_num, '(A,3ES23.15)') '  centroid           = ', patch%x_centroid, patch%y_centroid, patch%z_centroid
         write (unit_num, '(A,3ES23.15)') '  step_centroid      = ', patch%step_x_centroid, patch%step_y_centroid, &
-            & patch%step_z_centroid
+               & patch%step_z_centroid
         write (unit_num, '(A,3ES23.15)') '  vel                = ', patch%vel
         write (unit_num, '(A,3ES23.15)') '  step_vel           = ', patch%step_vel
         write (unit_num, '(A,3ES23.15)') '  angular_vel        = ', patch%angular_vel
@@ -1916,6 +1914,7 @@ contains
         integer :: i
 
         ! reset the lookup
+
         $:GPU_PARALLEL_LOOP(private='[i]')
         do i = 1, num_gbl_ibs
             ib_gbl_idx_lookup(i) = -1
