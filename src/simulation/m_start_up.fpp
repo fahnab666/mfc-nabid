@@ -1464,7 +1464,7 @@ contains
                     num_ibs = num_ibs + 1
                     patch_ib(num_ibs) = patch_ib(i)
                     patch_ib(num_ibs)%gbl_patch_id = i
-                    if (f_local_rank_owns_location(centroid)) then
+                    if (f_local_rank_owns_location(centroid, glb_bounds)) then
                         num_local_ibs = num_local_ibs + 1
                         @:PROHIBIT(num_local_ibs > num_local_ibs_max, &
                                    & "Too many IBs on a single processor rank. Modify case file or increase limit of num_local_ibs_max to resolve.")
@@ -1480,7 +1480,7 @@ contains
                 @:PROHIBIT(num_ibs > num_ib_patches_max_namelist, &
                            & "Local IB count exceeds patch_ib capacity. Increase num_ib_patches_max_namelist.")
                 patch_ib(num_ibs) = particle_cloud_ibs(i)
-                if (f_local_rank_owns_location(centroid)) then
+                if (f_local_rank_owns_location(centroid, glb_bounds)) then
                     num_local_ibs = num_local_ibs + 1
                     @:PROHIBIT(num_local_ibs > num_local_ibs_max, &
                                & "Too many IBs on a single processor rank. Modify case file or increase limit of num_local_ibs_max to resolve.")

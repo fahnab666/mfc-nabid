@@ -208,6 +208,18 @@ PHYSICS_DOCS = {
         "math": r"\mathrm{Re}_1 > 0, \quad \mathrm{Re}_2 > 0",
         "explanation": "Reynolds numbers must be positive. Not supported with model_eqns = 1.",
     },
+    "check_heat_conduction": {
+        "title": "Fourier Heat Conduction",
+        "category": "Numerical Schemes",
+        "math": r"k_i \\geq 0, \\quad k = \\sum_i \\alpha_i k_i",
+        "explanation": (
+            "fluid_pp(i)%k_therm must be non-negative and, when positive, requires fluid_pp(i)%cv > 0 (the "
+            "thermal-equilibrium mixture temperature is undefined without it). Only the stiffened-gas and "
+            "ideal-gas equations of state are supported, and only model_eqns = 2 (5-equation) or 3 (6-equation): "
+            "the mixture conductivity is weighted by the volume fractions those models carry, which model_eqns = 1 "
+            "does not have. Not supported with igr or chemistry (which carries its own mixture-averaged conduction)."
+        ),
+    },
     "check_lso_filter": {
         "title": "LSO Filtering",
         "category": "Numerical Schemes",
