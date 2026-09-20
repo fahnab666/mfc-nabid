@@ -177,6 +177,7 @@ contains
         real(wp)               :: icfl, vcfl, ccfl, tcfl, Rc
         real(wp)               :: mu_frac, mu_frac_max_loc, mu_frac_max_glb  !< Compression as a fraction of the EOS limit
         integer                :: fl                                         !< Fluid loop iterator
+        logical                :: is_fluid_cell                              !< Cell lies outside every immersed boundary
 
         icfl_max_loc = 0._wp
         vcfl_max_loc = 0._wp
@@ -192,7 +193,9 @@ contains
             do k = 0, n
                 do j = 0, m
                     ! Cells inside/on an immersed boundary hold ghost-derived, non-physical state.
-                    if ((.not. ib) .or. (ib_markers%sf(j, k, l) == 0)) then
+                    is_fluid_cell = .true.
+                    if (ib) is_fluid_cell = (ib_markers%sf(j, k, l) == 0)
+                    if (is_fluid_cell) then
                         call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha, alpha_rho, vel, vel_sum, qv, j, &
                                                   & k, l)
 

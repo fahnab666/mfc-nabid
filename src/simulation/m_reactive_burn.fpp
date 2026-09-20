@@ -15,8 +15,7 @@
 module m_reactive_burn
 
     use m_global_parameters
-    use m_variables_conversion, only: s_phase_temperature, s_compute_mixture_coefficients, f_pressure, s_jwl_pt_state, jwl_idx
-    use m_ibm, only: ib_markers
+    use m_variables_conversion, only: s_phase_temperature, s_compute_mixture_coefficients, f_pressure
 
     implicit none
 
@@ -96,10 +95,6 @@ contains
             end do
         end do
         $:END_GPU_PARALLEL_LOOP()
-
-        if (jwl_idx > 0 .and. (prog_burn .or. jwl_afterburn .or. jwl_reactive)) then
-            call s_compute_jwl_sources(rhs_vf, q_cons_vf)
-        end if
 
     end subroutine s_compute_reactive_burn
 
@@ -184,96 +179,5 @@ contains
         $:END_GPU_PARALLEL_LOOP()
 
     end subroutine s_reactive_burn_substep
-
-    !> JWL kinematic program burn, afterburn, and JWL++ sources share this source accumulator. Progress variables are ordinary
-    !! advected equations, so the source implementation remains local to the existing reactive-burn module.
-    subroutine s_compute_jwl_sources(rhs_vf, q_cons_vf)
-
-        type(scalar_field), dimension(sys_size), intent(inout) :: rhs_vf
-        type(scalar_field), dimension(sys_size), intent(in)    :: q_cons_vf
-        integer                                                :: x, iy, z, i, marker
-        real(wp)                                               :: rho, dyn_p, e, yfrac, b, lambda, rate, pres, T, rdet, rfront, qdet
-        real(wp)                                               :: kb, kl
-
-        if (prog_burn .and. pb_width > sgm_eps) then
-            rfront = pb_D_cj*(mytime - pb_t_det)
-            qdet = fluid_pp(jwl_idx)%jwl_Q
-            if (qdet == dflt_real) qdet = fluid_pp(jwl_idx)%jwl_E0/max(fluid_pp(jwl_idx)%jwl_rho0, sgm_eps)
-            if (rfront > 0._wp) then
-                $:GPU_PARALLEL_LOOP(collapse=3, private='[x, iy, z, rdet, marker]', copyin='[rfront, qdet]')
-                do z = 0, p
-                    do iy = 0, n
-                        do x = 0, m
-                            rdet = (x_cc(x) - pb_x_det)**2
-                            if (n > 0) rdet = rdet + (y_cc(iy) - pb_y_det)**2
-                            if (p > 0) rdet = rdet + (z_cc(z) - pb_z_det)**2
-                            marker = 0
-                            if (ib) marker = ib_markers%sf(x, iy, z)
-                            if (marker == 0 .and. sqrt(rdet) < rfront .and. sqrt(rdet) >= rfront - pb_width) then
-                                rhs_vf(eqn_idx%E)%sf(x, iy, z) = rhs_vf(eqn_idx%E)%sf(x, iy, z) + q_cons_vf(jwl_idx)%sf(x, iy, &
-                                       & z)*qdet*pb_D_cj/pb_width
-                            end if
-                        end do
-                    end do
-                end do
-                $:END_GPU_PARALLEL_LOOP()
-            end if
-        end if
-
-        if (.not. (jwl_afterburn .or. jwl_reactive)) return
-        $:GPU_PARALLEL_LOOP(collapse=3, private='[x, iy, z, i, marker, rho, dyn_p, e, yfrac, b, lambda, rate, pres, T, kb, kl]')
-        do z = 0, p
-            do iy = 0, n
-                do x = 0, m
-                    rho = 0._wp
-                    do i = 1, eqn_idx%cont%end
-                        rho = rho + q_cons_vf(i)%sf(x, iy, z)
-                    end do
-                    rho = max(rho, sgm_eps)
-                    yfrac = min(max(q_cons_vf(jwl_idx)%sf(x, iy, z)/rho, 0._wp), 1._wp)
-                    marker = 0
-                    if (ib) marker = ib_markers%sf(x, iy, z)
-                    if (marker == 0) then
-                        if (jwl_afterburn .and. yfrac*(1._wp - yfrac) > sgm_eps) then
-                            b = min(max(q_cons_vf(eqn_idx%abn)%sf(x, iy, z), 0._wp), 1._wp)
-                            if (jwl_ab_model == 1) then
-                                kb = (1._wp - yfrac)/max(jwl_ab_tau, sgm_eps)
-                            else
-                                dyn_p = 0._wp
-                                do i = eqn_idx%mom%beg, eqn_idx%mom%end
-                                    dyn_p = dyn_p + 0.5_wp*q_cons_vf(i)%sf(x, iy, z)**2/rho
-                                end do
-                                e = (q_cons_vf(eqn_idx%E)%sf(x, iy, z) - dyn_p)/rho
-                                lambda = 1._wp
-                                if (jwl_reactive) lambda = q_cons_vf(eqn_idx%rxn)%sf(x, iy, z)
-                                call s_jwl_pt_state(rho, e, yfrac, jwl_idx, pres, T, lambda)
-                                kb = jwl_ab_A*max(pres, 0._wp)**jwl_ab_n*exp(-jwl_ab_theta/max(T, sgm_eps))*(1._wp - yfrac)
-                            end if
-                            rate = (1._wp - b)*(1._wp - exp(-kb*dt))/max(dt, sgm_eps)
-                            rhs_vf(eqn_idx%abn)%sf(x, iy, z) = rhs_vf(eqn_idx%abn)%sf(x, iy, z) + rate
-                            rhs_vf(eqn_idx%E)%sf(x, iy, z) = rhs_vf(eqn_idx%E)%sf(x, iy, z) + q_cons_vf(jwl_idx)%sf(x, iy, &
-                                   & z)*jwl_q_ab*rate
-                        end if
-                        if (jwl_reactive .and. yfrac > sgm_eps) then
-                            lambda = min(max(q_cons_vf(eqn_idx%rxn)%sf(x, iy, z), 0._wp), 1._wp)
-                            dyn_p = 0._wp
-                            do i = eqn_idx%mom%beg, eqn_idx%mom%end
-                                dyn_p = dyn_p + 0.5_wp*q_cons_vf(i)%sf(x, iy, z)**2/rho
-                            end do
-                            e = (q_cons_vf(eqn_idx%E)%sf(x, iy, z) - dyn_p)/rho
-                            call s_jwl_pt_state(rho, e, yfrac, jwl_idx, pres, T, lambda)
-                            kl = jwl_G*max(pres, 0._wp)**jwl_b_exp
-                            rate = (1._wp - lambda)*(1._wp - exp(-kl*dt))/max(dt, sgm_eps)
-                            rhs_vf(eqn_idx%rxn)%sf(x, iy, z) = rhs_vf(eqn_idx%rxn)%sf(x, iy, z) + rate
-                            rhs_vf(eqn_idx%E)%sf(x, iy, z) = rhs_vf(eqn_idx%E)%sf(x, iy, z) + q_cons_vf(jwl_idx)%sf(x, iy, &
-                                   & z)*fluid_pp(jwl_idx)%jwl_Q*rate
-                        end if
-                    end if
-                end do
-            end do
-        end do
-        $:END_GPU_PARALLEL_LOOP()
-
-    end subroutine s_compute_jwl_sources
 
 end module m_reactive_burn
