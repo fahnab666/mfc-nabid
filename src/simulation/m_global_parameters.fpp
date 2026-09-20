@@ -581,7 +581,6 @@ contains
         lso2_a_z = 0.0_wp
         lso_R_gas = 287.0_wp
         lso_mu = 0.0_wp
-        lso_conductivity = 0.0_wp
         lso_stat_phi_p_beg = 0; lso_stat_phi_p_end = 0
         lso_stat_rho_beg = 0; lso_stat_rho_end = 0
         lso_stat_rhoke_beg = 0; lso_stat_rhoke_end = 0

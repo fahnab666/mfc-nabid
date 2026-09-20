@@ -63,7 +63,7 @@ print(
             "filter_sigma": 4.0 * dx,
             "lso_R_gas": 1.0,
             "lso_mu": 0.0,
-            "lso_conductivity": 0.0,
+            "fluid_pp(1)%k_therm": 0.0,
             # Output
             "format": "silo",
             "precision": "double",

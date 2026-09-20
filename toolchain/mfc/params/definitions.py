@@ -242,7 +242,6 @@ _SIMPLE_DESCS = {
     "lso_stat_wrt": "Write LSO statistical products",
     "lso_R_gas": "Specific gas constant used by LSO statistical products",
     "lso_mu": "Dynamic viscosity used by LSO statistical products",
-    "lso_conductivity": "Thermal conductivity used by LSO statistical products",
     "lso_filter_sigma_in": "Gaussian sigma already applied to post-process input",
     "lso_filter_sigma_target": "Target Gaussian sigma for post-process widening",
     "filter_sigma": "Target Gaussian filter standard deviation (physical units, same as domain coordinates)",
@@ -1063,7 +1062,6 @@ def _load():
     _r("lso_stat_wrt", LOG, {"filter"})
     _r("lso_R_gas", REAL, {"filter"})
     _r("lso_mu", REAL, {"filter"})
-    _r("lso_conductivity", REAL, {"filter"})
     for n in ["lso_n_passes_x", "lso_n_passes_y", "lso_n_passes_z"]:
         _r(n, INT, {"filter"})
     for n in ["lso_a_x", "lso_a_y", "lso_a_z"]:
@@ -1804,7 +1802,6 @@ _nv(
     "lso_stat_wrt",
     "lso_R_gas",
     "lso_mu",
-    "lso_conductivity",
     "lso_pp_filter",
     "lso_closure_wrt",
     "lso_n_passes_x",
@@ -1835,7 +1832,6 @@ _decl(
     "lso_stat_wrt",
     "lso_R_gas",
     "lso_mu",
-    "lso_conductivity",
     "lso_pp_filter",
     "lso_closure_wrt",
     "lso_n_passes_x",

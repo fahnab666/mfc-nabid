@@ -75,7 +75,6 @@ SIM_GPU_DECL_VARS = {
     "jwl_reactive",
     "low_Mach",
     "lso_R_gas",
-    "lso_conductivity",
     "lso_mu",
     "lso_n_passes_x",
     "lso_n_passes_y",

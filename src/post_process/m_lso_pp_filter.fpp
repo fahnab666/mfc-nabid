@@ -430,7 +430,7 @@ contains
                     ! R_lam_sg (stored q = -lambda grad T; resolved uses the same sign)
                     do a = 1, nd
                         q_cls_vf(i_rlam + a)%sf(j, k, l) = real(real(q_stat_vf(lso_stat_q_beg + a - 1)%sf(j, k, l), &
-                                 & wp)/wloc - (-lso_conductivity*dT(a)), stp)
+                                 & wp)/wloc - (-fluid_k_therm(1)*dT(a)), stp)
                     end do
                     ! T_tilde, u_favre
                     q_cls_vf(i_tt + 1)%sf(j, k, l) = uT_vf(nd + 1)%sf(j, k, l)
@@ -666,7 +666,7 @@ contains
                     dTdx = (T_jp - T_jm)/ddx
 
                     tau11 = lso_mu*(2._wp*du1dx)
-                    q1 = -lso_conductivity*dTdx
+                    q1 = -fluid_k_therm(1)*dTdx
 
                     u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, 0, 0), wp)/rho_loc
 
@@ -718,8 +718,8 @@ contains
                         tau11 = lso_mu*(2._wp*du1dx - (2._wp/3._wp)*div_u)
                         tau12 = lso_mu*(du1dy + du2dx)
                         tau22 = lso_mu*(2._wp*du2dy - (2._wp/3._wp)*div_u)
-                        q1 = -lso_conductivity*dTdx
-                        q2 = -lso_conductivity*dTdy
+                        q1 = -fluid_k_therm(1)*dTdx
+                        q2 = -fluid_k_therm(1)*dTdy
 
                         u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, 0), wp)/rho_loc
                         u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, 0), wp)/rho_loc
@@ -806,9 +806,9 @@ contains
                             tau22 = lso_mu*(2._wp*du2dy - (2._wp/3._wp)*div_u)
                             tau23 = lso_mu*(du2dz + du3dy)
                             tau33 = lso_mu*(2._wp*du3dz - (2._wp/3._wp)*div_u)
-                            q1 = -lso_conductivity*dTdx
-                            q2 = -lso_conductivity*dTdy
-                            q3 = -lso_conductivity*dTdz
+                            q1 = -fluid_k_therm(1)*dTdx
+                            q2 = -fluid_k_therm(1)*dTdy
+                            q3 = -fluid_k_therm(1)*dTdz
 
                             u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l), wp)/rho_loc
                             u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l), wp)/rho_loc

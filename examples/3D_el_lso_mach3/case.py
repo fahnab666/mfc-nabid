@@ -90,7 +90,7 @@ case = {
     "filter_sigma": D / 4.0,
     "lso_R_gas": 287.05,
     "lso_mu": 1.84e-5,
-    "lso_conductivity": 0.0262,
+    "fluid_pp(1)%k_therm": 0.0262,
     "format": "silo",
     "precision": "double",
     "prim_vars_wrt": "T",

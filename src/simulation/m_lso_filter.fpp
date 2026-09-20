@@ -1218,7 +1218,7 @@ contains
                             dTdx = (T_jp - T_jm)/dx
 
                             tau11 = lso_mu*(2._wp*du1dx)
-                            q1 = -lso_conductivity*dTdx
+                            q1 = -fluid_k_therm(1)*dTdx
 
                             u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, 0, 0), wp)/rho_loc
 
@@ -1272,8 +1272,8 @@ contains
                             tau11 = lso_mu*(2._wp*du1dx - (2._wp/3._wp)*div_u)
                             tau12 = lso_mu*(du1dy + du2dx)
                             tau22 = lso_mu*(2._wp*du2dy - (2._wp/3._wp)*div_u)
-                            q1 = -lso_conductivity*dTdx
-                            q2 = -lso_conductivity*dTdy
+                            q1 = -fluid_k_therm(1)*dTdx
+                            q2 = -fluid_k_therm(1)*dTdy
 
                             u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, 0), wp)/rho_loc
                             u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, 0), wp)/rho_loc
@@ -1358,9 +1358,9 @@ contains
                             tau22 = lso_mu*(2._wp*du2dy - (2._wp/3._wp)*div_u)
                             tau23 = lso_mu*(du2dz + du3dy)
                             tau33 = lso_mu*(2._wp*du3dz - (2._wp/3._wp)*div_u)
-                            q1 = -lso_conductivity*dTdx
-                            q2 = -lso_conductivity*dTdy
-                            q3 = -lso_conductivity*dTdz
+                            q1 = -fluid_k_therm(1)*dTdx
+                            q2 = -fluid_k_therm(1)*dTdy
+                            q3 = -fluid_k_therm(1)*dTdz
 
                             u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l), wp)/rho_loc
                             u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l), wp)/rho_loc
