@@ -91,7 +91,8 @@ contains
         write (3, '(A)') 'Description: Stability information at ' // 'each time-step of the simulation. This'
         write (3, '(13X,A)') 'data is composed of the inviscid ' // 'Courant-Friedrichs-Lewy (ICFL)'
         write (3, '(13X,A)') 'number, the viscous CFL (VCFL) number, ' // 'the capillary CFL (CCFL)'
-        write (3, '(13X,A)') 'number and the cell Reynolds (Rc) ' // 'number. Please note that only'
+        write (3, '(13X,A)') 'number, the thermal diffusion CFL (TCFL) ' // 'number, and the cell Reynolds (Rc)'
+        write (3, '(13X,A)') 'number. Please note that only'
         write (3, '(13X,A)') 'those stability conditions pertinent ' // 'to the physics included in'
         write (3, '(13X,A)') 'the current computation are displayed.'
         if (hypoelasticity) then
@@ -109,6 +110,10 @@ contains
 
         if (surface_tension) then
             write (3, '(13X,A10)', advance="no") trim('CCFL Max')
+        end if
+
+        if (heat_conduction) then
+            write (3, '(13X,A10)', advance="no") trim('TCFL Max')
         end if
 
         if (viscous) then
@@ -131,6 +136,12 @@ contains
         character(LEN=path_len + 3*name_len) :: file_path  !< Relative path to the probe data file in the case directory
         integer                              :: i          !< Generic loop iterator
         logical                              :: file_exist
+        logical                              :: fresh_start
+
+        ! A run continues from a checkpoint when t_step_start > 0, or under cfl_dt when n_start > 0 (t_step_start stays
+        ! at its default there); pick the criterion by mode -- OR-ing them made every cfl_dt run look fresh.
+
+        fresh_start = merge(n_start == 0, t_step_start == 0, cfl_dt)
 
         do i = 1, num_probes
             write (file_path, '(A,I0,A)') '/D/probe', i, '_prim.dat'
@@ -138,10 +149,14 @@ contains
 
             inquire (file=trim(file_path), exist=file_exist)
 
-            if (file_exist) then
+            ! Append only when continuing a run. A fresh start that appends splices the previous run's rows
+            ! onto this one's, and nothing in the file marks the join: the time column simply resets partway
+            ! down, and the two runs need not even share a grid. Readers see one monotonic series and are
+            ! silently wrong.
+            if (file_exist .and. .not. fresh_start) then
                 open (i + 30, FILE=trim(file_path), form='formatted', STATUS='old', POSITION='append')
             else
-                open (i + 30, FILE=trim(file_path), form='formatted', STATUS='unknown')
+                open (i + 30, FILE=trim(file_path), form='formatted', STATUS='replace')
             end if
         end do
 
@@ -177,6 +192,8 @@ contains
         real(wp)               :: icfl, vcfl, ccfl, tcfl, Rc
         real(wp)               :: mu_frac, mu_frac_max_loc, mu_frac_max_glb  !< Compression as a fraction of the EOS limit
         integer                :: fl                                         !< Fluid loop iterator
+        real(wp), dimension(4) :: stab_max_loc, stab_max_glb
+        real(wp), dimension(1) :: stab_min_loc, stab_min_glb
         logical                :: is_fluid_cell                              !< Cell lies outside every immersed boundary
 
         icfl_max_loc = 0._wp
@@ -242,8 +259,15 @@ contains
         ! end: Computing Stability Criteria at Current Time-step
 
         if (num_procs > 1) then
-            call s_mpi_reduce_stability_criteria_extrema(icfl_max_loc, vcfl_max_loc, Rc_min_loc, n_el_bubs_loc, icfl_max_glb, &
-                & vcfl_max_glb, Rc_min_glb, n_el_bubs_glb, ccfl_max_loc, ccfl_max_glb, tcfl_max_loc, tcfl_max_glb)
+            stab_max_loc = (/icfl_max_loc, vcfl_max_loc, ccfl_max_loc, tcfl_max_loc/)
+            stab_min_loc = (/Rc_min_loc/)
+            call s_mpi_reduce_stability_criteria_extrema(stab_max_loc, stab_min_loc, n_el_bubs_loc, stab_max_glb, stab_min_glb, &
+                & n_el_bubs_glb)
+            icfl_max_glb = stab_max_glb(1)
+            vcfl_max_glb = stab_max_glb(2)
+            ccfl_max_glb = stab_max_glb(3)
+            tcfl_max_glb = stab_max_glb(4)
+            Rc_min_glb = stab_min_glb(1)
         else
             icfl_max_glb = icfl_max_loc
             if (viscous) vcfl_max_glb = vcfl_max_loc

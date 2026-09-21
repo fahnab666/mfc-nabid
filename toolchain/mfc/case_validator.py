@@ -1042,7 +1042,9 @@ class CaseValidator:
                 self.prohibit(True, f"patch_icpp({i})%model_id is set but geometry ({geometry}) is not an STL model (21)")
 
     def _eos_coefficient_args(self, i, family):
-        """Return fluid i's coefficient arguments in the registry-defined order."""
+        """Fluid i's arguments to family.coefficients_fn, after rho, in registry order. An optional
+        parameter defaults to 0.0, matching the Fortran `case default`; a required one is passed
+        as-is so a missing value raises TypeError and the parameter rules report it."""
         optional = {suffix for suffix, _math in family.optional}
         args = []
         for suffix in family.coefficients_args:
@@ -1053,13 +1055,13 @@ class CaseValidator:
     def _check_initial_states_inside_eos(self, num_fluids):
         """Every patch must start each state-dependent fluid where rho e > 0 and c^2 > 0; the solver has no clamp."""
         num_patches = self.get("num_patches", 0) or 0
-        families = {family.value: family for family in EOS_FAMILIES if family.state_dependent}
+        families = {f.value: f for f in EOS_FAMILIES if f.state_dependent}
         for i in range(1, num_fluids + 1):
             family = families.get(self.get(f"fluid_pp({i})%eos"))
             if family is None:
                 continue
-            coefficient_fn = getattr(eos, family.coefficients_fn)
-            coefficients = lambda rho, fn=coefficient_fn, f=family: fn(rho, *self._eos_coefficient_args(i, f))  # noqa: E731
+            fn = getattr(eos, family.coefficients_fn)
+            coefficients = lambda r, f=family, fn=fn: fn(r, *self._eos_coefficient_args(i, f))  # noqa: E731
             for j in range(1, num_patches + 1):
                 ar, a, p = (self.get(f"patch_icpp({j})%alpha_rho({i})"), self.get(f"patch_icpp({j})%alpha({i})"), self.get(f"patch_icpp({j})%pres"))
                 if not all(isinstance(x, (int, float)) for x in (ar, a, p)) or a <= 0:
@@ -1085,9 +1087,10 @@ class CaseValidator:
             return
         eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
         eos_ideal_gas = eos_names["ideal_gas"]
-        families = {family.value: (family.prefix, tuple(name for name, _ in family.required)) for family in EOS_FAMILIES if family.state_dependent}
-        optional = {family.prefix: tuple(name for name, _ in family.optional) for family in EOS_FAMILIES if family.state_dependent}
-        state_dependent_names = ", ".join(family.suffix for family in EOS_FAMILIES if family.state_dependent)
+        # The state-dependent families: selector value -> (parameter prefix, its required parameters)
+        families = {f.value: (f.prefix, tuple(n for n, _ in f.required)) for f in EOS_FAMILIES if f.state_dependent}
+        optional = {f.prefix: tuple(n for n, _ in f.optional) for f in EOS_FAMILIES if f.state_dependent}
+        state_dependent_names = ", ".join(f.suffix for f in EOS_FAMILIES if f.state_dependent)
         bub_fac = 1 if self.get("bubbles_euler", "F") == "T" else 0
         state_dependent = {}
         for i in range(1, num_fluids + 1 + bub_fac):
@@ -2279,8 +2282,8 @@ class CaseValidator:
         # differing only in qv; violating these silently corrupts the mass/energy balance.
         self.prohibit(self.get("num_fluids") != 2, "reactive_burn requires num_fluids = 2 (reactant then product) to be set")
         # A state-dependent family carries its own curve; the shared-EOS check is a stiffened-gas one.
-        names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
-        state_dependent = any(self.get(f"fluid_pp({k})%eos") in (names["mie_gruneisen"], names["jwl"], names["vinet"]) for k in (1, 2))
+        state_dependent_values = {f.value for f in EOS_FAMILIES if f.state_dependent}
+        state_dependent = any(self.get(f"fluid_pp({k})%eos") in state_dependent_values for k in (1, 2))
         for prop in () if state_dependent else ("gamma", "pi_inf"):
             v1 = self.get(f"fluid_pp(1)%{prop}")
             v2 = self.get(f"fluid_pp(2)%{prop}")

@@ -34,8 +34,8 @@ QPVF_IDX_VARS = {
     "Bz": "eqn_idx%B%end",
 }
 
-# EOS families with density-dependent coefficients; this is baked into the
-# case-optimization configuration below.
+# fluid_pp(i)%eos values whose coefficients depend on the local state; derived so a new
+# family never leaves any_state_dependent_eos stale (see EOS_FAMILIES).
 EOS_STATE_DEPENDENT_VALUES = frozenset(f.value for f in EOS_FAMILIES if f.state_dependent)
 
 MIBM_ANALYTIC_VARS = ["vel(1)", "vel(2)", "vel(3)", "angular_vel(1)", "angular_vel(2)", "angular_vel(3)"]
