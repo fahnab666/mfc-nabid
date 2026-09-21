@@ -190,12 +190,35 @@ class TestLsoFilterConstraints(unittest.TestCase):
         params = {**self.BASE, "lso_closure_wrt": "T", "fluid_pp(1)%eos": CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"]}
         self.assertTrue(any("calorically perfect" in error for error in self.errors(params, "post_process")))
 
+    def test_statistics_reject_mixture_momentum_over_partial_density(self):
+        for stage in ("simulation", "post_process"):
+            params = {**self.BASE, "num_fluids": 2}
+            self.assertTrue(any("LSO statistics currently require num_fluids = 1" in error for error in self.errors(params, stage)))
+            self.assertEqual(self.errors({**params, "lso_stat_wrt": "F"}, stage), [])
+
     def test_supported_closure_is_accepted(self):
         self.assertEqual(self.errors({**self.BASE, "lso_closure_wrt": "T"}, "post_process"), [])
+
+    def test_statistics_reject_unsupported_el_particle_products(self):
+        params = {**self.BASE, "particles_lagrange": "T"}
+        for stage in ("pre_process", "simulation", "post_process"):
+            self.assertTrue(any("not particles_lagrange" in error for error in self.errors(params, stage)))
+            self.assertEqual(self.errors({**params, "lso_stat_wrt": "F"}, stage), [])
+
+    def test_ib_post_filter_requires_parallel_io_for_saved_mask(self):
+        params = {**self.BASE, "ib": "T", "lso_pp_filter": "T", "parallel_io": "F"}
+        self.assertTrue(any("IBM LSO post-process filtering requires parallel_io" in error for error in self.errors(params, "post_process")))
+        self.assertEqual(self.errors({**params, "parallel_io": "T"}, "post_process"), [])
 
     def test_filter_design_fails_when_tolerance_is_unreachable(self):
         with self.assertRaisesRegex(ValueError, "did not reach"):
             find_min_lso_passes(1.0, conv_tol=0.0, max_passes=1, n_xi=16)
+
+    def test_downsampled_reader_rejects_unsupported_layouts(self):
+        base = {**self.BASE, "m": 31, "lso_down_sample_factor": 2, "lso_stat_wrt": "F"}
+        self.assertEqual(self.errors(base, "post_process"), [])
+        for extra in ({"parallel_io": "F"}, {"file_per_process": "T"}, {"down_sample": "T"}, {"bc_x%beg": -17}, {"num_bc_patches": 1}, {"m": 1}):
+            self.assertTrue(any("Downsampled LSO" in e or "legacy down_sample" in e for e in self.errors({**base, **extra}, "post_process")))
 
 
 class TestBodyForceSpatialSupport(ConstraintTestCase):
@@ -484,6 +507,24 @@ class TestMieGruneisenSelector(ConstraintTestCase):
         self.assertRejects({**BASE, **self.MG, "T_wrt": "T", "fluid_pp(1)%cv": 400.0}, "needs fluid_pp(1)%mg_t0 > 0")
         self.assertAccepts({**BASE, **self.MG, "T_wrt": "T", "fluid_pp(1)%cv": 400.0, "fluid_pp(1)%mg_t0": 300.0})
 
+    def test_dynamic_ibm_needs_complete_temperature_eos(self):
+        ib = {
+            **BASE_2D,
+            **self.MG,
+            "ib": "T",
+            "num_ibs": 1,
+            "fd_order": 2,
+            "patch_ib(1)%geometry": 2,
+            "patch_ib(1)%x_centroid": 0.5,
+            "patch_ib(1)%y_centroid": 0.5,
+            "patch_ib(1)%radius": 0.1,
+            "patch_ib(1)%moving_ibm": 2,
+            "patch_ib(1)%mass": 1.0,
+        }
+        self.assertRejects(ib, "temperature of fluid 1 needs fluid_pp(1)%cv > 0")
+        self.assertRejects({**ib, "fluid_pp(1)%cv": 400.0}, "needs fluid_pp(1)%mg_t0 > 0")
+        self.assertAccepts({**ib, "fluid_pp(1)%cv": 400.0, "fluid_pp(1)%mg_t0": 300.0})
+
     def test_zero_density_is_singular(self):
         self.assertRejects({**BASE, **self.MG, "patch_icpp(1)%alpha_rho(1)": 0.0, "patch_icpp(1)%alpha(1)": 1.0}, "outside its equation of state")
 
@@ -572,6 +613,18 @@ class TestVinetSelector(ConstraintTestCase):
         self.assertRejects({**BASE, **self.VINET, "fluid_pp(1)%mg_s2": 0.1}, "fluid_pp(1)%mg_* are only read when")
         for k in ("gamma", "pi_inf"):
             self.assertRejects({**BASE, **self.VINET, f"fluid_pp(1)%{k}": 1.0}, f"fluid_pp(1)%{k} is not read with eos = 'vinet'")
+
+    def test_variable_gruneisen_is_read_by_the_initial_state_check(self):
+        """vinet_gruneisen_a must reach _check_initial_states_inside_eos, not just eos.vinet_coefficients.
+
+        At rho = rho0 (mu = 0, as test_accepts_and_requires uses) gruneisen_a has no effect by
+        construction, so that test cannot catch a dropped gruneisen_a in the validator's dispatch.
+        Here mu = 0.2 != 0 and the Gamma_G = gruneisen0 + gruneisen_a*mu term flips the verdict:
+        with gruneisen_a wired in this state is accepted; with it dropped (gruneisen_a treated as 0,
+        the pre-fix behaviour) rho e goes negative and the case is rejected.
+        """
+        case = {**BASE, **self.VINET, "patch_icpp(1)%alpha_rho(1)": 1.2 * self.VINET["fluid_pp(1)%vinet_rho0"], "fluid_pp(1)%vinet_gruneisen_a": -20.0}
+        self.assertAccepts(case)
 
 
 class TestGrcbcOutflowTargets(ConstraintTestCase):

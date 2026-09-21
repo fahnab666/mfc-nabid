@@ -17,6 +17,7 @@ module m_start_up
     use m_boundary_common
     use m_boundary_io
     use m_variables_conversion
+    use m_eos
     use m_data_input
     use m_data_output
     use m_derived_variables
@@ -87,6 +88,13 @@ contains
                 p = int((p + 1)/3) - 1
             end if
 
+            if (lso_filter_wrt .and. lso_down_sample_factor > 1) then
+                m = (m + 1)/lso_down_sample_factor - 1
+                if (n > 0) n = (n + 1)/lso_down_sample_factor - 1
+                if (p > 0) p = (p + 1)/lso_down_sample_factor - 1
+                call s_update_cell_bounds(cells_bounds, m, n, p)
+            end if
+
             m_glb = m
             n_glb = n
             p_glb = p
@@ -94,6 +102,11 @@ contains
             nGlobal = int(m_glb + 1, kind=8)*int(n_glb + 1, kind=8)*int(p_glb + 1, kind=8)
 
             if (cfl_adap_dt .or. cfl_const_dt) cfl_dt = .true.
+            if (cfl_dt) then
+                ! Post-process filenames and marker offsets use save indices in CFL mode.
+                t_step_start = n_start
+                t_step_save = 1
+            end if
 
             if (any((/bc_x%beg, bc_x%end, bc_y%beg, bc_y%end, bc_z%beg, bc_z%end/) == -17) .or. num_bc_patches > 0) then
                 bc_io = .true.
@@ -159,9 +172,7 @@ contains
         if (t_step > t_step_start .and. lso_stat_wrt .and. n_lso_stat > 0 .and. (lso_filter_wrt .or. .not. lso_pp_filter)) then
             call s_read_lso_fields(q_lso_pp_stat_vf, n_lso_stat, t_step, 'lso_stat_')
         end if
-        if (t_step > t_step_start .and. lso_pp_filter .and. ib) then
-            call s_lso_pp_mask_from_ib(q_lso_pp_w_vf)
-        else if (t_step > t_step_start .and. ib .and. lso_closure_wrt) then
+        if (t_step > t_step_start .and. ib .and. (lso_pp_filter .or. lso_closure_wrt)) then
             call s_read_lso_fields(q_lso_pp_w_vf, 1, t_step, 'lso_mask_')
         end if
 
@@ -909,6 +920,7 @@ contains
             call s_initialize_mpi_common_module(exchange_all_chemistry_temperatures_in=.true., use_rdma_transport_in=.false.)
         end if
         call s_initialize_boundary_common_module()
+        call s_initialize_eos_module()
         call s_initialize_variables_conversion_module(store_mixture_fields=.true., lagrange_beta_index=beta_idx)
         call s_initialize_data_input_module()
         call s_initialize_lso_pp_filter_module()
@@ -1135,6 +1147,7 @@ contains
         call s_finalize_data_input_module()
         call s_finalize_lso_pp_filter_module()
         call s_finalize_variables_conversion_module()
+        call s_finalize_eos_module()
         if (num_procs > 1) then
             call s_finalize_mpi_proxy_module()
             call s_finalize_mpi_common_module()

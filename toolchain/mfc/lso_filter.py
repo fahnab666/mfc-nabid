@@ -28,6 +28,10 @@ import numpy as np
 
 # ── tuneable constants (must match Fortran side) ──────────────────────────────
 LSO_MAX_PASSES: int = 60  # upper bound on filter passes; matches lso_max_passes in Fortran
+# A single cascade becomes poorly conditioned for very wide targets; split those
+# targets into two equal-variance cascades on the same grid.
+PP_SPLIT_CELLS: float = 30.0
+PP_STAGE_MAX_CELLS: float = 40.0
 _CONV_TOL: float = 1e-3  # default frequency-domain L2 convergence tolerance
 _N_XI: int = 600  # quadrature points over [0, pi]
 # ─────────────────────────────────────────────────────────────────────────────

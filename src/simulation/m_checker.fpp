@@ -15,9 +15,25 @@ module m_checker
 
     implicit none
 
-    private; public :: s_check_inputs
+    private; public :: s_check_inputs, s_check_lso_decomposition
 
 contains
+
+    !> Coarse file views require each rank to own whole, globally aligned stride blocks.
+    impure subroutine s_check_lso_decomposition()
+
+        integer               :: i
+        integer, dimension(3) :: cells
+
+        if (.not. lso_filter_wrt .or. lso_down_sample_factor <= 1) return
+        cells = [m + 1, n + 1, p + 1]
+        do i = 1, num_dims
+            ! lint: runtime-check local extents exist only after MPI decomposition; divisible extents also align rank starts
+            @:PROHIBIT(mod(cells(i), lso_down_sample_factor) /= 0, &
+                       & "LSO downsampling requires per-rank cells divisible by lso_down_sample_factor; change grid or rank count")
+        end do
+
+    end subroutine s_check_lso_decomposition
 
     !> Checks compatibility of parameters in the input file. Used by the simulation stage
     impure subroutine s_check_inputs
@@ -36,26 +52,6 @@ contains
 
         if (ib .and. chemistry) then
             call s_check_inputs_ib_injection
-        end if
-
-        if (particles_lagrange) then
-            @:PROHIBIT(bubbles_lagrange, "particles_lagrange and bubbles_lagrange cannot both be enabled")
-            @:PROHIBIT(n == 0, "particles_lagrange requires at least 2D (n > 0)")
-            @:PROHIBIT(lag_params%nParticles_glb < 1, "lag_params%nParticles_glb must be positive")
-            @:PROHIBIT(lag_params%solver_approach /= 1 .and. lag_params%solver_approach /= 2, &
-                       & "lag_params%solver_approach must be 1 (one-way) or 2 (two-way)")
-            @:PROHIBIT(len_trim(lag_params%input_path) == 0, "lag_params%input_path must name a particle input file")
-            @:PROHIBIT(particle_pp%rho0ref_particle <= 0._wp, "particle_pp%rho0ref_particle must be positive")
-        end if
-
-        if (lso_filter .or. lso_filter_wrt .or. lso_stat_wrt) then
-            @:PROHIBIT(lso_filter_wrt .and. .not. lso_filter, "lso_filter_wrt requires lso_filter")
-            @:PROHIBIT(lso_stat_wrt .and. .not. lso_filter_wrt, "lso_stat_wrt requires lso_filter_wrt")
-            @:PROHIBIT(lso_stat_wrt .and. .not. parallel_io, "LSO statistical output requires parallel_io")
-            @:PROHIBIT(lso_stat_wrt .and. lso_R_gas <= 0._wp, "LSO statistics require lso_R_gas > 0")
-            @:PROHIBIT(lso_stat_wrt .and. .not. chemistry .and. fluid_pp(1)%eos /= eos_stiffened_gas &
-                       & .and. fluid_pp(1)%eos /= eos_ideal_gas .and. fluid_pp(1)%cv <= 0._wp, &
-                       & "LSO statistics with a state-dependent EOS require fluid_pp(1)%cv > 0")
         end if
 
     end subroutine s_check_inputs

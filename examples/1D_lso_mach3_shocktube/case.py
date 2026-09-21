@@ -61,6 +61,7 @@ print(
             "lso_stat_wrt": "T",
             "lso_closure_wrt": "T",
             "filter_sigma": 4.0 * dx,
+            "lso_filter_sigma_target": 8.0 * dx,
             "lso_R_gas": 1.0,
             "lso_mu": 0.0,
             "fluid_pp(1)%k_therm": 0.0,

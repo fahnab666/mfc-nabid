@@ -6,8 +6,9 @@
 
 !> @brief Post_process-side additional Gaussian filter.
 !!
-!! Applies a second 9-point FIR pass with sigma_2 = sqrt(sigma_target^2 - sigma_in^2)
-!! using the lso_pp_a_* weights from the Python BCD design.
+!! Applies 9-point FIR passes with total width sigma_2 = sqrt(sigma_target^2 - sigma_in^2)
+!! using the lso_pp_a_* weights from the Python BCD design. Wide targets use the stage-2
+!! lso_pp2_a_* weights as a second equal-variance cascade.
 !!
 !! IB-aware normalization uses the simulation-filtered mask lso_mask_<t>.dat, so that
 !! filter2(w*qhat1)/filter2(w) = filter2(filter1(m*q))/filter2(filter1(m)).
@@ -17,8 +18,8 @@ module m_lso_pp_filter
     use m_global_parameters
     use m_mpi_common
     use m_constants
-    use m_variables_conversion, only: gammas
-    use m_data_input, only: ib_markers
+    use m_variables_conversion, only: gammas, pi_infs, qvs
+    use m_eos, only: f_isentrope_pressure
 
     implicit none
 
@@ -26,7 +27,7 @@ module m_lso_pp_filter
 
     public :: s_initialize_lso_pp_filter_module, s_finalize_lso_pp_filter_module, s_apply_lso_pp_filter, &
         & s_compute_lso_pp_stat_fields, s_filter_lso_pp_stat_fields, q_lso_pp_stat_vf, s_apply_lso_pp_filter_masked, &
-        & s_lso_pp_mask_from_ib, s_compute_lso_closure_fields, f_lso_n_closure, q_lso_pp_w_vf
+        & s_compute_lso_closure_fields, f_lso_n_closure, q_lso_pp_w_vf
 
     ! Floor on the normalized-convolution denominator filter(w).
     real(wp), parameter :: lso_w_floor = 1.0e-3_wp
@@ -49,7 +50,7 @@ contains
 
         if (lso_pp_filter) allocate (lso_pp_tmp(0:m,0:n,0:p))
 
-        if (lso_pp_filter .and. (ib .or. lso_closure_wrt)) then
+        if (lso_pp_filter .or. lso_closure_wrt) then
             allocate (q_lso_pp_w_vf(1)%sf(idwbuff(1)%beg:idwbuff(1)%end,idwbuff(2)%beg:idwbuff(2)%end, &
                       & idwbuff(3)%beg:idwbuff(3)%end))
             q_lso_pp_w_vf(1)%sf = 1._stp
@@ -103,6 +104,9 @@ contains
         end do
 
         call s_apply_lso_pp_filter_ghosted(q_work_vf)
+        if (lso_pp2_n_passes_x > 0 .or. lso_pp2_n_passes_y > 0 .or. lso_pp2_n_passes_z > 0) then
+            call s_apply_lso_pp_filter_ghosted(q_work_vf, 2)
+        end if
 
         do i = 1, size(q_cons_vf)
             do l = 0, p
@@ -122,23 +126,43 @@ contains
     end subroutine s_apply_lso_pp_filter
 
     !> Apply the post_process LSO filter to a ghosted work field.
-    impure subroutine s_apply_lso_pp_filter_ghosted(q_cons_vf)
+    impure subroutine s_apply_lso_pp_filter_ghosted(q_cons_vf, stage)
 
         type(scalar_field), intent(inout) :: q_cons_vf(:)
+        integer, intent(in), optional     :: stage
         integer                           :: i, ipass, j, k, l, nv
+        integer                           :: stage_number, npasses_x, npasses_y, npasses_z
+        real(wp)                          :: a_x(5, lso_max_passes), a_y(5, lso_max_passes), a_z(5, lso_max_passes)
         real(wp)                          :: c0, c1, c2, c3, c4
 
         nv = size(q_cons_vf)
+        stage_number = 1
+        if (present(stage)) stage_number = stage
+        if (stage_number == 2) then
+            npasses_x = lso_pp2_n_passes_x
+            npasses_y = lso_pp2_n_passes_y
+            npasses_z = lso_pp2_n_passes_z
+            a_x = lso_pp2_a_x
+            a_y = lso_pp2_a_y
+            a_z = lso_pp2_a_z
+        else
+            npasses_x = lso_pp_n_passes_x
+            npasses_y = lso_pp_n_passes_y
+            npasses_z = lso_pp_n_passes_z
+            a_x = lso_pp_a_x
+            a_y = lso_pp_a_y
+            a_z = lso_pp_a_z
+        end if
 
         ! x-direction
 
         call s_lso_pp_filter_ghost_refresh(q_cons_vf, 1)
-        do ipass = 1, lso_pp_n_passes_x
-            c0 = lso_pp_a_x(1, ipass)
-            c1 = lso_pp_a_x(2, ipass)
-            c2 = lso_pp_a_x(3, ipass)
-            c3 = lso_pp_a_x(4, ipass)
-            c4 = lso_pp_a_x(5, ipass)
+        do ipass = 1, npasses_x
+            c0 = a_x(1, ipass)
+            c1 = a_x(2, ipass)
+            c2 = a_x(3, ipass)
+            c3 = a_x(4, ipass)
+            c4 = a_x(5, ipass)
             do i = 1, nv
                 do l = 0, p
                     do k = 0, n
@@ -159,18 +183,18 @@ contains
                     end do
                 end do
             end do
-            if (ipass < lso_pp_n_passes_x) call s_lso_pp_filter_ghost_refresh(q_cons_vf, 1)
+            if (ipass < npasses_x) call s_lso_pp_filter_ghost_refresh(q_cons_vf, 1)
         end do
 
         ! y-direction (2D/3D)
         if (n > 0) then
             call s_lso_pp_filter_ghost_refresh(q_cons_vf, 2)
-            do ipass = 1, lso_pp_n_passes_y
-                c0 = lso_pp_a_y(1, ipass)
-                c1 = lso_pp_a_y(2, ipass)
-                c2 = lso_pp_a_y(3, ipass)
-                c3 = lso_pp_a_y(4, ipass)
-                c4 = lso_pp_a_y(5, ipass)
+            do ipass = 1, npasses_y
+                c0 = a_y(1, ipass)
+                c1 = a_y(2, ipass)
+                c2 = a_y(3, ipass)
+                c3 = a_y(4, ipass)
+                c4 = a_y(5, ipass)
                 do i = 1, nv
                     do l = 0, p
                         do k = 0, n
@@ -192,19 +216,19 @@ contains
                         end do
                     end do
                 end do
-                if (ipass < lso_pp_n_passes_y) call s_lso_pp_filter_ghost_refresh(q_cons_vf, 2)
+                if (ipass < npasses_y) call s_lso_pp_filter_ghost_refresh(q_cons_vf, 2)
             end do
         end if
 
         ! z-direction (3D)
         if (p > 0) then
             call s_lso_pp_filter_ghost_refresh(q_cons_vf, 3)
-            do ipass = 1, lso_pp_n_passes_z
-                c0 = lso_pp_a_z(1, ipass)
-                c1 = lso_pp_a_z(2, ipass)
-                c2 = lso_pp_a_z(3, ipass)
-                c3 = lso_pp_a_z(4, ipass)
-                c4 = lso_pp_a_z(5, ipass)
+            do ipass = 1, npasses_z
+                c0 = a_z(1, ipass)
+                c1 = a_z(2, ipass)
+                c2 = a_z(3, ipass)
+                c3 = a_z(4, ipass)
+                c4 = a_z(5, ipass)
                 do i = 1, nv
                     do l = 0, p
                         do k = 0, n
@@ -226,32 +250,11 @@ contains
                         end do
                     end do
                 end do
-                if (ipass < lso_pp_n_passes_z) call s_lso_pp_filter_ghost_refresh(q_cons_vf, 3)
+                if (ipass < npasses_z) call s_lso_pp_filter_ghost_refresh(q_cons_vf, 3)
             end do
         end if
 
     end subroutine s_apply_lso_pp_filter_ghosted
-
-    !> Fill the interior of w_vf with the binary gas mask from ib_markers: 1 in fluid, 0 inside an immersed body. Used when
-    !! post_process filters ORIGINAL data.
-    impure subroutine s_lso_pp_mask_from_ib(w_vf)
-
-        type(scalar_field), intent(inout) :: w_vf(1:1)
-        integer                           :: j, k, l
-
-        do l = 0, p
-            do k = 0, n
-                do j = 0, m
-                    if (ib_markers%sf(j, k, l) > 0) then
-                        w_vf(1)%sf(j, k, l) = 0._stp
-                    else
-                        w_vf(1)%sf(j, k, l) = 1._stp
-                    end if
-                end do
-            end do
-        end do
-
-    end subroutine s_lso_pp_mask_from_ib
 
     !> Mask-normalized filtering: q <- filter(w*q)/filter(w), applied in place (the solid interior takes the fluid average).
     impure subroutine s_apply_lso_pp_filter_masked(q_cons_vf, w_vf)
@@ -306,7 +309,7 @@ contains
     end function f_lso_n_closure
 
     !> Euler-Lagrange closure fields from the LSO stat products, with F[.] the phase-weighted filter, rho_b = F[rho], u~ = F[rho
-    !! u]/rho_b and T~ from F[rho T] = (F[E] - F[rho|u|^2]/2)/Cv, F[E] = E_lso*w: R_sg,ij = F[rho u_i u_j] - F[rho u_i] F[rho
+    !! u]/rho_b and T~ from the central EOS energy reconstruction, F[E] = E_lso*w: R_sg,ij = F[rho u_i u_j] - F[rho u_i] F[rho
     !! u_j]/rho_b Q_T,i = gamma Cv (F[rho u_i T] - T~ F[rho u_i]) E_ku,i = (F[rho u_i |u|^2] - F[rho u_i] F[rho |u|^2]/rho_b)/2
     !! W_tau_u,i = (F[rho (tau.u)_i] - (tau_b . F[rho u])_i)/rho_b R_mu_sg = tau_b - mu [grad(u~) + grad(u~)^T - (2/3) div(u~) I]
     !! R_lam_sg = q_b + lambda grad(T~), with the intensive averages tau_b = F[g tau]/w and q_b = F[g q]/w. Gradients are centred
@@ -319,7 +322,7 @@ contains
         integer                           :: nd, nt, i, c, j, k, l, a, b, work_buff_size
         integer                           :: ti(6), tj(6)
         integer                           :: i_rsg, i_qt, i_eku, i_wtu, i_rmu, i_rlam, i_tt, i_uf
-        real(wp)                          :: Cv, gcv, rho_b, F_E, wloc, dsp(3)
+        real(wp)                          :: Cv, gcv, rho_b, F_E, wloc, dsp(3), stiffness
         real(wp)                          :: rhou(3), tdotru(3), dudx(3, 3), dT(3), div_u, tau_res, tb(3, 3)
 
         nd = num_dims
@@ -334,6 +337,7 @@ contains
 
         Cv = lso_R_gas*gammas(1)
         gcv = (1._wp + 1._wp/gammas(1))*Cv
+        stiffness = f_isentrope_pressure(pi_infs(1), gammas(1))
 
         ! Favre velocity and temperature with ghost extents for MPI exchange and gradient stencils.
         work_buff_size = max(buff_size, lso_pp_filter_radius)
@@ -348,9 +352,10 @@ contains
                     do a = 1, nd
                         uT_vf(a)%sf(j, k, l) = real(real(q_stat_vf(lso_stat_rhou_beg + a - 1)%sf(j, k, l), wp)/rho_b, stp)
                     end do
-                    F_E = real(q_cons_vf(eqn_idx%E)%sf(j, k, l), wp)*real(w_vf(1)%sf(j, k, l), wp)
+                    wloc = max(real(w_vf(1)%sf(j, k, l), wp), lso_w_floor)
+                    F_E = real(q_cons_vf(eqn_idx%E)%sf(j, k, l), wp)*wloc
                     uT_vf(nd + 1)%sf(j, k, l) = real((F_E - 0.5_wp*real(q_stat_vf(lso_stat_rhoke_beg)%sf(j, k, l), &
-                          & wp))/(Cv*rho_b), stp)
+                          & wp) - stiffness*wloc - qvs(1)*rho_b)/(Cv*rho_b), stp)
                 end do
             end do
         end do
@@ -647,7 +652,7 @@ contains
         end do
 
         ! Pass 2: viscous stress, heat flux, viscous power flux from centred diffs.
-        if (lso_mu > 0._wp) then
+        if (lso_mu > 0._wp .or. fluid_k_therm(1) > 0._wp) then
             if (n == 0) then
                 ! 1D: x-gradients only.
                 do j = 0, m
@@ -665,7 +670,7 @@ contains
                     du1dx = (u1_jp - u1_jm)/ddx
                     dTdx = (T_jp - T_jm)/ddx
 
-                    tau11 = lso_mu*(2._wp*du1dx)
+                    tau11 = lso_mu*(4._wp/3._wp)*du1dx
                     q1 = -fluid_k_therm(1)*dTdx
 
                     u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, 0, 0), wp)/rho_loc

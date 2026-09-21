@@ -9,6 +9,7 @@ import fastjsonschema
 
 from . import common
 from .analytic_expr import AnalyticExprError, fortranize_expr
+from .params.eos_families import EOS_FAMILIES
 from .printer import cons
 from .run import case_dicts
 from .state import ARG
@@ -32,6 +33,10 @@ QPVF_IDX_VARS = {
     "By": "eqn_idx%B%end-1",
     "Bz": "eqn_idx%B%end",
 }
+
+# EOS families with density-dependent coefficients; this is baked into the
+# case-optimization configuration below.
+EOS_STATE_DEPENDENT_VALUES = frozenset(f.value for f in EOS_FAMILIES if f.state_dependent)
 
 MIBM_ANALYTIC_VARS = ["vel(1)", "vel(2)", "vel(3)", "angular_vel(1)", "angular_vel(2)", "angular_vel(3)"]
 # "eqn_idx%B%end - 1" not "eqn_idx%B%beg + 1" must be used because 1D does not have Bx
@@ -201,13 +206,13 @@ class Case:
                 self.__warn_lso_width(sigma1, dx, dy, dz)
                 self.__warn_lso_width(sigma2, cdx, cdy, cdz)
                 lines = lso_namelist_lines(compute_lso_params(d_p, dx, dy, dz, sigma1))
-                return lines + lso_namelist_lines(compute_lso_params(d_p, cdx, cdy, cdz, sigma2), prefix="lso2_")
+                return lines + lso_namelist_lines(compute_lso_params(d_p, cdx, cdy, cdz, sigma2), prefix="lso2")
         self.__warn_lso_width(sigma, dx, dy, dz)
         return lso_namelist_lines(compute_lso_params(d_p, dx, dy, dz, sigma))
 
     def __get_lso_pp_lines(self) -> str:
         """Compute the post-process pass from input and target Gaussian widths."""
-        from .lso_filter import compute_lso_params, lso_namelist_lines
+        from .lso_filter import PP_SPLIT_CELLS, PP_STAGE_MAX_CELLS, compute_lso_params, lso_namelist_lines
 
         p = self.params
         lso_filter_wrt = str(p.get("lso_filter_wrt", "F")).upper() == "T"
@@ -218,8 +223,25 @@ class Case:
         if sigma_in < 0.0 or sigma_target <= sigma_in:
             raise common.MFCException("lso_filter_sigma_target must be greater than lso_filter_sigma_in >= 0.")
         sigma2 = math.sqrt(sigma_target * sigma_target - sigma_in * sigma_in)
+        d_min = min(d for d in (dx, dy, dz) if d > 0.0)
+        if sigma2 / d_min > PP_SPLIT_CELLS:
+            sigma_stage = sigma2 / math.sqrt(2.0)
+            if sigma_stage / d_min > PP_STAGE_MAX_CELLS:
+                raise common.MFCException(
+                    f"lso_pp_filter: sigma_2 = {sigma2 / d_min:.1f} cells exceeds what the two post_process "
+                    f"cascades can carry (~{PP_STAGE_MAX_CELLS:.0f} cells each). Filter in situ with "
+                    f"lso_down_sample_factor > 1 so the post_process pass runs on the coarse grid, or lower "
+                    f"lso_filter_sigma_target."
+                )
+            cons.print(
+                f"[cyan]LSO filter (post_process):[/cyan] sigma_in={sigma_in:.4g}, "
+                f"sigma_target={sigma_target:.4g}, sigma2={sigma2:.4g} as two cascades of "
+                f"{sigma_stage:.4g} ({sigma_stage / d_min:.1f} cells each), computing weights..."
+            )
+            stage = compute_lso_params(d_p, dx, dy, dz, sigma_stage)
+            return lso_namelist_lines(stage, prefix="lso_pp") + lso_namelist_lines(stage, prefix="lso_pp2")
         self.__warn_lso_width(sigma2, dx, dy, dz)
-        return lso_namelist_lines(compute_lso_params(d_p, dx, dy, dz, sigma2), prefix="lso_pp_")
+        return lso_namelist_lines(compute_lso_params(d_p, dx, dy, dz, sigma2), prefix="lso_pp")
 
     def __get_ndims(self) -> int:
         return 1 + min(int(self.params.get("n", 0)), 1) + min(int(self.params.get("p", 0)), 1)
@@ -448,7 +470,7 @@ gbl_id = patch_ib(i)%gbl_patch_id
 
             # Baking this lets the compiler drop the state-dependent EOS chain entirely. Left in the
             # call graph it costs registers, and so occupancy, in every kernel that can reach it.
-            eos_state_dependent = {3, 4, 5}  # Mie-Gruneisen, JWL, Vinet; see eos_* in m_constants.fpp
+            eos_state_dependent = EOS_STATE_DEPENDENT_VALUES
             num_fluids_case = int(self.params.get("num_fluids", 1))
             any_state_dependent_eos = 1 if any(int(self.params.get(f"fluid_pp({f})%eos", 1)) in eos_state_dependent for f in range(1, num_fluids_case + 1)) else 0
 

@@ -7,6 +7,7 @@ Single file containing all ~3,300 parameter definitions using loops.
 import re
 from typing import Any, Dict
 
+from .eos_families import EOS_FAMILIES
 from .namelist_parser import get_fortran_constants
 from .registry import REGISTRY, IndexedFamily
 from .schema import ParamDef, ParamType
@@ -244,6 +245,12 @@ _SIMPLE_DESCS = {
     "lso_mu": "Dynamic viscosity used by LSO statistical products",
     "lso_filter_sigma_in": "Gaussian sigma already applied to post-process input",
     "lso_filter_sigma_target": "Target Gaussian sigma for post-process widening",
+    "lso_pp2_n_passes_x": "Number of stage-2 post-process filter passes in x",
+    "lso_pp2_n_passes_y": "Number of stage-2 post-process filter passes in y",
+    "lso_pp2_n_passes_z": "Number of stage-2 post-process filter passes in z",
+    "lso_pp2_a_x": "Stage-2 post-process per-pass stencil coefficients in x",
+    "lso_pp2_a_y": "Stage-2 post-process per-pass stencil coefficients in y",
+    "lso_pp2_a_z": "Stage-2 post-process per-pass stencil coefficients in z",
     "filter_sigma": "Target Gaussian filter standard deviation (physical units, same as domain coordinates)",
     "acoustic_source": "Enable acoustic sources",
     # Output
@@ -513,7 +520,7 @@ def _lookup_hint(name):
 # Schema Validation for Constraints and Dependencies
 # Uses rapidfuzz for "did you mean?" suggestions when typos are detected
 
-_VALID_CONSTRAINT_KEYS = {"choices", "min", "max", "value_labels", "names"}
+_VALID_CONSTRAINT_KEYS = {"choices", "min", "max", "value_labels", "names", "fortran_prefix"}
 _VALID_DEPENDENCY_KEYS = {"when_true", "when_set", "when_value"}
 _VALID_CONDITION_KEYS = {"requires", "recommends", "requires_value"}
 
@@ -556,6 +563,11 @@ def _validate_constraint(param_name: str, constraint: Dict[str, Any]) -> None:
             raise ValueError(f"names for '{param_name}' map two names to the same value")
         if "choices" in constraint and set(names.values()) != set(constraint["choices"]):
             raise ValueError(f"names for '{param_name}' must cover exactly its choices {constraint['choices']}")
+    if "fortran_prefix" in constraint:
+        if "names" not in constraint:
+            raise ValueError(f"Constraint 'fortran_prefix' for '{param_name}' requires 'names'")
+        if not isinstance(constraint["fortran_prefix"], str) or not re.match(r"^[a-z0-9][a-z0-9_]*$", constraint["fortran_prefix"]):
+            raise ValueError(f"Constraint 'fortran_prefix' for '{param_name}' must be a lowercase identifier")
 
 
 def _validate_dependency(param_name: str, dependency: Dict[str, Any]) -> None:
@@ -1076,6 +1088,10 @@ def _load():
         _r(n, INT, {"filter"})
     for n in ["lso_pp_a_x", "lso_pp_a_y", "lso_pp_a_z"]:
         _r(f"{n}(1)", REAL, {"filter"})
+    for n in ["lso_pp2_n_passes_x", "lso_pp2_n_passes_y", "lso_pp2_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso_pp2_a_x", "lso_pp2_a_y", "lso_pp2_a_z"]:
+        _r(f"{n}(1)", REAL, {"filter"})
     for n in [
         "schlieren_wrt",
         "alpha_wrt",
@@ -1295,9 +1311,10 @@ def _load():
             for mm in range(-ll, ll + 1):
                 _r(f"{px}sph_har_coeff({ll},{mm})", REAL)
 
-    # Values must match the hand-written eos_* constants in src/common/m_constants.fpp.
-    _EOS_NAMES = {"stiffened_gas": 1, "ideal_gas": 2, "mie_gruneisen": 3, "jwl": 4, "vinet": 5}
-    _EOS_VALUE_LABELS = {1: "stiffened-gas", 2: "ideal-gas", 3: "Mie-Gruneisen", 4: "JWL", 5: "Vinet"}
+    # Derived from EOS_FAMILIES (eos_families.py), which must match the eos_* constants in src/common/m_constants.fpp.
+    _EOS_NAMES = {f.suffix: f.value for f in EOS_FAMILIES}
+    _EOS_VALUE_LABELS = {f.value: f.label for f in EOS_FAMILIES}
+    _EOS_CHOICES = sorted(f.value for f in EOS_FAMILIES)
 
     # fluid_pp (10 fluids)
     # Members present in physical_parameters: gamma, pi_inf, Re, cv, qv, qvp, G.
@@ -1305,47 +1322,15 @@ def _load():
     # by upstream #1085/#1093 — they must NOT be registered (namelist read would crash).
     for f in range(1, NF + 1):
         px = f"fluid_pp({f})%"
-        CONSTRAINTS[f"fluid_pp({f})%eos"] = {"choices": [1, 2, 3, 4, 5], "value_labels": _EOS_VALUE_LABELS, "names": _EOS_NAMES}
+        CONSTRAINTS[f"fluid_pp({f})%eos"] = {"choices": _EOS_CHOICES, "value_labels": _EOS_VALUE_LABELS, "names": _EOS_NAMES, "fortran_prefix": "eos"}
         for a, sym in [("gamma", r"\f$\gamma_k\f$"), ("pi_inf", r"\f$\pi_{\infty,k}\f$"), ("cv", r"\f$c_{v,k}\f$"), ("qv", r"\f$q_{v,k}\f$"), ("qvp", r"\f$q'_{v,k}\f$")]:
             _r(f"{px}{a}", REAL, math=sym)
         _r(f"{px}eos", INT, math=r"\f$\mathrm{EOS}_k\f$")
-        for a, sym in [
-            ("mg_rho0", r"\f$\rho_{0,k}\f$"),
-            ("mg_c0", r"\f$c_{0,k}\f$"),
-            ("mg_s", r"\f$s_k\f$"),
-            ("mg_gruneisen", r"\f$\Gamma_{G,k}\f$"),
-            ("mg_gruneisen_a", r"\f$a_k\f$"),
-            ("mg_t0", r"\f$T_{0,k}\f$"),
-            ("mg_s2", r"\f$s_{2,k}\f$"),
-            ("mg_s3", r"\f$s_{3,k}\f$"),
-        ]:
-            _r(f"{px}{a}", REAL, math=sym)
-        for a, sym in [
-            ("jwl_a", r"\f$A_k\f$"),
-            ("jwl_b", r"\f$B_k\f$"),
-            ("jwl_r1", r"\f$R_{1,k}\f$"),
-            ("jwl_r2", r"\f$R_{2,k}\f$"),
-            ("jwl_omega", r"\f$\omega_k\f$"),
-            ("jwl_rho0", r"\f$\rho_{0,k}\f$"),
-            ("jwl_t0", r"\f$T_{0,k}\f$"),
-            ("jwl_Q", r"\f$Q_k\f$"),
-            ("jwl_E0", r"\f$E_{0,k}\f$"),
-            ("jwl_air_e0", r"\f$e_{a,k}\f$"),
-            ("jwl_air_rho0", r"\f$\rho_{a,k}\f$"),
-            ("jwl_air_p0", r"\f$p_{a,k}\f$"),
-            ("jwl_ej_rho_ref", r"\f$\rho_{e_j,k}\f$"),
-            ("jwl_delta_e", r"\f$\Delta e_k\f$"),
-        ]:
-            _r(f"{px}{a}", REAL, math=sym)
-        for a, sym in [
-            ("vinet_k0", r"\f$K_{0,k}\f$"),
-            ("vinet_k0p", r"\f$K'_{0,k}\f$"),
-            ("vinet_rho0", r"\f$\rho_{0,k}\f$"),
-            ("vinet_gruneisen", r"\f$\Gamma_{G,k}\f$"),
-            ("vinet_gruneisen_a", r"\f$a_k\f$"),
-            ("vinet_t0", r"\f$T_{0,k}\f$"),
-        ]:
-            _r(f"{px}{a}", REAL, math=sym)
+        for fam in EOS_FAMILIES:
+            if fam.prefix is None:
+                continue
+            for suffix, sym in fam.required + fam.optional:
+                _r(f"{px}{fam.prefix}_{suffix}", REAL, math=sym)
         _r(f"{px}G", REAL, {"hypoelasticity"}, math=r"\f$G_k\f$")
         _r(f"{px}Re(1)", REAL, {"viscosity"}, math=r"\f$\mathrm{Re}_k\f$ (shear)")
         _r(f"{px}Re(2)", REAL, {"viscosity"}, math=r"\f$\mathrm{Re}_k\f$ (bulk)")
@@ -1664,6 +1649,9 @@ FORTRAN_ARRAY_DIMS: dict[str, str] = {
     "lso_pp_a_x": "5, 60",
     "lso_pp_a_y": "5, 60",
     "lso_pp_a_z": "5, 60",
+    "lso_pp2_a_x": "5, 60",
+    "lso_pp2_a_y": "5, 60",
+    "lso_pp2_a_z": "5, 60",
 }
 
 # Derived-type namelist variables whose Fortran declarations come from generated_decls.fpp.
@@ -1822,6 +1810,12 @@ _nv(
     "lso_pp_a_x",
     "lso_pp_a_y",
     "lso_pp_a_z",
+    "lso_pp2_n_passes_x",
+    "lso_pp2_n_passes_y",
+    "lso_pp2_n_passes_z",
+    "lso_pp2_a_x",
+    "lso_pp2_a_y",
+    "lso_pp2_a_z",
 )
 _decl(
     _POST,
@@ -1852,6 +1846,12 @@ _decl(
     "lso_pp_a_x",
     "lso_pp_a_y",
     "lso_pp_a_z",
+    "lso_pp2_n_passes_x",
+    "lso_pp2_n_passes_y",
+    "lso_pp2_n_passes_z",
+    "lso_pp2_a_x",
+    "lso_pp2_a_y",
+    "lso_pp2_a_z",
 )
 _nv(
     _PRE_SIM,

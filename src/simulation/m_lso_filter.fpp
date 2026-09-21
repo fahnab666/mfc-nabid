@@ -16,7 +16,8 @@ module m_lso_filter
     use m_global_parameters
     use m_mpi_common
     use m_constants
-    use m_variables_conversion, only: s_phase_temperature, eoss, isentrope_B
+    use m_eos, only: s_phase_temperature, eoss, isentrope_B
+    use m_variables_conversion, only: s_convert_conservative_to_primitive_variables
     use m_ibm, only: ib_markers
     use m_nvtx
 
@@ -58,6 +59,7 @@ module m_lso_filter
     ! Filtered statistical product fields (lso_stat_wrt = T).
     type(scalar_field), allocatable :: q_lso_stat_vf(:)
     type(scalar_field), allocatable :: q_lso_stat_ds_vf(:)
+    type(scalar_field), allocatable :: q_lso_T_vf(:)
 
     ! Host-side halo buffers for the stat exchange (n_lso_stat can exceed sys_size).
 #ifdef MFC_MPI
@@ -122,6 +124,10 @@ contains
             end if
 
             if (lso_stat_wrt .and. n_lso_stat > 0) then
+                @:ALLOCATE(q_lso_T_vf(1:1))
+                @:ALLOCATE(q_lso_T_vf(1)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end))
+                @:ACC_SETUP_SFs(q_lso_T_vf(1))
                 @:ALLOCATE(q_lso_stat_vf(1:n_lso_stat))
                 do i = 1, n_lso_stat
                     @:ALLOCATE(q_lso_stat_vf(i)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
@@ -192,6 +198,8 @@ contains
             end if
 
             if (lso_stat_wrt .and. n_lso_stat > 0) then
+                @:DEALLOCATE(q_lso_T_vf(1)%sf)
+                @:DEALLOCATE(q_lso_T_vf)
                 if (lso_down_sample_factor > 1) then
                     do i = 1, n_lso_stat
                         @:DEALLOCATE(q_lso_stat_ds_vf(i)%sf)
@@ -217,13 +225,57 @@ contains
 
     !> Copy q_cons_vf into q_filt_vf on the device and filter in place, leaving the original conserved array untouched for the
     !! primary write.
-    impure subroutine s_copy_and_apply_lso_filter(q_cons_vf, q_prim_vf, q_T_sf)
+    impure subroutine s_copy_and_apply_lso_filter(q_cons_vf, q_T_sf)
 
         type(scalar_field), intent(inout) :: q_cons_vf(:)
-        type(scalar_field), intent(in)    :: q_prim_vf(:), q_T_sf
+        type(scalar_field), intent(in)    :: q_T_sf
         integer                           :: i, j, k, l
+        real(wp)                          :: T
 
         call nvtxStartRange("LSO-FILTER")
+
+        if (lso_stat_wrt .and. n_lso_stat > 0) then
+            call nvtxStartRange("LSO-FILTER-STAT")
+            ! Reuse the filter workspace for saved-state primitives, never the live RK state.
+            if (chemistry) then
+                $:GPU_PARALLEL_LOOP(collapse=3)
+                do l = 0, p
+                    do k = 0, n
+                        do j = 0, m
+                            q_lso_T_vf(1)%sf(j, k, l) = q_T_sf%sf(j, k, l)
+                        end do
+                    end do
+                end do
+                $:END_GPU_PARALLEL_LOOP()
+            end if
+            call s_convert_conservative_to_primitive_variables(q_cons_vf, q_lso_T_vf(1), q_filt_vf, idwint)
+            if (.not. chemistry) then
+                $:GPU_PARALLEL_LOOP(collapse=3, private='[T]')
+                do l = 0, p
+                    do k = 0, n
+                        do j = 0, m
+                            call s_lso_temperature(q_cons_vf, q_filt_vf, j, k, l, T)
+                            q_lso_T_vf(1)%sf(j, k, l) = real(T, stp)
+                        end do
+                    end do
+                end do
+                $:END_GPU_PARALLEL_LOOP()
+            end if
+            if ((viscous .and. lso_mu > 0._wp) .or. fluid_k_therm(1) > 0._wp) then
+                do i = 1, num_dims
+                    call s_lso_filter_ghost_refresh(q_cons_vf, i)
+                    call s_lso_filter_ghost_refresh(q_lso_T_vf, i)
+                end do
+            end if
+            call s_compute_lso_stat_fields(q_cons_vf, q_lso_T_vf(1))
+            call s_apply_lso_stat_filter()
+#ifndef FRONTIER_UNIFIED
+            do i = 1, n_lso_stat
+                $:GPU_UPDATE(host='[q_lso_stat_vf(i)%sf]')
+            end do
+#endif
+            call nvtxEndRange
+        end if
 
         call nvtxStartRange("LSO-FILTER-COPY")
         $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
@@ -290,26 +342,6 @@ contains
             end if
         else
             call s_apply_lso_filter(q_filt_vf)
-        end if
-
-        if (lso_stat_wrt .and. n_lso_stat > 0) then
-            call nvtxStartRange("LSO-FILTER-STAT")
-            ! Refresh q_cons_vf rank-boundary ghost cells before the Pass 2 centred differences:
-            ! ghosts may otherwise hold an intermediate RK sub-step rather than the updated interior.
-            if (viscous .and. lso_mu > 0._wp) then
-                call s_lso_filter_ghost_refresh(q_cons_vf, 1)
-                if (n > 0) call s_lso_filter_ghost_refresh(q_cons_vf, 2)
-                if (p > 0) call s_lso_filter_ghost_refresh(q_cons_vf, 3)
-            end if
-            call s_compute_lso_stat_fields(q_cons_vf, q_prim_vf, q_T_sf)
-            call s_apply_lso_stat_filter()
-#ifndef FRONTIER_UNIFIED
-            ! Pull filtered stat fields back to host for the file write.
-            do i = 1, n_lso_stat
-                $:GPU_UPDATE(host='[q_lso_stat_vf(i)%sf]')
-            end do
-#endif
-            call nvtxEndRange
         end if
 
         call nvtxEndRange
@@ -1020,40 +1052,36 @@ contains
     end subroutine s_lso_filter_ghost_refresh
 
     !> Build the 9/19/31 stat product fields used by the LES closure. Pass 1 fills the algebraic moments (phi_p, u_p, rho*u,
-    !! rho*u*u, rho*u*|u|^2, rho*u*T). Pass 2 (viscous .and. lso_mu > 0) adds tau_ij, q_i, and (tau*u)_i from centred gradients,
-    !! masked by gas_mask = 1 - phi_p. Both passes run on the GPU.
-    subroutine s_lso_temperature(q_prim_vf, q_T_sf, j, k, l, T)
+    !! rho*u*u, rho*u*|u|^2, rho*u*T). Pass 2 adds tau_ij, q_i, and (tau*u)_i from centred gradients when either viscosity or
+    !! conductivity is active. masked by gas_mask = 1 - phi_p. Both passes run on the GPU.
+    subroutine s_lso_temperature(q_cons_vf, q_prim_vf, j, k, l, T)
 
         $:GPU_ROUTINE(parallelism='[seq]')
 
-        type(scalar_field), intent(in) :: q_prim_vf(:), q_T_sf
+        type(scalar_field), intent(in) :: q_cons_vf(:), q_prim_vf(:)
         integer, intent(in)            :: j, k, l
         real(wp), intent(out)          :: T
         real(wp)                       :: alpha_phase, rho_phase, pres
 
-        if (chemistry) then
-            T = real(q_T_sf%sf(j, k, l), wp)
+        pres = real(q_prim_vf(eqn_idx%E)%sf(j, k, l), wp)
+        if (model_eqns == model_eqns_gamma_law) then
+            alpha_phase = 1._wp
         else
-            pres = real(q_prim_vf(eqn_idx%E)%sf(j, k, l), wp)
-            if (model_eqns == model_eqns_gamma_law) then
-                alpha_phase = 1._wp
-            else
-                alpha_phase = max(real(q_prim_vf(eqn_idx%E + 1)%sf(j, k, l), wp), sgm_eps)
-            end if
-            rho_phase = real(q_prim_vf(eqn_idx%cont%beg)%sf(j, k, l), wp)/alpha_phase
-            if (eoss(1) == eos_stiffened_gas .or. eoss(1) == eos_ideal_gas) then
-                T = (pres + isentrope_B(1))/(lso_R_gas*rho_phase)
-            else
-                call s_phase_temperature(rho_phase, pres, 1, T)
-            end if
+            alpha_phase = max(real(q_cons_vf(eqn_idx%E + 1)%sf(j, k, l), wp), sgm_eps)
+        end if
+        rho_phase = real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l), wp)/alpha_phase
+        if (eoss(1) == eos_stiffened_gas .or. eoss(1) == eos_ideal_gas) then
+            T = (pres + isentrope_B(1))/(lso_R_gas*rho_phase)
+        else
+            call s_phase_temperature(rho_phase, pres, 1, T)
         end if
 
     end subroutine s_lso_temperature
 
-    impure subroutine s_compute_lso_stat_fields(q_cons_vf, q_prim_vf, q_T_sf)
+    impure subroutine s_compute_lso_stat_fields(q_cons_vf, q_T_sf)
 
         type(scalar_field), intent(in) :: q_cons_vf(:)
-        type(scalar_field), intent(in) :: q_prim_vf(:), q_T_sf
+        type(scalar_field), intent(in) :: q_T_sf
         integer                        :: i, j, k, l, ib_id
         ! Pass 2 loop bounds (narrowed away from physical boundaries, same logic as s_apply_lso_stat_filter).
         integer  :: j_beg_x, j_end_x
@@ -1082,7 +1110,8 @@ contains
 
         ! Pass 1: algebraic products.
 
-        $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[i, j, k, l, ib_id, phi_p, gas_mask, up1, up2, up3, rho, mom1, mom2, mom3, u1, &
+                            & u2, u3, T_loc]')
         do l = 0, p
             do k = 0, n
                 do j = 0, m
@@ -1124,7 +1153,7 @@ contains
                     u1 = mom1/rho
                     u2 = mom2/rho
                     u3 = mom3/rho
-                    call s_lso_temperature(q_prim_vf, q_T_sf, j, k, l, T_loc)
+                    T_loc = real(q_T_sf%sf(j, k, l), wp)
 
                     ! phi_p, rho scalar, rhoke scalar, u_p
                     q_lso_stat_vf(lso_stat_phi_p_beg)%sf(j, k, l) = real(phi_p, stp)
@@ -1195,10 +1224,11 @@ contains
         if (bc_z%beg < 0 .and. bc_z%beg /= BC_PERIODIC) l_beg_z = buff_size
         if (bc_z%end < 0 .and. bc_z%end /= BC_PERIODIC) l_end_z = p - buff_size
 
-        if (viscous .and. lso_mu > 0._wp) then
+        if ((viscous .and. lso_mu > 0._wp) .or. fluid_k_therm(1) > 0._wp) then
             if (n == 0) then
                 ! 1D: x-gradients only.
-                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
+                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, rho_loc, gas_mask, rho_jm, rho_jp, u1_jm, u1_jp, T_jm, T_jp, &
+                                    & dx, du1dx, dTdx, tau11, q1, u1]')
                 do l = 0, p
                     do k = 0, n
                         do j = j_beg_x, j_end_x
@@ -1207,17 +1237,17 @@ contains
 
                             rho_jm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j - 1, 0, 0), wp), sgm_eps)
                             u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, 0, 0), wp)/rho_jm
-                            call s_lso_temperature(q_prim_vf, q_T_sf, j - 1, 0, 0, T_jm)
+                            T_jm = real(q_T_sf%sf(j - 1, 0, 0), wp)
 
                             rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, 0, 0), wp), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, 0, 0), wp)/rho_jp
-                            call s_lso_temperature(q_prim_vf, q_T_sf, j + 1, 0, 0, T_jp)
+                            T_jp = real(q_T_sf%sf(j + 1, 0, 0), wp)
 
                             dx = x_cc(j + 1) - x_cc(j - 1)
                             du1dx = (u1_jp - u1_jm)/dx
                             dTdx = (T_jp - T_jm)/dx
 
-                            tau11 = lso_mu*(2._wp*du1dx)
+                            tau11 = lso_mu*(4._wp/3._wp)*du1dx
                             q1 = -fluid_k_therm(1)*dTdx
 
                             u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, 0, 0), wp)/rho_loc
@@ -1231,7 +1261,9 @@ contains
                 $:END_GPU_PARALLEL_LOOP()
             else if (p == 0) then
                 ! 2D: x- and y-gradients.
-                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
+                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, rho_loc, gas_mask, rho_jm, rho_jp, rho_km, rho_kp, u1_jm, &
+                                    & u1_jp, u1_km, u1_kp, u2_jm, u2_jp, u2_km, u2_kp, T_jm, T_jp, T_km, T_kp, dx, dy, du1dx, &
+                                    & du1dy, du2dx, du2dy, dTdx, dTdy, div_u, tau11, tau12, tau22, q1, q2, u1, u2]')
                 do l = 0, p
                     do k = k_beg_y, k_end_y
                         do j = j_beg_x, j_end_x
@@ -1241,22 +1273,22 @@ contains
                             rho_jm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j - 1, k, 0), wp), sgm_eps)
                             u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, k, 0), wp)/rho_jm
                             u2_jm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j - 1, k, 0), wp)/rho_jm
-                            call s_lso_temperature(q_prim_vf, q_T_sf, j - 1, k, 0, T_jm)
+                            T_jm = real(q_T_sf%sf(j - 1, k, 0), wp)
 
                             rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, k, 0), wp), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, k, 0), wp)/rho_jp
                             u2_jp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j + 1, k, 0), wp)/rho_jp
-                            call s_lso_temperature(q_prim_vf, q_T_sf, j + 1, k, 0, T_jp)
+                            T_jp = real(q_T_sf%sf(j + 1, k, 0), wp)
 
                             rho_km = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k - 1, 0), wp), sgm_eps)
                             u1_km = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k - 1, 0), wp)/rho_km
                             u2_km = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k - 1, 0), wp)/rho_km
-                            call s_lso_temperature(q_prim_vf, q_T_sf, j, k - 1, 0, T_km)
+                            T_km = real(q_T_sf%sf(j, k - 1, 0), wp)
 
                             rho_kp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k + 1, 0), wp), sgm_eps)
                             u1_kp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k + 1, 0), wp)/rho_kp
                             u2_kp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k + 1, 0), wp)/rho_kp
-                            call s_lso_temperature(q_prim_vf, q_T_sf, j, k + 1, 0, T_kp)
+                            T_kp = real(q_T_sf%sf(j, k + 1, 0), wp)
 
                             dx = x_cc(j + 1) - x_cc(j - 1)
                             dy = y_cc(k + 1) - y_cc(k - 1)
@@ -1291,7 +1323,11 @@ contains
                 $:END_GPU_PARALLEL_LOOP()
             else
                 ! 3D: x-, y-, and z-gradients.
-                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
+                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, rho_loc, gas_mask, rho_jm, rho_jp, rho_km, rho_kp, rho_lm, &
+                                    & rho_lp, u1_jm, u1_jp, u1_km, u1_kp, u1_lm, u1_lp, u2_jm, u2_jp, u2_km, u2_kp, u2_lm, u2_lp, &
+                                    & u3_jm, u3_jp, u3_km, u3_kp, u3_lm, u3_lp, T_jm, T_jp, T_km, T_kp, T_lm, T_lp, dx, dy, dz, &
+                                    & du1dx, du1dy, du1dz, du2dx, du2dy, du2dz, du3dx, du3dy, du3dz, dTdx, dTdy, dTdz, div_u, &
+                                    & tau11, tau12, tau13, tau22, tau23, tau33, q1, q2, q3, u1, u2, u3]')
                 do l = l_beg_z, l_end_z
                     do k = k_beg_y, k_end_y
                         do j = j_beg_x, j_end_x
@@ -1302,37 +1338,37 @@ contains
                             u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, k, l), wp)/rho_jm
                             u2_jm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j - 1, k, l), wp)/rho_jm
                             u3_jm = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j - 1, k, l), wp)/rho_jm
-                            call s_lso_temperature(q_prim_vf, q_T_sf, j - 1, k, l, T_jm)
+                            T_jm = real(q_T_sf%sf(j - 1, k, l), wp)
 
                             rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, k, l), wp), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, k, l), wp)/rho_jp
                             u2_jp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j + 1, k, l), wp)/rho_jp
                             u3_jp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j + 1, k, l), wp)/rho_jp
-                            call s_lso_temperature(q_prim_vf, q_T_sf, j + 1, k, l, T_jp)
+                            T_jp = real(q_T_sf%sf(j + 1, k, l), wp)
 
                             rho_km = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k - 1, l), wp), sgm_eps)
                             u1_km = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k - 1, l), wp)/rho_km
                             u2_km = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k - 1, l), wp)/rho_km
                             u3_km = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k - 1, l), wp)/rho_km
-                            call s_lso_temperature(q_prim_vf, q_T_sf, j, k - 1, l, T_km)
+                            T_km = real(q_T_sf%sf(j, k - 1, l), wp)
 
                             rho_kp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k + 1, l), wp), sgm_eps)
                             u1_kp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k + 1, l), wp)/rho_kp
                             u2_kp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k + 1, l), wp)/rho_kp
                             u3_kp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k + 1, l), wp)/rho_kp
-                            call s_lso_temperature(q_prim_vf, q_T_sf, j, k + 1, l, T_kp)
+                            T_kp = real(q_T_sf%sf(j, k + 1, l), wp)
 
                             rho_lm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l - 1), wp), sgm_eps)
                             u1_lm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l - 1), wp)/rho_lm
                             u2_lm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l - 1), wp)/rho_lm
                             u3_lm = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l - 1), wp)/rho_lm
-                            call s_lso_temperature(q_prim_vf, q_T_sf, j, k, l - 1, T_lm)
+                            T_lm = real(q_T_sf%sf(j, k, l - 1), wp)
 
                             rho_lp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l + 1), wp), sgm_eps)
                             u1_lp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l + 1), wp)/rho_lp
                             u2_lp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l + 1), wp)/rho_lp
                             u3_lp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l + 1), wp)/rho_lp
-                            call s_lso_temperature(q_prim_vf, q_T_sf, j, k, l + 1, T_lp)
+                            T_lp = real(q_T_sf%sf(j, k, l + 1), wp)
 
                             dx = x_cc(j + 1) - x_cc(j - 1)
                             dy = y_cc(k + 1) - y_cc(k - 1)
@@ -1392,20 +1428,12 @@ contains
     end subroutine s_compute_lso_stat_fields
 
     !> LSO filter pass on q_lso_stat_vf (analogous to s_apply_lso_filter for q_cons_vf). Stencil runs on the GPU; the inter-pass
-    !! halo exchange goes through the host because n_lso_stat does not fit the global MPI buffers. Cells within buff_size of a
-    !! physical (non-MPI) boundary are left at their original values.
+    !! halo exchange goes through the host because n_lso_stat does not fit the global MPI buffers. Use the same interior extent and
+    !! physical-boundary extrapolation as the flow and mask filters to preserve complementary volume fractions.
     impure subroutine s_apply_lso_stat_filter()
 
         integer  :: i, ipass, j, k, l
         real(wp) :: c0, c1, c2, c3, c4
-        ! Filter range per direction (shrinks at physical boundaries).
-        integer :: j_beg_x, j_end_x
-        integer :: k_beg_y, k_end_y
-        integer :: l_beg_z, l_end_z
-
-        j_beg_x = 0; j_end_x = m
-        if (bc_x%beg < 0 .and. bc_x%beg /= BC_PERIODIC) j_beg_x = buff_size
-        if (bc_x%end < 0 .and. bc_x%end /= BC_PERIODIC) j_end_x = m - buff_size
 
         call s_lso_stat_ghost_refresh(1)
         do ipass = 1, lso_n_passes_x
@@ -1418,7 +1446,7 @@ contains
                 $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                 do l = 0, p
                     do k = 0, n
-                        do j = j_beg_x, j_end_x
+                        do j = 0, m
                             lso_tmp(j, k, l) = c0*real(q_lso_stat_vf(i)%sf(j, k, l), wp) + c1*(real(q_lso_stat_vf(i)%sf(j - 1, k, &
                                     & l), wp) + real(q_lso_stat_vf(i)%sf(j + 1, k, l), wp)) + c2*(real(q_lso_stat_vf(i)%sf(j - 2, &
                                     & k, l), wp) + real(q_lso_stat_vf(i)%sf(j + 2, k, l), &
@@ -1432,7 +1460,7 @@ contains
                 $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                 do l = 0, p
                     do k = 0, n
-                        do j = j_beg_x, j_end_x
+                        do j = 0, m
                             q_lso_stat_vf(i)%sf(j, k, l) = real(lso_tmp(j, k, l), stp)
                         end do
                     end do
@@ -1445,10 +1473,6 @@ contains
         end do
 
         if (n > 0) then
-            k_beg_y = 0; k_end_y = n
-            if (bc_y%beg < 0 .and. bc_y%beg /= BC_PERIODIC) k_beg_y = buff_size
-            if (bc_y%end < 0 .and. bc_y%end /= BC_PERIODIC) k_end_y = n - buff_size
-
             call s_lso_stat_ghost_refresh(2)
             do ipass = 1, lso_n_passes_y
                 c0 = lso_a_y(1, ipass)
@@ -1459,7 +1483,7 @@ contains
                 do i = 1, n_lso_stat
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
-                        do k = k_beg_y, k_end_y
+                        do k = 0, n
                             do j = 0, m
                                 lso_tmp(j, k, l) = c0*real(q_lso_stat_vf(i)%sf(j, k, l), wp) + c1*(real(q_lso_stat_vf(i)%sf(j, &
                                         & k - 1, l), wp) + real(q_lso_stat_vf(i)%sf(j, k + 1, l), &
@@ -1473,7 +1497,7 @@ contains
                     $:END_GPU_PARALLEL_LOOP()
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
-                        do k = k_beg_y, k_end_y
+                        do k = 0, n
                             do j = 0, m
                                 q_lso_stat_vf(i)%sf(j, k, l) = real(lso_tmp(j, k, l), stp)
                             end do
@@ -1488,10 +1512,6 @@ contains
         end if
 
         if (p > 0) then
-            l_beg_z = 0; l_end_z = p
-            if (bc_z%beg < 0 .and. bc_z%beg /= BC_PERIODIC) l_beg_z = buff_size
-            if (bc_z%end < 0 .and. bc_z%end /= BC_PERIODIC) l_end_z = p - buff_size
-
             call s_lso_stat_ghost_refresh(3)
             do ipass = 1, lso_n_passes_z
                 c0 = lso_a_z(1, ipass)
@@ -1501,7 +1521,7 @@ contains
                 c4 = lso_a_z(5, ipass)
                 do i = 1, n_lso_stat
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
-                    do l = l_beg_z, l_end_z
+                    do l = 0, p
                         do k = 0, n
                             do j = 0, m
                                 lso_tmp(j, k, l) = c0*real(q_lso_stat_vf(i)%sf(j, k, l), wp) + c1*(real(q_lso_stat_vf(i)%sf(j, k, &
@@ -1515,7 +1535,7 @@ contains
                     end do
                     $:END_GPU_PARALLEL_LOOP()
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
-                    do l = l_beg_z, l_end_z
+                    do l = 0, p
                         do k = 0, n
                             do j = 0, m
                                 q_lso_stat_vf(i)%sf(j, k, l) = real(lso_tmp(j, k, l), stp)

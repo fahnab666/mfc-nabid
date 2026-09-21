@@ -486,7 +486,8 @@ contains
         write (t_step_dir, '(A,I0,A,I0)') trim(case_dir) // '/p_all'
         write (t_step_dir, '(a,i0,a,i0)') trim(case_dir) // '/p_all/p', proc_rank, '/', t_step
 
-        if (lso_file_prefix == '') then
+        ! The filtered pass precedes the primary pass and must clean the directory only once.
+        if (lso_file_prefix /= '' .or. .not. (lso_filter .and. lso_filter_wrt)) then
             file_path = trim(t_step_dir) // '/.'
             call my_inquire(file_path, file_exist)
             if (file_exist) call s_delete_directory(trim(t_step_dir))
@@ -524,6 +525,8 @@ contains
             write (2) q_cons_vf(i)%sf(0:m_out,0:n_out,0:p_out); close (2)
         end do
 
+        if (lso_file_prefix /= '') return
+
         ! Lagrangian beta (void fraction) written as q_cons_vf(sys_size+1) to match the parallel I/O path and allow post_process to
         ! read it.
         if (bubbles_lagrange .or. particles_lagrange) then
@@ -560,8 +563,6 @@ contains
         if (ib .and. lso_file_prefix == '') then
             call s_write_serial_ib_data(t_step)
         end if
-
-        if (lso_file_prefix /= '') return
 
         if (precision == precision_single) then
             FMT = "(2F30.3)"
@@ -1113,7 +1114,7 @@ contains
         integer(kind=MPI_OFFSET_kind)        :: disp
         integer(kind=MPI_OFFSET_kind)        :: m_MOK, n_MOK, p_MOK
         integer(kind=MPI_OFFSET_kind)        :: WP_MOK, var_MOK, MOK
-        integer                              :: ifile, ierr, data_size
+        integer                              :: ifile, ierr, data_size, save_index
         integer, dimension(MPI_STATUS_SIZE)  :: status
         character(len=10)                    :: t_step_string
 
@@ -1152,7 +1153,9 @@ contains
             call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
 
             var_MOK = int(sys_size + 1, MPI_OFFSET_KIND)
-            disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1 + int(time_step/t_step_save))
+            save_index = time_step
+            if (.not. cfl_dt) save_index = time_step/t_step_save
+            disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1 + int(save_index, MPI_OFFSET_KIND))
             if (time_step == 0) disp = 0
 
             call MPI_FILE_SET_VIEW(ifile, disp, MPI_INTEGER, MPI_IO_IB_DATA%view, 'native', mpi_info_int, ierr)

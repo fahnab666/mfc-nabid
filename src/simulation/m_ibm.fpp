@@ -12,6 +12,7 @@ module m_ibm
     use m_global_parameters
     use m_mpi_proxy
     use m_variables_conversion
+    use m_eos
     use m_helper
     use m_helper_basic
     use m_constants
@@ -157,15 +158,22 @@ contains
         #:endif
         real(wp), intent(in)  :: pres_IP
         real(wp), intent(out) :: pres_GP
+        real(wp)              :: rho, denominator
         integer               :: q  !< Iterator variable
 
-        pres_GP = 0._wp
+        rho = 0._wp
         $:GPU_LOOP(parallelism='[seq]')
         do q = 1, num_fluids
-            ! Pressure correction for moving IB: accounts for acceleration of IB surface
-            pres_GP = pres_GP + pres_IP/(1._wp - 2._wp*abs(gp%levelset*alpha_rho_IP(q)/pres_IP) &
-                                         & *dot_product(patch_ib(gp_patch_id)%force/patch_ib(gp_patch_id)%mass, gp%levelset_norm))
+            rho = rho + alpha_rho_IP(q)
         end do
+
+        ! Pressure correction for an accelerating wall. The derivation uses the mixture density, so pressure must be corrected
+        ! once rather than once per constituent. Bound the linearized denominator to its order-one range; outside it the
+        ! extrapolation is no longer valid and can otherwise create a vacuum or a pressure pole at the ghost point.
+        denominator = 1._wp - 2._wp*abs(gp%levelset) &
+                                        & *rho/pres_IP*dot_product(patch_ib(gp_patch_id)%force/patch_ib(gp_patch_id)%mass, &
+                                        & gp%levelset_norm)
+        pres_GP = pres_IP/min(max(denominator, 5.e-1_wp), 2._wp)
 
     end subroutine s_compute_ghost_point_pressure
 
@@ -261,7 +269,7 @@ contains
             real(wp), dimension(nb*nnode)    :: presb_IP, massv_IP
             real(wp), dimension(num_species) :: Ys_IP
         #:endif
-        real(wp) :: alpha_q, alpha_rho_q, e_q
+        real(wp) :: alpha_q, alpha_rho_q, e_q, rho_IP_q, rho_GP_q
         real(wp) :: T_IP, mw_IP, e_IP  !< Image-point temperature, mixture MW, and mass-specific internal energy (chemistry)
         ! Primitive variables at the image point associated with a ghost point, interpolated from surrounding fluid cells.
 
@@ -364,7 +372,7 @@ contains
             $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, alpha_rho_GP, pres_IP, pres_GP, &
                                 & vel_IP, vel_g, r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, &
                                 & G_K, Gs, gp, radial_vector, j, k, l, q, qv_K, c_IP, nbub, patch_id, Ys_IP, T_IP, mw_IP, e_IP, &
-                                & vel_sum_g, E_ghost, alpha_q, alpha_rho_q, e_q]')
+                                & vel_sum_g, E_ghost, alpha_q, alpha_rho_q, e_q, rho_IP_q, rho_GP_q]')
             do i = 1, num_gps
                 gp = ghost_points(i)
                 j = gp%loc(1)
@@ -423,7 +431,9 @@ contains
                     call s_compute_ghost_point_pressure(gp, patch_id, alpha_rho_IP, pres_IP, pres_GP)
                     $:GPU_LOOP(parallelism='[seq]')
                     do q = 1, num_fluids
-                        alpha_rho_GP(q) = alpha_rho_IP(q)*(pres_GP + isentrope_B(q))/(pres_IP + isentrope_B(q))
+                        rho_IP_q = max(alpha_rho_IP(q), sgm_eps)/max(alpha_IP(q), sgm_eps)
+                        call s_phase_density_at_temperature(q, rho_IP_q, pres_IP, pres_GP, rho_GP_q)
+                        alpha_rho_GP(q) = alpha_rho_IP(q)*rho_GP_q/rho_IP_q
                     end do
                     call s_compute_mixture_coefficients(alpha_rho_GP, alpha_IP, rho, gamma, pi_inf, qv_K)
                 end if
@@ -1816,24 +1826,24 @@ contains
 
                     if (mismatch) then
                         open (unit=unit_num, file=fname, position='append', action='write', status='unknown')
-                        write (unit_num, '(A)') '===================================================================='
+                        write (unit_num, '(A)') 'IB state divergence'
                         write (unit_num, '(A,I0,A,ES23.15,A,I0,A,I0,A,I0)') 'DIVERGENCE t_step=', t_step, ' mytime=', mytime, &
                                & ' gbl_patch_id=', patch_ib(i)%gbl_patch_id, ' rank_A=', proc_rank, ' rank_B=', r
                         write (unit_num, '(A,I0,A,I0,A,I0,A,I0,A,I0)') 'num_procs_x=', num_procs_x, ' num_procs_y=', num_procs_y, &
                                & ' num_procs_z=', num_procs_z, ' ib_neighborhood_radius=', ib_neighborhood_radius, ' num_dims=', &
                                & num_dims
-                        write (unit_num, '(A,I0,A,3I3,A,4I5,A,2I5)') '--- rank ', proc_rank, ' coords=', topo_all(1:3,proc_rank), &
+                        write (unit_num, '(A,I0,A,3I3,A,4I5,A,2I5)') 'rank ', proc_rank, ' coords=', topo_all(1:3,proc_rank), &
                                & ' bc_x(beg,end)/bc_y(beg,end)=', topo_all(4:5,proc_rank), topo_all(6:7,proc_rank), &
                                & ' bc_z(beg,end)=', topo_all(8:9,proc_rank)
                         call s_debug_write_ib_state(unit_num, patch_ib(i))
-                        write (unit_num, '(A,I0,A,3I3,A,4I5,A,2I5)') '--- rank ', r, ' coords=', topo_all(1:3,r), &
+                        write (unit_num, '(A,I0,A,3I3,A,4I5,A,2I5)') 'rank ', r, ' coords=', topo_all(1:3,r), &
                                & ' bc_x(beg,end)/bc_y(beg,end)=', topo_all(4:5,r), topo_all(6:7,r), ' bc_z(beg,end)=', &
                                & topo_all(8:9,r)
                         call s_debug_write_ib_state(unit_num, other_patch)
 
                         ! Full roster: every rank's tracking status for this gbl_patch_id, not just the mismatching pair, so a
                         ! rank silently sending 0s (or not tracking at all) shows up instead of being inferred from absence.
-                        write (unit_num, '(A)') '--- full roster for this gbl_patch_id ---'
+                        write (unit_num, '(A)') 'full roster for this gbl_patch_id'
                         do r2 = 0, num_procs - 1
                             if (r2 == proc_rank) then
                                 found = .false.

@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Set
 from . import eos
 from .common import MFCException
 from .params.definitions import CONSTRAINTS
+from .params.eos_families import EOS_FAMILIES
 from .params.namelist_parser import get_fortran_constants
 from .state import CFG
 
@@ -143,7 +144,7 @@ PHYSICS_DOCS = {
     "check_model_eqns_and_num_fluids": {
         "title": "Model Equation Selection",
         "category": "Model Equations",
-        "explanation": ("Model 1: gamma-law single-fluid. Model 2: five-equation (Allaire). Model 3: six-equation (Saurel). Model 4: four-equation (single-component with bubbles)."),
+        "explanation": "Model 1: gamma-law single-fluid. Model 2: five-equation (Allaire). Model 3: six-equation (Saurel).",
         "references": ["Wilfong26", "Allaire02", "Saurel09"],
     },
     # Boundary Conditions
@@ -174,6 +175,16 @@ PHYSICS_DOCS = {
         "title": "Euler-Lagrange Bubble Model",
         "category": "Bubble Physics",
         "explanation": "2D/3D only. Requires polytropic = F and thermal = 3. Not compatible with model_eqns = 3. Kahan summation not compatible with --mixed precision.",
+    },
+    "check_el_particles": {
+        "title": "Euler-Lagrange Solid Particles",
+        "category": "Feature Compatibility",
+        "explanation": (
+            "Requires at least 2D, a positive lag_params%nParticles_glb and particle_pp%rho0ref_particle, "
+            "and lag_params%input_path naming the particle file. lag_params%solver_approach selects "
+            "one-way (1) or two-way (2) coupling. Cannot be combined with bubbles_lagrange. "
+            "These input constraints do not establish validation of drag, heat transfer or collisions."
+        ),
     },
     "check_reactive_burn": {
         "title": "Condensed-Phase Reactive Burn",
@@ -224,7 +235,9 @@ PHYSICS_DOCS = {
         "title": "LSO Filtering",
         "category": "Numerical Schemes",
         "explanation": (
-            "LSO statistical products are written by simulation MPI I/O and consumed by post-process. " "Closure reconstruction currently supports one calorically perfect ideal or stiffened gas."
+            "LSO statistical products require one fluid and are written by simulation MPI I/O and consumed by post-process. "
+            "Particle products support IBM markers, not particles_lagrange. "
+            "Closure reconstruction currently supports one calorically perfect ideal or stiffened gas."
         ),
     },
     # Feature Compatibility
@@ -1028,20 +1041,25 @@ class CaseValidator:
             elif model_id is not None and model_id > 0:
                 self.prohibit(True, f"patch_icpp({i})%model_id is set but geometry ({geometry}) is not an STL model (21)")
 
-    def _check_initial_states_inside_eos(self, num_fluids, eos_names):
+    def _eos_coefficient_args(self, i, family):
+        """Return fluid i's coefficient arguments in the registry-defined order."""
+        optional = {suffix for suffix, _math in family.optional}
+        args = []
+        for suffix in family.coefficients_args:
+            value = self.get(f"fluid_pp({i})%{family.prefix}_{suffix}")
+            args.append((value or 0.0) if suffix in optional else value)
+        return args
+
+    def _check_initial_states_inside_eos(self, num_fluids):
         """Every patch must start each state-dependent fluid where rho e > 0 and c^2 > 0; the solver has no clamp."""
         num_patches = self.get("num_patches", 0) or 0
+        families = {family.value: family for family in EOS_FAMILIES if family.state_dependent}
         for i in range(1, num_fluids + 1):
-            eos_ = self.get(f"fluid_pp({i})%eos")
-            g = lambda k: self.get(f"fluid_pp({i})%{k}")  # noqa: E731
-            if eos_ == eos_names["mie_gruneisen"]:
-                coefficients = lambda r: eos.eos_coefficients(r, g("mg_rho0"), g("mg_c0"), g("mg_s"), g("mg_gruneisen"), g("mg_gruneisen_a") or 0.0, g("mg_s2") or 0.0, g("mg_s3") or 0.0)  # noqa: E731
-            elif eos_ == eos_names["jwl"]:
-                coefficients = lambda r: eos.jwl_coefficients(r, g("jwl_rho0"), g("jwl_a"), g("jwl_b"), g("jwl_r1"), g("jwl_r2"), g("jwl_omega"))  # noqa: E731
-            elif eos_ == eos_names.get("vinet"):
-                coefficients = lambda r: eos.coefficients_from_curve(r, eos.vinet_reference(r, g("vinet_rho0"), g("vinet_k0"), g("vinet_k0p")), g("vinet_gruneisen"))  # noqa: E731
-            else:
+            family = families.get(self.get(f"fluid_pp({i})%eos"))
+            if family is None:
                 continue
+            coefficient_fn = getattr(eos, family.coefficients_fn)
+            coefficients = lambda rho, fn=coefficient_fn, f=family: fn(rho, *self._eos_coefficient_args(i, f))  # noqa: E731
             for j in range(1, num_patches + 1):
                 ar, a, p = (self.get(f"patch_icpp({j})%alpha_rho({i})"), self.get(f"patch_icpp({j})%alpha({i})"), self.get(f"patch_icpp({j})%pres"))
                 if not all(isinstance(x, (int, float)) for x in (ar, a, p)) or a <= 0:
@@ -1067,13 +1085,9 @@ class CaseValidator:
             return
         eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
         eos_ideal_gas = eos_names["ideal_gas"]
-        # The state-dependent families: selector value -> (parameter prefix, its parameters)
-        families = {
-            eos_names["mie_gruneisen"]: ("mg", ("rho0", "c0", "s", "gruneisen")),
-            eos_names["jwl"]: ("jwl", ("a", "b", "r1", "r2", "omega", "rho0")),
-            eos_names["vinet"]: ("vinet", ("k0", "k0p", "rho0", "gruneisen")),
-        }
-        optional = {"mg": ("gruneisen_a", "t0", "s2", "s3"), "jwl": ("t0",), "vinet": ("gruneisen_a", "t0")}
+        families = {family.value: (family.prefix, tuple(name for name, _ in family.required)) for family in EOS_FAMILIES if family.state_dependent}
+        optional = {family.prefix: tuple(name for name, _ in family.optional) for family in EOS_FAMILIES if family.state_dependent}
+        state_dependent_names = ", ".join(family.suffix for family in EOS_FAMILIES if family.state_dependent)
         bub_fac = 1 if self.get("bubbles_euler", "F") == "T" else 0
         state_dependent = {}
         for i in range(1, num_fluids + 1 + bub_fac):
@@ -1125,20 +1139,28 @@ class CaseValidator:
             return
         # A temperature integrates from the reference state, so it needs T at rho0 as well as cv.
         rta = self.get("rburn%ta")
+        dynamic_ib = self.get("ib", "F") == "T" and (
+            any(self.get(f"patch_ib({j})%moving_ibm", 0) == 2 for j in range(1, (self.get("num_ibs") or 0) + 1))
+            or any(self.get(f"particle_cloud({j})%moving_ibm", 0) == 2 for j in range(1, (self.get("num_particle_clouds") or 0) + 1))
+        )
         for i, prefix in state_dependent.items():
-            if self.get("T_wrt", "F") == "T" or (i == 1 and self._is_numeric(rta) and rta > 0):
+            el_temperature = self.get("particles_lagrange", "F") == "T" and (self.get(f"lag_params%suth({i})", 0) or 0) > 0
+            needs_temperature = self.get("T_wrt", "F") == "T" or (i == 1 and self._is_numeric(rta) and rta > 0) or dynamic_ib or el_temperature
+            if needs_temperature:
+                cv = self.get(f"fluid_pp({i})%cv")
+                self.prohibit(cv is None or cv <= 0, f"the temperature of fluid {i} needs fluid_pp({i})%cv > 0")
                 t0 = self.get(f"fluid_pp({i})%{prefix}_t0")
                 self.prohibit(t0 is None or t0 <= 0, f"the temperature of fluid {i} needs fluid_pp({i})%{prefix}_t0 > 0")
-        self._check_initial_states_inside_eos(num_fluids, eos_names)
+        self._check_initial_states_inside_eos(num_fluids)
         # The per-phase evaluation is wired through the 5-equation paths only; every feature below still
         # reads the stiffened-gas coefficients directly.
-        self.prohibit(self.get("model_eqns") not in (2, 3), "a state-dependent eos (mie_gruneisen, jwl, vinet) requires model_eqns = 2 or 3")
-        self.prohibit(self.get("riemann_solver") not in (1, 2, 5), "a state-dependent eos (mie_gruneisen, jwl, vinet) requires riemann_solver = 1, 2 or 5")
-        self.prohibit(self.get("wave_speeds") == 2, "a state-dependent eos (mie_gruneisen, jwl, vinet) requires wave_speeds = 1 (the PVRS estimate is stiffened-gas only)")
+        self.prohibit(self.get("model_eqns") not in (2, 3), f"a state-dependent eos ({state_dependent_names}) requires model_eqns = 2 or 3")
+        self.prohibit(self.get("riemann_solver") not in (1, 2, 5), f"a state-dependent eos ({state_dependent_names}) requires riemann_solver = 1, 2 or 5")
+        self.prohibit(self.get("wave_speeds") == 2, f"a state-dependent eos ({state_dependent_names}) requires wave_speeds = 1 (the PVRS estimate is stiffened-gas only)")
         for j in range(1, (self.get("num_patches") or 0) + 1):
             self.prohibit(self.get(f"patch_icpp({j})%hcid") in (202, 203), f"patch_icpp({j})%hcid = 202/203 read fluid_pp(1)%gamma, which a state-dependent eos does not set")
-        for flag in ("bubbles_euler", "bubbles_lagrange", "igr", "relativity", "mhd", "chemistry", "relax", "ib"):
-            self.prohibit(self.get(flag, "F") == "T", f"a state-dependent eos (mie_gruneisen, jwl, vinet) is not supported with {flag} = T")
+        for flag in ("bubbles_euler", "igr", "relativity", "mhd", "chemistry", "relax"):
+            self.prohibit(self.get(flag, "F") == "T", f"a state-dependent eos ({state_dependent_names}) is not supported with {flag} = T")
 
     def check_stiffened_eos(self):
         """Checks constraints on stiffened equation of state fluids parameters"""
@@ -1468,6 +1490,61 @@ class CaseValidator:
         # weno_Re_flux requires viscous
         weno_Re_flux = self.get("weno_Re_flux", "F") == "T"
         self.prohibit(weno_Re_flux and not viscous, "weno_Re_flux requires viscous to be enabled")
+
+    def check_heat_conduction(self):
+        """Checks Fourier heat-conduction constraints."""
+        num_fluids = self.get("num_fluids") or 1
+        model_eqns = self.get("model_eqns")
+        igr = self.get("igr", "F") == "T"
+        chemistry = self.get("chemistry", "F") == "T"
+        eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
+        heat_conduction = False
+
+        for i in range(1, num_fluids + 1):
+            k_therm = self.get(f"fluid_pp({i})%k_therm", 0.0)
+            if not self._is_numeric(k_therm):
+                continue
+
+            self.prohibit(k_therm < 0.0, f"fluid_pp({i})%k_therm must be non-negative")
+            if k_therm <= 0.0:
+                continue
+
+            heat_conduction = True
+            cv = self.get(f"fluid_pp({i})%cv")
+            self.prohibit(
+                not self._is_numeric(cv) or cv <= 0.0,
+                f"fluid_pp({i})%cv must be positive when fluid_pp({i})%k_therm is set",
+            )
+            eos = self.get(f"fluid_pp({i})%eos", eos_names["stiffened_gas"])
+            self.prohibit(
+                eos not in (eos_names["stiffened_gas"], eos_names["ideal_gas"]),
+                "heat conduction supports only the stiffened-gas and ideal-gas equations of state",
+            )
+
+        self.prohibit(
+            heat_conduction and model_eqns not in (2, 3),
+            "heat conduction requires model_eqns = 2 (5-equation) or model_eqns = 3 (6-equation)",
+        )
+        self.prohibit(heat_conduction and igr, "heat conduction is not supported with igr")
+        self.prohibit(heat_conduction and chemistry, "heat conduction is not supported with chemistry")
+
+    def check_el_particles(self):
+        """Check the Euler-Lagrange particle-model requirements."""
+        if self.get("particles_lagrange", "F") != "T":
+            return
+
+        self.prohibit(self.get("bubbles_lagrange", "F") == "T", "particles_lagrange and bubbles_lagrange cannot both be enabled")
+        self.prohibit(self.get("n", 0) == 0, "particles_lagrange requires at least 2D (n > 0)")
+        self.prohibit((self.get("lag_params%nParticles_glb") or 0) < 1, "lag_params%nParticles_glb must be positive")
+        self.prohibit(
+            self.get("lag_params%solver_approach") not in (1, 2),
+            "lag_params%solver_approach must be 1 (one-way) or 2 (two-way)",
+        )
+        self.prohibit(not self.get("lag_params%input_path"), "lag_params%input_path must name a particle input file")
+        self.prohibit(
+            (self.get("particle_pp%rho0ref_particle") or 0) <= 0,
+            "particle_pp%rho0ref_particle must be positive",
+        )
 
     def check_non_newtonian(self):
         """Checks constraints on non-Newtonian (Herschel-Bulkley) parameters (simulation)"""
@@ -2034,6 +2111,8 @@ class CaseValidator:
         self.prohibit(filter_wrt and not lso_filter, "lso_filter_wrt = T requires lso_filter = T")
         self.prohibit(stat_wrt and not filter_wrt, "lso_stat_wrt = T requires lso_filter_wrt = T")
         self.prohibit(stat_wrt and not parallel_io, "LSO statistical output requires parallel_io = T")
+        self.prohibit(stat_wrt and self.get("num_fluids") != 1, "LSO statistics currently require num_fluids = 1")
+        self.prohibit(stat_wrt and self.get("particles_lagrange", "F") == "T", "LSO particle statistics support IBM markers, not particles_lagrange")
         eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
         eos = self.get("fluid_pp(1)%eos", eos_names["stiffened_gas"])
         cv = self.get("fluid_pp(1)%cv")
@@ -2046,7 +2125,19 @@ class CaseValidator:
         if stage != "post_process":
             return
 
+        if filter_wrt and factor > 1:
+            self.prohibit(not parallel_io or self.get("file_per_process", "F") == "T", "Downsampled LSO post-processing requires shared parallel_io files")
+            self.prohibit(self.get("down_sample", "F") == "T", "LSO downsampling cannot be combined with legacy down_sample")
+            self.prohibit(
+                (self.get("num_bc_patches", 0) or 0) > 0 or any(self.get(f"bc_{d}%{side}") == -17 for d in "xyz" for side in ("beg", "end")),
+                "Downsampled LSO post-processing does not support spatial boundary-condition files",
+            )
+            for key in ("m", "n", "p"):
+                cells = self.get(key, 0) or 0
+                self.prohibit(cells > 0 and (cells + 1) // factor < 2, "Downsampled LSO post-processing needs at least two cells per active direction")
+
         self.prohibit(pp_filter and not filter_wrt, "lso_pp_filter = T requires lso_filter_wrt = T")
+        self.prohibit(pp_filter and self.get("ib", "F") == "T" and not parallel_io, "IBM LSO post-process filtering requires parallel_io = T")
         self.prohibit(closure_wrt and not stat_wrt, "lso_closure_wrt = T requires lso_stat_wrt = T")
         if closure_wrt:
             self.prohibit(self.get("num_fluids") != 1, "LSO closures currently require num_fluids = 1")
@@ -2133,6 +2224,8 @@ class CaseValidator:
 
         # Define what constitutes a wall (-15 for slip, -16 for no-slip)
         wall_bcs = [-15, -16]
+        fourier_conduction = any(self._is_numeric(self.get(f"fluid_pp({i})%k_therm", 0.0)) and self.get(f"fluid_pp({i})%k_therm", 0.0) > 0.0 for i in range(1, (self.get("num_fluids") or 1) + 1))
+        heat_path = fourier_conduction or (chemistry and diffusion)
 
         for dir in ["x", "y", "z"]:
             isothermal_in = self.get(f"bc_{dir}%isothermal_in", "F") == "T"
@@ -2141,8 +2234,10 @@ class CaseValidator:
             bc_end = self.get(f"bc_{dir}%end")
 
             if isothermal_in:
-                # Prohibit isothermal boundaries if chemistry or diffusion are disabled
-                self.prohibit(not chemistry or not diffusion, f"Isothermal In (bc_{dir}%isothermal_in) requires both chemistry='T' and chem_params%diffusion='T' to calculate heat conduction.")
+                self.prohibit(
+                    not heat_path,
+                    f"Isothermal In (bc_{dir}%isothermal_in) requires a heat-conduction path: set fluid_pp(i)%k_therm > 0 or enable chemistry with chem_params%diffusion = T.",
+                )
 
                 # Prohibit if neither beg nor end is set to a valid wall condition
                 self.prohibit(bc_beg not in wall_bcs, f"Isothermal In (bc_{dir}%isothermal_in) requires a wall. Set bc_{dir}%beg to -15 (slip) or -16 (no-slip).")
@@ -2154,8 +2249,10 @@ class CaseValidator:
                     self.prohibit(tw_in <= 0.0, f"Wall temperature bc_{dir}%Twall_in must be strictly positive for thermodynamics (got {tw_in}).")
 
             if isothermal_out:
-                # Prohibit isothermal boundaries if chemistry or diffusion are disabled
-                self.prohibit(not chemistry or not diffusion, f"Isothermal Out (bc_{dir}%isothermal_out) requires both chemistry='T' and chem_params%diffusion='T' to calculate heat conduction.")
+                self.prohibit(
+                    not heat_path,
+                    f"Isothermal Out (bc_{dir}%isothermal_out) requires a heat-conduction path: set fluid_pp(i)%k_therm > 0 or enable chemistry with chem_params%diffusion = T.",
+                )
 
                 # Prohibit if neither beg nor end is set to a valid wall condition
                 self.prohibit(bc_end not in wall_bcs, f"Isothermal Out (bc_{dir}%isothermal_out) requires a wall. Set bc_{dir}%end to -15 (slip) or -16 (no-slip).")
@@ -2975,6 +3072,8 @@ class CaseValidator:
         self.check_eos_parameter_sanity()
         self.check_surface_tension()
         self.check_mhd()
+        self.check_heat_conduction()
+        self.check_el_particles()
         self.check_chemistry()
         self.check_reactive_burn()
 

@@ -1,10 +1,44 @@
-This file was created on 2026-09-20 20:15:38.091795.
+This file was created on 2026-09-20 14:51:46.639757.
 
 mfc.sh:
 
-    Invocation: test -j 1 -a --no-build --only 127A967A --generate
+    Invocation: test -j 1 --only B43894C4 --generate --no-build
     Lock:       mpi=Yes & gpu=No & debug=No & reldebug=No & gcov=No & unified=No & single=No & mixed=No & fastmath=No
     Git:        6e45a5cf593a70b2ec7cb868411ac158b14dc222 on worktree-issue-1860-ib-force-oob-fix (dirty)
+
+pre_process:
+
+    CMake Configuration:
+    
+        CMake v4.3.2 on Fahads-MacBook-Pro.local
+    
+        C       : AppleClang v21.0.0.21000101 (/usr/bin/cc)
+        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
+    
+        PRE_PROCESS   : ON
+        SIMULATION    : OFF
+        POST_PROCESS  : OFF
+        SYSCHECK      : OFF
+        DOCUMENTATION : OFF
+        ALL           : OFF
+    
+        MPI     : ON
+        OpenACC : OFF
+        OpenMP  : OFF
+    
+        Fypp    : /Users/fahadnabid/code/mfc-nabid/.claude/worktrees/issue-1860-ib-force-oob-fix/build/venv/bin/fypp
+        Doxygen : 
+    
+        Build Type : Release
+    
+    Configuration Environment:
+    
+        CC       : 
+        CXX      : 
+        FC       : 
+        OMPI_CC  : 
+        OMPI_CXX : 
+        OMPI_FC  : 
 
 simulation:
 
@@ -33,43 +67,9 @@ simulation:
     
     Configuration Environment:
     
-        CC       :
-        CXX      :
-        FC       :
-        OMPI_CC  : 
-        OMPI_CXX : 
-        OMPI_FC  : 
-
-post_process:
-
-    CMake Configuration:
-    
-        CMake v4.3.2 on Fahads-MacBook-Pro.local
-    
-        C       : AppleClang v21.0.0.21000101 (/usr/bin/cc)
-        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
-    
-        PRE_PROCESS   : OFF
-        SIMULATION    : OFF
-        POST_PROCESS  : ON
-        SYSCHECK      : OFF
-        DOCUMENTATION : OFF
-        ALL           : OFF
-    
-        MPI     : ON
-        OpenACC : OFF
-        OpenMP  : OFF
-    
-        Fypp    : /Users/fahadnabid/code/mfc-nabid/.claude/worktrees/issue-1860-ib-force-oob-fix/build/venv/bin/fypp
-        Doxygen : 
-    
-        Build Type : Release
-    
-    Configuration Environment:
-    
-        CC       :
-        CXX      :
-        FC       :
+        CC       : 
+        CXX      : 
+        FC       : 
         OMPI_CC  : 
         OMPI_CXX : 
         OMPI_FC  : 
@@ -101,14 +101,14 @@ syscheck:
     
     Configuration Environment:
     
-        CC       :
-        CXX      :
-        FC       :
+        CC       : 
+        CXX      : 
+        FC       : 
         OMPI_CC  : 
         OMPI_CXX : 
         OMPI_FC  : 
 
-pre_process:
+post_process:
 
     CMake Configuration:
     
@@ -117,9 +117,9 @@ pre_process:
         C       : AppleClang v21.0.0.21000101 (/usr/bin/cc)
         Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
     
-        PRE_PROCESS   : ON
+        PRE_PROCESS   : OFF
         SIMULATION    : OFF
-        POST_PROCESS  : OFF
+        POST_PROCESS  : ON
         SYSCHECK      : OFF
         DOCUMENTATION : OFF
         ALL           : OFF
@@ -135,9 +135,9 @@ pre_process:
     
     Configuration Environment:
     
-        CC       :
-        CXX      :
-        FC       :
+        CC       : /usr/bin/cc
+        CXX      : /usr/bin/c++
+        FC       : /opt/homebrew/bin/gfortran
         OMPI_CC  : 
         OMPI_CXX : 
         OMPI_FC  : 
@@ -151,3 +151,4 @@ CPU:
     machdep.cpu.logical_per_package: 14
     machdep.cpu.thread_count: 14
     machdep.cpu.brand_string: Apple M4 Pro
+

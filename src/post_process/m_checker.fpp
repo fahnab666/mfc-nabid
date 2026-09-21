@@ -22,21 +22,6 @@ contains
     !> Checks compatibility of parameters in the input file. Used by the post_process stage
     impure subroutine s_check_inputs
 
-        if (lso_filter_wrt .or. lso_stat_wrt .or. lso_pp_filter .or. lso_closure_wrt) then
-            @:PROHIBIT(lso_stat_wrt .and. .not. parallel_io, "LSO statistical output requires parallel_io")
-            @:PROHIBIT(lso_stat_wrt .and. .not. lso_filter_wrt, "lso_stat_wrt requires lso_filter_wrt")
-            @:PROHIBIT(lso_pp_filter .and. .not. lso_filter_wrt, "lso_pp_filter requires lso_filter_wrt")
-            @:PROHIBIT(lso_closure_wrt .and. .not. lso_stat_wrt, "lso_closure_wrt requires lso_stat_wrt")
-        end if
-
-        if (lso_closure_wrt) then
-            @:PROHIBIT(num_fluids /= 1, "LSO closures currently require num_fluids = 1")
-            @:PROHIBIT(chemistry, "LSO closures do not support chemistry")
-            @:PROHIBIT(fluid_pp(1)%eos /= eos_stiffened_gas .and. fluid_pp(1)%eos /= eos_ideal_gas, &
-                       & "LSO closures require a calorically perfect ideal or stiffened gas")
-            @:PROHIBIT(lso_R_gas <= 0._wp, "LSO closures require lso_R_gas > 0")
-        end if
-
     end subroutine s_check_inputs
 
     !> Checks constraints on fft_wrt

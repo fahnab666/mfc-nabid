@@ -791,7 +791,7 @@ contains
 
         real(wp), dimension(3) :: myVel, myPos, force_vec, s_cell, myForce, my_fqs_fluct, new_fqs_fluct, myFluidVel
         integer                :: mySeed, new_seed
-        integer                :: k, l, i, j, dir
+        integer                :: k, l, i, j, dir, cell_i, cell_j, cell_k
 
         if (lag_params%pressure_force .or. lag_params%added_mass_model > 0) then
             do l = 1, num_dims
@@ -811,10 +811,10 @@ contains
         call nvtxStartRange("LAGRANGE-PARTICLE-DYNAMICS")
 
         !> Compute Fluid-Particle Forces (drag/pressure/added mass) and convert to particle acceleration
-        $:GPU_PARALLEL_LOOP(private='[i, k, l, cell, s_cell, myMass, myR, myR0, myPos, myVel, mySeed, my_fqs_fluct, &
-                            & new_fqs_fluct, force_vec, rmass_add, func_sum, new_seed, myFluidVel, myFluidRho, myPres, qv, &
-                            & pi_inf, gamma, myGamma, vel_sum, vel, alpha, alpha_rho, alpha_cell, alpha_rho_cell, Re, myRe, &
-                            & myvel_sum]', copyin='[stage]')
+        $:GPU_PARALLEL_LOOP(private='[i, k, l, cell, cell_i, cell_j, cell_k, s_cell, myMass, myR, myR0, myPos, myVel, mySeed, &
+                            & my_fqs_fluct, new_fqs_fluct, force_vec, rmass_add, func_sum, new_seed, myFluidVel, myFluidRho, &
+                            & myPres, qv, pi_inf, gamma, myGamma, vel_sum, vel, alpha, alpha_rho, alpha_cell, alpha_rho_cell, Re, &
+                            & myRe, myvel_sum]', copyin='[stage]')
         do k = 1, n_el_particles_loc
             f_p(k,:) = 0._wp
             p_owner_rank(k) = proc_rank
@@ -853,15 +853,18 @@ contains
             end if
 
             ! Compute the carrier state through the refactored EOS interface.
+            cell_i = cell(1)
+            cell_j = cell(2)
+            cell_k = cell(3)
             call s_compute_cell_state(q_prim_vf, pres, rho, gamma, pi_inf, Re, alpha_cell, alpha_rho_cell, vel, vel_sum, qv, &
-                                      & cell(1), cell(2), cell(3))
+                                      & cell_i, cell_j, cell_k)
 
             ! Compute mixture sound speed
             call s_compute_speed_of_sound(myPres, myFluidrho, gamma, pi_inf, alpha, c, alpha_rho)
 
             myGamma = max(myFluidrho*c*c/max(myPres, sgm_eps), 1._wp)
 
-            call s_get_drag_viscosity(q_prim_vf, myPres, myFluidrho, pi_inf, alpha, alpha_rho, Re, myRe, cell(1), cell(2), cell(3))
+            call s_get_drag_viscosity(q_prim_vf, myPres, myFluidrho, pi_inf, alpha, alpha_rho, Re, myRe, cell_i, cell_j, cell_k)
 
             call s_get_particle_force(myPos, myR, myVel, myMass, myRe, myGamma, mySeed, my_fqs_fluct, cell, q_prim_vf, q_cons_vf, &
                                       & q_particles, field_vars, rhs_old, duidxj_id, weights_x_interp, weights_y_interp, &

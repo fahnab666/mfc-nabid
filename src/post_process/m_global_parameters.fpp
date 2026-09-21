@@ -364,6 +364,12 @@ contains
 
         lso_down_sample_factor = 1
         n_lso_stat = 0
+        lso_pp2_n_passes_x = 0
+        lso_pp2_n_passes_y = 0
+        lso_pp2_n_passes_z = 0
+        lso_pp2_a_x = 0._wp
+        lso_pp2_a_y = 0._wp
+        lso_pp2_a_z = 0._wp
 
         ! Bubble modeling (post-specific)
         nb = dflt_int

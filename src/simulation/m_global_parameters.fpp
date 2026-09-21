@@ -1049,6 +1049,11 @@ contains
 
         call s_configure_coordinate_bounds(recon_type, weno_polyn, muscl_polyn, igr_order, buff_size, idwint, idwbuff, viscous, &
                                            & bubbles_lagrange, particles_lagrange, m, n, p, num_dims, igr, ib, fd_number)
+        if (lso_filter) then
+            buff_size = max(buff_size, 4)
+            idwbuff(1:num_dims)%beg = -buff_size
+            idwbuff(1:num_dims)%end = idwint(1:num_dims)%end + buff_size
+        end if
         $:GPU_UPDATE(device='[idwint, idwbuff]')
 
         ! Configuring Coordinate Direction Indexes

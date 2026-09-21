@@ -13,6 +13,7 @@ module m_start_up
     use m_mpi_proxy
     use m_mpi_common
     use m_variables_conversion
+    use m_eos
     use m_weno
     use m_muscl
     use m_thinc
@@ -788,12 +789,17 @@ contains
         ! The filter kernels run on device data; afterwards copy filtered interior
         ! back to host so s_write_data_files reads the correct values.
         if (lso_filter .and. lso_filter_wrt) then
-            call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_prim_vf, q_T_sf)
+            call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_T_sf)
             do i = 1, sys_size
 #ifndef FRONTIER_UNIFIED
-                $:GPU_UPDATE(host='[q_cons_ts(stor)%vf(i)%sf]')
+                $:GPU_UPDATE(host='[q_filt_vf(i)%sf]')
 #endif
             end do
+#ifndef FRONTIER_UNIFIED
+            if (ib) then
+                $:GPU_UPDATE(host='[q_lso_mask_vf(1)%sf]')
+            end if
+#endif
             lso_file_prefix = 'lso_'
             if (lso_down_sample_factor > 1) then
                 call s_lso_stride_sample(q_filt_vf, q_filt_ds_vf)
@@ -809,6 +815,7 @@ contains
             if (lso_stat_wrt .and. n_lso_stat > 0 .and. parallel_io) then
                 if (lso_down_sample_factor > 1) then
                     call s_lso_stat_stride_sample()
+                    if (lso2_n_passes_x > 0) call s_apply_lso_filter_coarse(q_lso_stat_ds_vf)
                     call s_write_lso_stat_file(q_lso_stat_ds_vf, n_lso_stat, save_count)
                 else
                     call s_write_lso_stat_file(q_lso_stat_vf, n_lso_stat, save_count)
@@ -889,6 +896,7 @@ contains
         end if
         call s_initialize_mpi_common_module(exchange_all_chemistry_temperatures_in=.false., use_rdma_transport_in=rdma_mpi)
         call s_initialize_mpi_proxy_module()
+        call s_initialize_eos_module()
         call s_initialize_variables_conversion_module(enforce_density_floor=.true., preserve_qbmm_number=.true.)
         if (grid_geometry == 3) call s_initialize_fftw_module()
 
@@ -1128,6 +1136,7 @@ contains
         call s_initialize_parallel_io()
 
         call s_mpi_decompose_computational_domain(write_silo_ghost_offsets=.false., adjust_local_domains=.false.)
+        call s_check_lso_decomposition()
 
         bc = bc_xyz_info(bc_x, bc_y, bc_z)
 
@@ -1236,6 +1245,7 @@ contains
         end if
         if (int_comp > 0) call s_finalize_thinc_module()
         call s_finalize_variables_conversion_module()
+        call s_finalize_eos_module()
         if (grid_geometry == 3) call s_finalize_fftw_module
         if (lso_filter .and. (lso_filter_wrt .or. lso_stat_wrt)) call s_finalize_lso_filter_module()
         call s_finalize_mpi_common_module()
