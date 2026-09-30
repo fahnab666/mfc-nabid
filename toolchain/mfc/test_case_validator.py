@@ -171,6 +171,17 @@ class ConstraintTestCase(unittest.TestCase):
         self.assertEqual(self.errors_for(params), "")
 
 
+class TestVizOutput(ConstraintTestCase):
+    def test_viz_needs_a_positive_interval_and_ordered_bounds(self):
+        viz = {**BASE, "viz_wrt": "T", "viz_t_save": 1e-5}
+        self.assertAccepts(viz)
+        self.assertAccepts({**viz, "viz_t_beg": 1e-5, "viz_t_end": 5e-5, "viz_x_beg": 0.2, "viz_x_end": 0.8})
+        self.assertRejects({**BASE, "viz_wrt": "T"}, "viz_t_save must be positive")
+        self.assertRejects({**viz, "viz_t_save": 0.0}, "viz_t_save must be positive")
+        self.assertRejects({**viz, "viz_t_beg": 2e-5, "viz_t_end": 1e-5}, "viz_t_end must not precede viz_t_beg")
+        self.assertRejects({**viz, "viz_x_beg": 0.5, "viz_x_end": 0.5}, "viz_x_end must exceed viz_x_beg")
+
+
 class TestImmersedBoundaryFlags(ConstraintTestCase):
     MSG = "many_ib_patch_parallelism requires ib"
 

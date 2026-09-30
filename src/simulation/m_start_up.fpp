@@ -60,7 +60,7 @@ module m_start_up
 
     private; public :: s_read_input_file, s_check_input_file, s_read_data_files, s_read_serial_data_files, &
         & s_read_parallel_data_files, s_initialize_internal_energy_equations, s_initialize_modules, s_initialize_gpu_vars, &
-        & s_initialize_mpi_domain, s_finalize_modules, s_perform_time_step, s_save_data, s_save_performance_metrics
+        & s_initialize_mpi_domain, s_finalize_modules, s_perform_time_step, s_save_data, s_save_performance_metrics, s_viz_output
 
     type(scalar_field), allocatable, dimension(:) :: q_cons_temp
     real(wp)                                      :: dt_init
@@ -878,6 +878,20 @@ contains
 
     end subroutine s_save_data
 
+    !> Write a viz frame when one is due (viz_wrt), from a host copy of the current conservative state.
+    impure subroutine s_viz_output(t_step)
+
+        integer, intent(in) :: t_step
+        integer             :: i
+
+        if (.not. f_viz_due()) return
+        do i = 1, sys_size
+            $:GPU_UPDATE(host='[q_cons_ts(1)%vf(i)%sf]')
+        end do
+        call s_write_viz_data(q_cons_ts(1)%vf, t_step)
+
+    end subroutine s_viz_output
+
     !> Initialize all simulation sub-modules in the required dependency order
     impure subroutine s_initialize_modules
 
@@ -1037,6 +1051,8 @@ contains
         if (particles_lagrange) call s_initialize_particles_EL_module(q_cons_ts(1)%vf, bc_type)
 
         if (hypoelasticity) call s_initialize_hypoelastic_module()
+
+        if (viz_wrt) call s_initialize_viz_output()
 
     end subroutine s_initialize_modules
 

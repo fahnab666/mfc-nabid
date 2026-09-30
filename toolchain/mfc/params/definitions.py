@@ -724,6 +724,9 @@ def _load():
     _r("precision", INT, {"output"})
     _r("format", INT, {"output"})
     _r("ib_force_stride", INT, {"output", "ib"})
+    _r("viz_wrt", LOG, {"output"})
+    for n in ["viz_t_save", "viz_t_beg", "viz_t_end", "viz_x_beg", "viz_x_end", "viz_y_beg", "viz_y_end", "viz_z_beg", "viz_z_end"]:
+        _r(n, REAL, {"output"})
     for n in ["parallel_io", "file_per_process", "run_time_info", "prim_vars_wrt", "cons_vars_wrt", "fft_wrt", "ib_state_wrt", "ib_force_wrt"]:
         _r(n, LOG, {"output"})
 
@@ -1531,6 +1534,16 @@ _nv(_PRE_SIM, "ib_airfoil")
 _nv(_PRE_SIM, "stl_models", "num_stl_models")
 _nv(
     _SIM,
+    "viz_wrt",
+    "viz_t_save",
+    "viz_t_beg",
+    "viz_t_end",
+    "viz_x_beg",
+    "viz_x_end",
+    "viz_y_beg",
+    "viz_y_end",
+    "viz_z_beg",
+    "viz_z_end",
     "dt",
     "t_step_print",
     "time_stepper",
