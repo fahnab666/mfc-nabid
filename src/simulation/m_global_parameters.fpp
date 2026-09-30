@@ -579,6 +579,15 @@ contains
         ib_ip_interp = 1
         ib_wall_order = 1
 
+        ! In-situ visualization output (viz_wrt)
+        viz_wrt = .false.
+        viz_t_save = dflt_real
+        viz_t_beg = 0._wp
+        viz_t_end = dflt_real
+        viz_x_beg = dflt_real; viz_x_end = dflt_real
+        viz_y_beg = dflt_real; viz_y_end = dflt_real
+        viz_z_beg = dflt_real; viz_z_end = dflt_real
+
         ! Bubble modeling (sim-specific)
 
         ! LSO variable-weight Gaussian filter

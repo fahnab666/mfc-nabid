@@ -82,6 +82,8 @@ program p_main
 
         call s_perform_time_step(t_step, time_avg)
 
+        if (viz_wrt) call s_viz_output(t_step)
+
         if (cfl_dt) then
             ! Save once per index; a mod(mytime, t_save) < dt test can refire on a restart and overwrite n_start
             if (int(mytime/t_save) > last_save .or. mytime >= t_stop) then

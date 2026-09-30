@@ -831,6 +831,10 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `ib_force_stride`       | Integer | Stride, in time steps, of the per-step immersed-boundary force record (default 1) |
 | `ib_surface_wrt`        | Logical | Write the wall temperature and gasified mass flux at each surface point of the non-injecting IBs of a chemistry run, at every save (default off) |
 | `ib_heat_wrt`           | Logical | Record each immersed body's mass loss and heat exchange rates to `D/ib_heat.dat` (default off) |
+| `viz_wrt`               | Logical | Write single-precision primitive fields (density, velocity, pressure) on a box of cells to `viz/viz_<n>.dat` every `viz_t_save`, for movies. `viz/viz_meta.txt` gives the global cell box and `viz/viz_times.txt` the step and time of each frame (simulation only) |
+| `viz_t_save`            | Real    | Simulation-time interval between viz frames (required with `viz_wrt`) |
+| `viz_t_beg`, `viz_t_end`| Real    | First viz frame time (default 0) and the time after which no frames are written (default: none) |
+| `viz_[x,y,z]_beg`, `viz_[x,y,z]_end` | Real | Box of cells written, by cell centre (default: the whole domain) |
 | `ib_state_wrt`          | Logical | Parameter to handle writing IB state on saves and outputting the state as a point mesh to SILO files. |
 | `pi_inf_wrt`            | Logical | Add the liquid stiffness function to the database |
 | `pres_inf_wrt`          | Logical | Add the liquid stiffness to the formatted database	 |
