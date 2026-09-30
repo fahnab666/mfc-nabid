@@ -2073,6 +2073,18 @@ class CaseValidator:
 
         self.prohibit(probe_wrt and fd_order is None, "fd_order must be specified for probe_wrt")
 
+    def check_viz_output(self):
+        """Checks the in-situ visualization output (simulation)"""
+        if self.get("viz_wrt", "F") != "T":
+            return
+        t_save = self.get("viz_t_save")
+        self.prohibit(t_save is None or t_save <= 0, "viz_t_save must be positive when viz_wrt is enabled")
+        t_beg, t_end = self.get("viz_t_beg"), self.get("viz_t_end")
+        self.prohibit(t_beg is not None and t_end is not None and t_end < t_beg, "viz_t_end must not precede viz_t_beg")
+        for d in "xyz":
+            beg, end = self.get(f"viz_{d}_beg"), self.get(f"viz_{d}_end")
+            self.prohibit(beg is not None and end is not None and end <= beg, f"viz_{d}_end must exceed viz_{d}_beg")
+
     # Pre-Process Specific Checks
 
     def check_restart(self):
@@ -3275,6 +3287,7 @@ class CaseValidator:
         self.check_continuum_damage()
         self.check_grcbc()
         self.check_probe_output()
+        self.check_viz_output()
 
     def validate_pre_process(self):
         """Validate pre-process-specific parameters"""

@@ -30,9 +30,20 @@ module m_data_output
     public :: s_initialize_data_output_module, s_open_run_time_information_file, s_open_probe_files, &
         & s_write_run_time_information, s_write_data_files, s_write_serial_data_files, s_write_parallel_data_files, &
         & s_write_ib_data_file, s_write_probe_files, s_write_ib_state_file, s_write_ib_force_history, s_close_ib_force_history, &
-        & s_close_run_time_information_file, s_close_probe_files, s_finalize_data_output_module, s_write_lso_stat_file
+        & s_close_run_time_information_file, s_close_probe_files, s_finalize_data_output_module, s_write_lso_stat_file, &
+        & s_initialize_viz_output, f_viz_due, s_write_viz_data
     real(wp), public, allocatable, dimension(:,:) :: c_mass
     $:GPU_DECLARE(create='[c_mass]')
+
+    !> @name In-situ visualization output (viz_wrt): float32 primitive fields on a box of cells
+    !> @{
+    integer  :: viz_lo(3) = 0, viz_hi(3) = -1    !< local cell range inside the box (empty when lo > hi)
+    integer  :: viz_glo(3) = 0, viz_ghi(3) = -1  !< global cell range of the box
+    integer  :: viz_comm = 0                     !< communicator of the ranks holding part of the box
+    integer  :: viz_frame = 0
+    logical  :: viz_mine = .false.
+    real(wp) :: viz_next = 0._wp
+    !> @}
 
     !> @name ICFL, VCFL, CCFL, TCFL, and Rc stability criteria extrema over all the time-steps
     !> @{
@@ -2167,5 +2178,165 @@ contains
 #endif
 
     end subroutine s_write_lso_stat_file
+
+    !> Locate the viz box (cells whose centres lie in viz_[xyz]_beg..viz_[xyz]_end) on this rank and globally, split the
+    !! communicator of the ranks that hold part of it, and start viz/viz_meta.txt and viz/viz_times.txt.
+    impure subroutine s_initialize_viz_output
+
+#ifdef MFC_MPI
+        real(wp), dimension(3)               :: lo, hi
+        integer, dimension(3)                :: nd, sidx, glo, ghi
+        integer                              :: d, j, ierr, color
+        real(wp)                             :: xc
+        character(LEN=path_len + 2*name_len) :: dir
+        logical                              :: dir_check
+
+        lo = [viz_x_beg, viz_y_beg, viz_z_beg]; hi = [viz_x_end, viz_y_end, viz_z_end]
+        where (f_is_default(lo)) lo = -huge(1._wp)
+        where (f_is_default(hi)) hi = huge(1._wp)
+        nd = [m, n, p]
+        sidx = 0
+        if (allocated(start_idx)) sidx(1:size(start_idx)) = start_idx
+        viz_lo = 0; viz_hi = 0
+        do d = 1, num_dims
+            viz_lo(d) = nd(d) + 1; viz_hi(d) = -1
+            do j = 0, nd(d)
+                select case (d)
+                case (1); xc = x_cc(j)
+                case (2); xc = y_cc(j)
+                case default; xc = z_cc(j)
+                end select
+                if (xc >= lo(d) .and. xc <= hi(d)) then
+                    viz_lo(d) = min(viz_lo(d), j); viz_hi(d) = max(viz_hi(d), j)
+                end if
+            end do
+        end do
+        viz_mine = all(viz_lo <= viz_hi)
+        glo = merge(sidx + viz_lo, huge(0), viz_mine)
+        ghi = merge(sidx + viz_hi, -1, viz_mine)
+        call MPI_ALLREDUCE(glo, viz_glo, 3, MPI_INTEGER, MPI_MIN, MPI_COMM_WORLD, ierr)
+        call MPI_ALLREDUCE(ghi, viz_ghi, 3, MPI_INTEGER, MPI_MAX, MPI_COMM_WORLD, ierr)
+        if (any(viz_ghi < viz_glo)) call s_mpi_abort("viz_wrt: the viz box contains no cell centres")  ! lint: runtime-check
+        color = merge(1, MPI_UNDEFINED, viz_mine)
+        call MPI_COMM_SPLIT(MPI_COMM_WORLD, color, proc_rank, viz_comm, ierr)
+        viz_next = viz_t_beg
+        if (proc_rank == 0) then
+            dir = trim(case_dir) // '/viz'
+            call my_inquire(dir, dir_check)
+            if (.not. dir_check) call s_create_directory(trim(dir))
+            open (1, FILE=trim(dir) // '/viz_meta.txt', STATUS='replace')
+            write (1, '(A)', advance='no') 'variables  rho'
+            do j = 1, num_vels
+                write (1, '(A)', advance='no') ' ' // 'uvw'(j:j)
+            end do
+            write (1, '(A)') ' p'
+            write (1, '(A,I0)') 'nvars      ', 2 + num_vels
+            write (1, '(A)') 'precision  float32; each variable a Fortran-ordered block, variables in sequence'
+            write (1, '(A,3(1X,I0))') 'global_lo ', viz_glo
+            write (1, '(A,3(1X,I0))') 'global_hi ', viz_ghi
+            write (1, '(A,3(1X,I0))') 'shape     ', viz_ghi - viz_glo + 1
+            close (1)
+            open (1, FILE=trim(dir) // '/viz_times.txt', STATUS='replace')
+            write (1, '(A)') '# frame  t_step  time'
+            close (1)
+        end if
+        call s_mpi_barrier()
+#endif
+
+    end subroutine s_initialize_viz_output
+
+    !> True when the current time has reached the next viz frame and lies inside the viz time window.
+    impure logical function f_viz_due() result(due)
+
+        due = viz_wrt
+        if (.not. due) return
+        due = mytime >= viz_next
+        if (.not. f_is_default(viz_t_end)) due = due .and. mytime <= viz_t_end
+
+    end function f_viz_due
+
+    !> Write one viz frame, viz/viz_<frame>.dat: rho, velocity and pressure in float32 on the viz box (host copy of the conservative
+    !! state; the solver's primitive and temperature fields are not touched), and log it in viz_times.txt.
+    impure subroutine s_write_viz_data(q_cons_vf, t_step)
+
+        type(scalar_field), dimension(sys_size), intent(in) :: q_cons_vf
+        integer, intent(in)                                 :: t_step
+
+#ifdef MFC_MPI
+        real(sp), allocatable, dimension(:,:,:,:) :: buf
+        real(wp)                                  :: rho, gamma, pi_inf, qv, dyn_p, pres, T
+        real(wp), dimension(num_vels)             :: vel
+        real(wp)                                  :: rhoYks(1:num_species)
+        integer                                   :: j, k, l, s, v, nv, ierr, ifile, view
+        integer, dimension(3)                     :: sizes_glb, sizes_loc, starts, sidx
+        integer(kind=MPI_OFFSET_KIND)             :: disp, box
+        integer, dimension(MPI_STATUS_SIZE)       :: status
+        character(LEN=path_len + 2*name_len)      :: file_loc
+        logical                                   :: file_exist
+
+        nv = 2 + num_vels
+        write (file_loc, '(A,I0,A)') trim(case_dir) // '/viz/viz_', viz_frame, '.dat'
+        if (viz_mine) then
+            allocate (buf(viz_lo(1):viz_hi(1),viz_lo(2):viz_hi(2),viz_lo(3):viz_hi(3),nv))
+            T = dflt_T_guess
+            rhoYks = 0._wp
+            do l = viz_lo(3), viz_hi(3)
+                do k = viz_lo(2), viz_hi(2)
+                    do j = viz_lo(1), viz_hi(1)
+                        call s_convert_to_mixture_variables(q_cons_vf, j, k, l, rho, gamma, pi_inf, qv)
+                        do s = 1, num_vels
+                            vel(s) = q_cons_vf(eqn_idx%cont%end + s)%sf(j, k, l)/rho
+                        end do
+                        if (chemistry) then
+                            do s = 1, num_species
+                                rhoYks(s) = q_cons_vf(eqn_idx%species%beg + s - 1)%sf(j, k, l)
+                            end do
+                        end if
+                        dyn_p = 0.5_wp*rho*dot_product(vel, vel)
+                        call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j, k, l), q_cons_vf(eqn_idx%alf)%sf(j, k, l), dyn_p, &
+                                                & pi_inf, gamma, rho, qv, rhoYks, pres, T)
+                        buf(j, k, l, 1) = real(rho, sp)
+                        do s = 1, num_vels
+                            buf(j, k, l, 1 + s) = real(vel(s), sp)
+                        end do
+                        buf(j, k, l, nv) = real(pres, sp)
+                    end do
+                end do
+            end do
+            sidx = 0
+            if (allocated(start_idx)) sidx(1:size(start_idx)) = start_idx
+            sizes_glb = viz_ghi - viz_glo + 1
+            sizes_loc = viz_hi - viz_lo + 1
+            starts = sidx + viz_lo - viz_glo
+            box = product(int(sizes_glb, MPI_OFFSET_KIND))
+            inquire (FILE=trim(file_loc), EXIST=file_exist)
+            if (file_exist .and. viz_lo(1) + sidx(1) == viz_glo(1) .and. viz_lo(2) + sidx(2) == viz_glo(2) .and. viz_lo(3) &
+                & + sidx(3) == viz_glo(3)) call MPI_FILE_DELETE(file_loc, mpi_info_int, ierr)
+            call MPI_BARRIER(viz_comm, ierr)
+            call MPI_FILE_OPEN(viz_comm, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+            call MPI_TYPE_CREATE_SUBARRAY(3, sizes_glb, sizes_loc, starts, MPI_ORDER_FORTRAN, MPI_REAL, view, ierr)
+            call MPI_TYPE_COMMIT(view, ierr)
+            do v = 1, nv
+                disp = box*4_MPI_OFFSET_KIND*int(v - 1, MPI_OFFSET_KIND)
+                call MPI_FILE_SET_VIEW(ifile, disp, MPI_REAL, view, 'native', mpi_info_int, ierr)
+                call MPI_FILE_WRITE_ALL(ifile, buf(:,:,:,v), product(sizes_loc), MPI_REAL, status, ierr)
+            end do
+            call MPI_TYPE_FREE(view, ierr)
+            call MPI_FILE_CLOSE(ifile, ierr)
+            deallocate (buf)
+        end if
+        if (proc_rank == 0) then
+            open (1, FILE=trim(case_dir) // '/viz/viz_times.txt', POSITION='append', STATUS='old')
+            write (1, '(I8,1X,I10,1X,ES24.16)') viz_frame, t_step, mytime
+            close (1)
+        end if
+        viz_frame = viz_frame + 1
+        viz_next = viz_next + viz_t_save
+        do while (viz_next <= mytime)
+            viz_next = viz_next + viz_t_save
+        end do
+#endif
+
+    end subroutine s_write_viz_data
 
 end module m_data_output
