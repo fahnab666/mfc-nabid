@@ -283,7 +283,7 @@ contains
             real(wp), dimension(nb*nnode)   :: presb_IP, massv_IP
         #:endif
         real(wp), dimension(${NUM_SPECIES}$) :: Ys_IP
-        real(wp) :: alpha_q, alpha_rho_q, e_q
+        real(wp) :: alpha_q, alpha_rho_q, e_q, rho_IP_q, rho_GP_q
         real(wp) :: T_IP, mw_IP, e_IP  !< Image-point temperature, mixture MW, and mass-specific internal energy (chemistry)
         ! Primitive variables at the image point associated with a ghost point, interpolated from surrounding fluid cells.
 
@@ -327,7 +327,7 @@ contains
             $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, alpha_rho_GP, pres_IP, pres_GP, &
                                 & vel_IP, vel_g, r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, &
                                 & G_K, Gs, gp, radial_vector, j, k, l, q, qv_K, c_IP, nbub, patch_id, Ys_IP, T_IP, mw_IP, e_IP, &
-                                & vel_sum_g, E_ghost, alpha_q, alpha_rho_q, e_q]', present='[ghost_points]')
+                                & vel_sum_g, E_ghost, alpha_q, alpha_rho_q, e_q, rho_IP_q, rho_GP_q]', present='[ghost_points]')
             do i = 1, num_gps
                 gp = ghost_points(i)
                 if (.not. gp%interp_valid) cycle
@@ -392,7 +392,13 @@ contains
                     ! fractions are untouched, so only rho and qv move with it.
                     $:GPU_LOOP(parallelism='[seq]')
                     do q = 1, num_fluids
-                        alpha_rho_GP(q) = alpha_rho_IP(q)*(pres_GP + isentrope_B(q))/(pres_IP + isentrope_B(q))
+                        if (fluid_pp(q)%eos == eos_jwl) then
+                            rho_IP_q = max(alpha_rho_IP(q), sgm_eps)/max(alpha_IP(q), sgm_eps)
+                            call s_phase_density_at_temperature(q, rho_IP_q, pres_IP, pres_GP, rho_GP_q)
+                            alpha_rho_GP(q) = alpha_rho_IP(q)*rho_GP_q/rho_IP_q
+                        else
+                            alpha_rho_GP(q) = alpha_rho_IP(q)*(pres_GP + isentrope_B(q))/(pres_IP + isentrope_B(q))
+                        end if
                     end do
                     call s_compute_mixture_coefficients(alpha_rho_GP, alpha_IP, rho, gamma, pi_inf, qv_K)
                 end if

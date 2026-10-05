@@ -177,15 +177,43 @@ PHYSICS_DOCS = {
         "category": "Bubble Physics",
         "explanation": "2D/3D only. Requires polytropic = F and thermal = 3. Not compatible with model_eqns = 3. Kahan summation not compatible with --mixed precision.",
     },
+    "check_el_particles": {
+        "title": "Euler-Lagrange Solid Particles",
+        "category": "Feature Compatibility",
+        "explanation": (
+            "Requires at least 2D, a positive lag_params%nParticles_glb and particle_pp%rho0ref_particle, "
+            "and lag_params%input_path naming the particle file. lag_params%solver_approach selects "
+            "one-way (1) or two-way (2) coupling. Cannot be combined with bubbles_lagrange. "
+            "These input constraints do not establish validation of drag, heat transfer or collisions."
+        ),
+    },
     "check_reactive_burn": {
         "title": "Condensed-Phase Reactive Burn",
         "category": "Combustion",
         "explanation": (
-            "Programmed pressure-driven burn converting a reactant fluid to a product fluid on the multi-fluid model. "
-            "Requires model_eqns = 2 or 3 and num_fluids = 2 (reactant, product) sharing the stiffened-gas EOS "
-            "(equal gamma, pi_inf) with qv_reactant > qv_product. rburn%k (> 0), rburn%pign, rburn%pref (> 0), "
+            "Pressure-driven burn converting reactant fluid 1 to product fluid 2 on the multi-fluid model. "
+            "Requires model_eqns = 2 or 3, num_fluids = 2, and qv_reactant > qv_product. "
+            "Constant-coefficient fluids must have equal gamma and pi_inf. rburn%k (> 0), rburn%pign, rburn%pref (> 0), "
             "and rburn%n (>= 0) must all be set. rburn%ta (activation temperature [K]) is optional and must be >= 0; "
             ">0 adds an Arrhenius exp(-rburn%ta/T) factor and requires fluid_pp(1)%cv > 0."
+        ),
+    },
+    "_check_ignition_growth_burn": {
+        "title": "JWL Ignition and Growth Burn",
+        "category": "Combustion",
+        "explanation": (
+            "The ignition and growth model converts fluid 2 into fluid 3 using a bounded update. "
+            "It requires three fluids, JWL reactant and product phases, positive reference density, "
+            "and nonnegative rate coefficients and exponents."
+        ),
+    },
+    "check_prog_burn": {
+        "title": "JWL Program Burn",
+        "category": "Combustion",
+        "explanation": (
+            "The prescribed front deposits the swept fraction of the JWL fluid's energy budget each step. "
+            "It requires exactly one JWL fluid, positive jwl_Q, pb_D_cj, and pb_width, and a nonnegative initiation time. "
+            "It cannot be combined with another primary burn model."
         ),
     },
     # Numerical Schemes
@@ -220,6 +248,15 @@ PHYSICS_DOCS = {
             "ideal-gas equations of state are supported, and only model_eqns = 2 (5-equation) or 3 (6-equation): "
             "the mixture conductivity is weighted by the volume fractions those models carry, which model_eqns = 1 "
             "does not have. Not supported with igr or chemistry (which carries its own mixture-averaged conduction)."
+        ),
+    },
+    "check_lso_filter": {
+        "title": "LSO Filtering",
+        "category": "Numerical Schemes",
+        "explanation": (
+            "LSO statistical products require one fluid and are written by simulation MPI I/O and consumed by post-process. "
+            "Particle products support IBM markers, not particles_lagrange. "
+            "Closure reconstruction currently supports one calorically perfect ideal or stiffened gas."
         ),
     },
     # Feature Compatibility
@@ -1121,8 +1158,16 @@ class CaseValidator:
             return
         # A temperature integrates from the reference state, so it needs T at rho0 as well as cv.
         rta = self.get("rburn%ta")
+        dynamic_ib = self.get("ib", "F") == "T" and (
+            any(self.get(f"patch_ib({j})%moving_ibm", 0) == 2 for j in range(1, (self.get("num_ibs") or 0) + 1))
+            or any(self.get(f"particle_cloud({j})%moving_ibm", 0) == 2 for j in range(1, (self.get("num_particle_clouds") or 0) + 1))
+        )
         for i, prefix in state_dependent.items():
-            if self.get("T_wrt", "F") == "T" or (i == 1 and self._is_numeric(rta) and rta > 0):
+            el_temperature = self.get("particles_lagrange", "F") == "T" and (self.get(f"lag_params%suth({i})", 0) or 0) > 0
+            needs_temperature = self.get("T_wrt", "F") == "T" or (i == 1 and self._is_numeric(rta) and rta > 0) or (dynamic_ib and prefix == "jwl") or el_temperature
+            if needs_temperature:
+                cv = self.get(f"fluid_pp({i})%cv")
+                self.prohibit(cv is None or cv <= 0, f"the temperature of fluid {i} needs fluid_pp({i})%cv > 0")
                 t0 = self.get(f"fluid_pp({i})%{prefix}_t0")
                 self.prohibit(t0 is None or t0 <= 0, f"the temperature of fluid {i} needs fluid_pp({i})%{prefix}_t0 > 0")
         self._check_initial_states_inside_eos(num_fluids)
@@ -1133,7 +1178,11 @@ class CaseValidator:
         self.prohibit(self.get("wave_speeds") == 2, f"a state-dependent eos ({state_dependent_names}) requires wave_speeds = 1 (the PVRS estimate is stiffened-gas only)")
         for j in range(1, (self.get("num_patches") or 0) + 1):
             self.prohibit(self.get(f"patch_icpp({j})%hcid") in (202, 203), f"patch_icpp({j})%hcid = 202/203 read fluid_pp(1)%gamma, which a state-dependent eos does not set")
-        for flag in ("bubbles_euler", "bubbles_lagrange", "igr", "relativity", "mhd", "chemistry", "relax", "ib"):
+        has_jwl = any(prefix == "jwl" for prefix in state_dependent.values())
+        unsupported = ("bubbles_euler", "igr", "relativity", "mhd", "chemistry", "relax")
+        if not has_jwl:
+            unsupported += ("bubbles_lagrange", "ib")
+        for flag in unsupported:
             self.prohibit(self.get(flag, "F") == "T", f"a state-dependent eos ({state_dependent_names}) is not supported with {flag} = T")
 
     def check_stiffened_eos(self):
@@ -1513,6 +1562,24 @@ class CaseValidator:
         self.prohibit(
             heat_conduction and chemistry,
             "heat conduction is not supported with chemistry: the reacting path already carries mixture-averaged conduction through chem_params%diffusion",
+        )
+
+    def check_el_particles(self):
+        """Check the Euler-Lagrange particle-model requirements."""
+        if self.get("particles_lagrange", "F") != "T":
+            return
+
+        self.prohibit(self.get("bubbles_lagrange", "F") == "T", "particles_lagrange and bubbles_lagrange cannot both be enabled")
+        self.prohibit(self.get("n", 0) == 0, "particles_lagrange requires at least 2D (n > 0)")
+        self.prohibit((self.get("lag_params%nParticles_glb") or 0) < 1, "lag_params%nParticles_glb must be positive")
+        self.prohibit(
+            self.get("lag_params%solver_approach") not in (1, 2),
+            "lag_params%solver_approach must be 1 (one-way) or 2 (two-way)",
+        )
+        self.prohibit(not self.get("lag_params%input_path"), "lag_params%input_path must name a particle input file")
+        self.prohibit(
+            (self.get("particle_pp%rho0ref_particle") or 0) <= 0,
+            "particle_pp%rho0ref_particle must be positive",
         )
 
     def check_non_newtonian(self):
@@ -2066,6 +2133,70 @@ class CaseValidator:
             if coord_a is not None and coord_b is not None:
                 self.prohibit(coord_a >= coord_b, f"{direction}_a must be less than {direction}_b with stretch_{direction} enabled")
 
+    def check_lso_filter(self, stage):
+        """Reject LSO configurations that otherwise produce missing or invalid output."""
+        enabled = any(self.get(key, "F") == "T" for key in ("lso_filter", "lso_filter_wrt", "lso_stat_wrt", "lso_pp_filter", "lso_closure_wrt"))
+        if not enabled:
+            return
+
+        lso_filter = self.get("lso_filter", "F") == "T"
+        filter_wrt = self.get("lso_filter_wrt", "F") == "T"
+        stat_wrt = self.get("lso_stat_wrt", "F") == "T"
+        pp_filter = self.get("lso_pp_filter", "F") == "T"
+        closure_wrt = self.get("lso_closure_wrt", "F") == "T"
+        parallel_io = self.get("parallel_io", "F") == "T"
+        sigma = self.get("filter_sigma")
+        factor = self.get("lso_down_sample_factor", 1) or 1
+        lso_R_gas = self.get("lso_R_gas", 287.0)
+        if lso_R_gas is None:
+            lso_R_gas = 287.0
+
+        self.prohibit(sigma is None or sigma <= 0, "LSO filtering requires filter_sigma > 0")
+        stretch_x = self.get("stretch_x", "F") == "T"
+        self.prohibit(any(self.get(f"stretch_{d}", "F") == "T" for d in "yz"), "LSO filtering requires uniform y and z grids")
+        self.prohibit(stretch_x and pp_filter, "lso_pp_filter requires a uniform x grid")
+        self.prohibit(factor < 1, "lso_down_sample_factor must be a positive integer")
+        if factor > 1:
+            for direction, key in (("x", "m"), ("y", "n"), ("z", "p")):
+                cells = self.get(key, 0)
+                if cells and (cells + 1) % factor != 0:
+                    self.prohibit(True, f"lso_down_sample_factor must divide {direction} cells + 1")
+        self.prohibit(filter_wrt and not lso_filter, "lso_filter_wrt = T requires lso_filter = T")
+        self.prohibit(stat_wrt and not filter_wrt, "lso_stat_wrt = T requires lso_filter_wrt = T")
+        self.prohibit(stat_wrt and not parallel_io, "LSO statistical output requires parallel_io = T")
+        self.prohibit(stat_wrt and self.get("num_fluids") != 1, "LSO statistics currently require num_fluids = 1")
+        self.prohibit(stat_wrt and self.get("particles_lagrange", "F") == "T", "LSO particle statistics support IBM markers, not particles_lagrange")
+        eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
+        eos = self.get("fluid_pp(1)%eos", eos_names["stiffened_gas"])
+        cv = self.get("fluid_pp(1)%cv")
+        self.prohibit(stat_wrt and lso_R_gas <= 0, "LSO statistics require lso_R_gas > 0")
+        self.prohibit(
+            stat_wrt and self.get("chemistry", "F") != "T" and eos not in (eos_names["stiffened_gas"], eos_names["ideal_gas"]) and (cv is None or cv <= 0),
+            "LSO statistics with a state-dependent EOS require fluid_pp(1)%cv > 0",
+        )
+
+        if stage != "post_process":
+            return
+
+        if filter_wrt and factor > 1:
+            self.prohibit(not parallel_io or self.get("file_per_process", "F") == "T", "Downsampled LSO post-processing requires shared parallel_io files")
+            self.prohibit(self.get("down_sample", "F") == "T", "LSO downsampling cannot be combined with legacy down_sample")
+            self.prohibit(
+                (self.get("num_bc_patches", 0) or 0) > 0 or any(self.get(f"bc_{d}%{side}") == -17 for d in "xyz" for side in ("beg", "end")),
+                "Downsampled LSO post-processing does not support spatial boundary-condition files",
+            )
+            for key in ("m", "n", "p"):
+                cells = self.get(key, 0) or 0
+                self.prohibit(cells > 0 and (cells + 1) // factor < 2, "Downsampled LSO post-processing needs at least two cells per active direction")
+
+        self.prohibit(pp_filter and not filter_wrt, "lso_pp_filter = T requires lso_filter_wrt = T")
+        self.prohibit(pp_filter and self.get("ib", "F") == "T" and not parallel_io, "IBM LSO post-process filtering requires parallel_io = T")
+        self.prohibit(closure_wrt and not stat_wrt, "lso_closure_wrt = T requires lso_stat_wrt = T")
+        if closure_wrt:
+            self.prohibit(self.get("num_fluids") != 1, "LSO closures currently require num_fluids = 1")
+            self.prohibit(self.get("chemistry", "F") == "T", "LSO closures do not support chemistry")
+            self.prohibit(eos not in (eos_names["stiffened_gas"], eos_names["ideal_gas"]), "LSO closures require a calorically perfect ideal or stiffened gas")
+
     def check_perturb_density(self):
         """Checks initial partial density perturbation constraints (pre-process)"""
         perturb_flow = self.get("perturb_flow", "F") == "T"
@@ -2198,6 +2329,12 @@ class CaseValidator:
         reactive_burn = self.get("reactive_burn", "F") == "T"
         if not reactive_burn:
             return
+        burn_model = self.get("rburn%model", 0)
+        self.prohibit(burn_model not in (0, 1), "reactive_burn requires rburn%model = 0 or 1")
+        if burn_model == 1:
+            self.prohibit(self.get("model_eqns") not in (2, 3), "reactive_burn requires model_eqns = 2 or 3")
+            self._check_ignition_growth_burn()
+            return
         # These mirror Fortran checks that compared against the dflt_real / dflt_int
         # sentinels, so an unset parameter was a violation there. A bare
         # "is not None" guard would silently pass the unset case instead.
@@ -2250,6 +2387,53 @@ class CaseValidator:
         self.prohibit(
             self._is_numeric(rta) and rta > 0 and (not self._is_numeric(cv1) or cv1 <= 0),
             "reactive_burn with rburn%ta > 0 requires fluid_pp(1)%cv > 0 (the reactant temperature needs a physical heat capacity; cv = 0 silently disables the Arrhenius factor)",
+        )
+
+    def _check_ignition_growth_burn(self):
+        rta = self.get("rburn%ta", 0.0)
+        self.prohibit(self.get("num_fluids") != 3, "Ignition-and-Growth reactive_burn requires num_fluids = 3 (air, reactant, product)")
+        eos_jwl = CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"]
+        for phase in (2, 3):
+            self.prohibit(self.get(f"fluid_pp({phase})%eos") != eos_jwl, f"Ignition-and-Growth reactive_burn requires JWL fluid {phase}")
+        for prop in ("jwl_a", "jwl_b", "jwl_r1", "jwl_r2", "jwl_omega", "jwl_rho0"):
+            v2 = self.get(f"fluid_pp(2)%{prop}")
+            v3 = self.get(f"fluid_pp(3)%{prop}")
+            self.prohibit(
+                not self._is_numeric(v2) or not self._is_numeric(v3) or not math.isclose(v2, v3, rel_tol=1e-10),
+                f"Ignition-and-Growth reactive_burn requires matching JWL {prop} for fluids 2 and 3",
+            )
+        for name in ("rho0", "q", "ki", "kg", "m1", "m2", "n1", "n2", "n3"):
+            value = self.get(f"rburn%{name}")
+            self.prohibit(not self._is_numeric(value) or not math.isfinite(value) or value < 0, f"Ignition-and-Growth reactive_burn requires finite rburn%{name} >= 0")
+        rho0 = self.get("rburn%rho0")
+        self.prohibit(not self._is_numeric(rho0) or rho0 <= 0, "Ignition-and-Growth reactive_burn requires rburn%rho0 > 0")
+        self.prohibit(not self._is_numeric(self.get("rburn%q")) or self.get("rburn%q") <= 0, "Ignition-and-Growth reactive_burn requires rburn%q > 0")
+        m2 = self.get("rburn%m2")
+        self.prohibit(not self._is_numeric(m2) or m2 % 2 != 0, "Ignition-and-Growth reactive_burn requires an even integer rburn%m2")
+        for name in ("m1", "n1"):
+            value = self.get(f"rburn%{name}")
+            self.prohibit(not self._is_numeric(value) or value < 1, f"Ignition-and-Growth reactive_burn requires rburn%{name} >= 1")
+        self.prohibit(self._is_numeric(rta) and rta > 0, "Ignition-and-Growth reactive_burn does not use rburn%ta")
+        rsub = self.get("rburn%substeps")
+        self.prohibit(self._is_numeric(rsub) and rsub < 0, "reactive_burn requires rburn%substeps >= 0")
+
+    def check_prog_burn(self):
+        if self.get("prog_burn", "F") != "T":
+            return
+        eos_jwl = CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"]
+        phases = [i for i in range(1, int(self.get("num_fluids") or 0) + 1) if self.get(f"fluid_pp({i})%eos") == eos_jwl]
+        self.prohibit(len(phases) != 1, "prog_burn requires exactly one JWL fluid")
+        if len(phases) == 1:
+            qdet = self.get(f"fluid_pp({phases[0]})%jwl_Q")
+            self.prohibit(not self._is_numeric(qdet) or qdet <= 0, "prog_burn requires fluid_pp(JWL)%jwl_Q > 0")
+        for name in ("pb_D_cj", "pb_width"):
+            value = self.get(name)
+            self.prohibit(not self._is_numeric(value) or value <= 0, f"prog_burn requires {name} > 0")
+        t_det = self.get("pb_t_det", 0)
+        self.prohibit(not self._is_numeric(t_det) or t_det < 0, "prog_burn requires pb_t_det >= 0")
+        self.prohibit(
+            self.get("jwl_reactive", "F") == "T" or self.get("reactive_burn", "F") == "T",
+            "prog_burn cannot be combined with jwl_reactive or reactive_burn",
         )
 
     def check_misc_pre_process(self):
@@ -2332,6 +2516,13 @@ class CaseValidator:
                     alpha_rho = self.get(f"patch_icpp({i})%alpha_rho({j})")
                     if alpha_rho is not None and self._is_numeric(alpha_rho):
                         self.prohibit(alpha_rho < 0, f"patch_icpp({istr})%alpha_rho({jstr}) must be non-negative (got {alpha_rho})")
+
+                # JWL++ reaction progress
+                jwl_reactive = self.get("jwl_reactive", "F") == "T"
+                rxn_val = self.get(f"patch_icpp({i})%rxn_val")
+                if rxn_val is not None and self._is_numeric(rxn_val):
+                    self.prohibit(rxn_val != 0 and not jwl_reactive, f"patch_icpp({istr})%rxn_val requires jwl_reactive")
+                    self.prohibit(rxn_val < 0 or rxn_val > 1, f"patch_icpp({istr})%rxn_val must be in [0, 1] (got {rxn_val})")
 
             # GEOMETRY
             # Patch dimensions must be positive (except in cylindrical coords where
@@ -2995,12 +3186,15 @@ class CaseValidator:
         self.check_eos_parameter_sanity()
         self.check_surface_tension()
         self.check_mhd()
+        self.check_el_particles()
         self.check_chemistry()
         self.check_reactive_burn()
+        self.check_prog_burn()
 
     def validate_simulation(self):
         """Validate simulation-specific parameters"""
         self.validate_common()
+        self.check_lso_filter("simulation")
         self.check_geometry_precision_simulation()
         self.check_finite_difference()
         self.check_time_stepping()
@@ -3028,6 +3222,7 @@ class CaseValidator:
     def validate_pre_process(self):
         """Validate pre-process-specific parameters"""
         self.validate_common()
+        self.check_lso_filter("pre_process")
         self.check_restart()
         self.check_domain_extents()
         self.check_qbmm_pre_process()
@@ -3046,6 +3241,7 @@ class CaseValidator:
     def validate_post_process(self):
         """Validate post-process-specific parameters"""
         self.validate_common()
+        self.check_lso_filter("post_process")
         self.check_finite_difference()
         self.check_time_stepping()
         self.check_output_format()

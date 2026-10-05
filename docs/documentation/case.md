@@ -516,6 +516,34 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 > Setting `gamma = 1.4` for air is a common mistake; the correct value is `1.0 / (1.4 - 1.0) = 2.5`.
 > See @ref sec-stored-forms and @ref sec-material-values in the Equations reference for the full table.
 
+#### JWL Reaction Model
+
+| Parameter        | Type    | Description                                                        |
+| ---:             | :----:  |          :---                                                      |
+| `jwl_wrt`        | Logical | Write JWL temperature, product fraction, and reaction progress.    |
+| `jwl_afterburn`  | Logical | Enable JWL afterburn energy release.                               |
+| `jwl_ab_model`   | Integer | JWL afterburn rate model.                                          |
+| `jwl_q_ab`       | Real    | Afterburn energy release per unit mass.                            |
+| `jwl_ab_tau`     | Real    | Afterburn rate time constant (used when `jwl_ab_model = 1`).       |
+| `jwl_ab_A`       | Real    | Afterburn Arrhenius-form rate pre-exponential factor.              |
+| `jwl_ab_theta`   | Real    | Afterburn Arrhenius-form activation temperature.                   |
+| `jwl_ab_n`       | Real    | Afterburn Arrhenius-form pressure exponent.                        |
+| `jwl_reactive`   | Logical | Enable JWL++ pressure-driven reactive burn.                        |
+| `jwl_G`          | Real    | JWL++ reactive-burn rate constant.                                 |
+| `jwl_b_exp`      | Real    | JWL++ reactive-burn pressure exponent.                             |
+| `prog_burn`      | Logical | Enable kinematic JWL program burn.                                 |
+| `fluid_pp(i)%%jwl_Q` | Real | Program burn energy per unit mass of JWL fluid `i`.             |
+| `pb_D_cj`        | Real    | Programmed burn Chapman-Jouguet detonation velocity.               |
+| `pb_width`       | Real    | Programmed burn reaction zone width.                               |
+| `pb_x_det`       | Real    | Programmed burn detonation point x-coordinate.                     |
+| `pb_y_det`       | Real    | Programmed burn detonation point y-coordinate.                     |
+| `pb_z_det`       | Real    | Programmed burn detonation point z-coordinate.                     |
+| `pb_t_det`       | Real    | Programmed burn detonation initiation time.                        |
+
+With `prog_burn`, a front travels from (`pb_x_det`, `pb_y_det`, `pb_z_det`) at speed `pb_D_cj` after `pb_t_det`. Each cell receives the swept fraction of `fluid_pp(JWL)%%jwl_Q` over a distance `pb_width`. The energy increment is based on the front positions at the start and end of a full flow step, so a front crossing more than one zone width in a step still deposits the prescribed energy. Progress is tied to fixed cell coordinates; use this prescribed-front model when material motion through the reaction zone is small. Use exactly one JWL fluid with positive `jwl_Q`, `pb_D_cj`, and `pb_width`. `prog_burn` cannot be combined with `jwl_reactive` or `reactive_burn`.
+
+`jwl_reactive` is a separate JWL++ control. Its source term is not wired into the solver on this branch; the bounded pressure burn below applies to `reactive_burn`.
+
 ### 6. Simulation Algorithm {#sec-simulation-algorithm}
 
 See @ref equations "Equations" for the mathematical models these parameters control.
@@ -776,6 +804,38 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `cf_wrt`                | Logical | Write color function field |
 | `chem_wrt_T`            | Logical | Write temperature field for chemistry output |
 | `fft_wrt`               | Logical | Enable FFT output |
+| `lso_filter`            | Logical | Apply a least-squares optimized (LSO) variable-weight Gaussian filter to conserved variables at each save step |
+| `lso_filter_wrt`        | Logical | Write LSO-filtered fields with an lso_ filename prefix alongside unfiltered data |
+| `lso_down_sample_factor`| Integer | Stride factor for coarsening the filtered output grid (1 = no coarsening). Must divide each active global and per-rank cell count. Reduced-grid post-processing requires shared parallel I/O; see @ref lso-filter-testing for supported layouts. |
+| `lso_stat_wrt`          | Logical | Write 11 filtered product blocks (11/21/33 scalar components in 1D/2D/3D). Requires `num_fluids=1`, `lso_filter_wrt=T`, `parallel_io=T` and `particles_lagrange=F`; particle products use IBM markers. |
+| `lso_R_gas`             | Real    | Specific gas constant [J/(kg·K)] for temperature reconstruction used in stat fields. Default 287.0 (dry air). |
+| `filter_sigma`          | Real    | Target Gaussian filter standard deviation in physical units. On a stretched x grid (`stretch_x=T`; y and z uniform, no `lso_pp_filter` or stage-2 coarse filter) simulation replaces the x weights with ceil((σ/(1.2 Δx_min))²) passes of per-cell weights whose zeroth, first and second physical moments are exact. |
+| `lso_n_passes_x`        | Integer | Number of filter passes in x (auto-computed by toolchain from `filter_sigma` and grid spacing) |
+| `lso_n_passes_y`        | Integer | Number of filter passes in y (auto-computed) |
+| `lso_n_passes_z`        | Integer | Number of filter passes in z (auto-computed) |
+| `lso_a_x`               | Real    | Per-pass 9-point stencil coefficients in x (5 × lso_max_passes, auto-computed) |
+| `lso_a_y`               | Real    | Per-pass 9-point stencil coefficients in y (5 × lso_max_passes, auto-computed) |
+| `lso_a_z`               | Real    | Per-pass 9-point stencil coefficients in z (5 × lso_max_passes, auto-computed) |
+| `lso2_n_passes_x`       | Integer | Stage-2 (coarse grid) passes in x, auto-computed when `lso_filter_wrt=T`, `lso_down_sample_factor>1` and `filter_sigma` exceeds 1.05 × σ₁; σ₁ = 8 × stride × largest active fine-grid spacing |
+| `lso2_n_passes_y`       | Integer | Stage-2 passes in y (auto-computed) |
+| `lso2_n_passes_z`       | Integer | Stage-2 passes in z (auto-computed) |
+| `lso2_a_x`              | Real    | Stage-2 per-pass stencil coefficients in x (auto-computed) |
+| `lso2_a_y`              | Real    | Stage-2 per-pass stencil coefficients in y (auto-computed) |
+| `lso2_a_z`              | Real    | Stage-2 per-pass stencil coefficients in z (auto-computed) |
+| `lso_closure_wrt`       | Logical | Write R_sg, Q_T, E_ku, W_tau_u, R_mu_sg, R_lam_sg, T_tilde and Favre velocity with the lso_closure_ variable prefix in the ordinary post-process database. Requires `lso_filter_wrt=T`, `lso_stat_wrt=T`, one calorically perfect ideal or stiffened gas, and no chemistry. Downsampling is not required. See @ref lso-filter-testing for acceptance limits. |
+| `lso_pp_filter`         | Logical | Apply an additional filter to saved in-situ filtered data; requires `lso_filter_wrt=T`. Wide targets use two same-grid cascades. Matching statistical and flow filter widths remains a production requirement; see @ref lso-filter-testing. |
+| `lso_filter_sigma_in`   | Real    | Toolchain-only input (not forwarded to Fortran): Gaussian sigma (physical units) already applied to the input data. Defaults to the in-situ width (`filter_sigma`, or d_p/2) when reading filtered data (`lso_filter_wrt=T`), and to 0 when reading original data (`lso_filter_wrt=F`). The toolchain sizes the post_process pass for sqrt(target² − in²) |
+| `lso_filter_sigma_target`| Real   | Toolchain-only input: target Gaussian sigma (physical units) for the post_process filter; must be &gt; `lso_filter_sigma_in` |
+| `lso_pp_n_passes_x`     | Integer | Number of post-process filter passes in x |
+| `lso_pp_n_passes_y`     | Integer | Number of post-process filter passes in y |
+| `lso_pp_n_passes_z`     | Integer | Number of post-process filter passes in z |
+| `lso_pp2_n_passes_[x,y,z]` | Integer | Auto-computed: stage-2 post-process pass counts, non-zero when a wide target is split across two cascades |
+| `lso_pp2_a_[x,y,z]`     | Real    | Auto-computed: stage-2 post-process per-pass stencil coefficients |
+| `lso_pp_a_x`            | Real    | Post-process per-pass stencil coefficients in x (5 × lso_max_passes) |
+| `lso_pp_a_y`            | Real    | Post-process per-pass stencil coefficients in y (5 × lso_max_passes) |
+| `lso_pp_a_z`            | Real    | Post-process per-pass stencil coefficients in z (5 × lso_max_passes) |
+| `lso_mu`                | Real    | Dynamic viscosity [Pa·s] for viscous stress computation in stat fields. Default 0 (inviscid). |
+| `fluid_pp(i)%%k_therm`  | Real    | Thermal conductivity used for heat-flux closure fields; see Fluid Materials. |
 | `sim_data`              | Logical | Write interface and energy data files (post_process) |
 | `down_sample`           | Logical | Enable output downsampling |
 | `fd_order`              | Integer | Order of finite differences for computing the vorticity and the numerical Schlieren function [1,2,4] |
@@ -1086,6 +1146,19 @@ When ``polytropic = 'F'``, the gas compression is modeled as non-polytropic due 
 
 - `kahan_summation` uses Kahan compensated summation when smearing the bubble contributions onto the Eulerian void fraction, reducing the round-off sensitivity of the accumulation to the summation order. It is not compatible with `--mixed` precision builds.
 
+#### Euler–Lagrange particles
+
+`particles_lagrange` enables Euler–Lagrange particle tracking. The particle material and collision inputs are:
+
+| Parameter | Type | Description |
+| ---: | :---: | :--- |
+| `particle_pp%%rho0ref_particle` | Real | Reference particle density |
+| `particle_pp%%cp_particle` | Real | Particle specific heat capacity |
+| `particle_pp%%E_col` | Real | Particle Young's modulus for contact |
+| `particle_pp%%nu_col` | Real | Particle Poisson ratio for contact |
+| `particle_pp%%cor_col` | Real | Particle coefficient of restitution |
+| `particle_pp%%ksp_col` | Real | Collision spring-stiffness multiplier |
+
 ### 10. Velocity Field Setup {#sec-velocity-field-setup}
 
 | Parameter              | Type    | Description |
@@ -1215,10 +1288,16 @@ Note: For relativistic flow, the conservative and primitive densities are differ
 | `rburn%%pref`      | Real    | Reactive-burn reference pressure for the drive [Pa] |
 | `rburn%%n`         | Real    | Reactive-burn pressure-drive exponent               |
 | `rburn%%ta`        | Real    | Reactive-burn activation temperature [K] (0 = off)  |
+| `rburn%%model` | Integer | 0: upstream pressure law; 1: JWL ignition-and-growth |
+| `rburn%%rho0`, `rburn%%q` | Real | Reference reactant density and reaction energy per unit mass for model 1 |
+| `rburn%%ki`, `rburn%%kg` | Real | Ignition and growth coefficients for model 1 |
+| `rburn%%m1`, `rburn%%m2`, `rburn%%n1`, `rburn%%n2`, `rburn%%n3` | Real | Ignition and growth exponents for model 1 |
 
-- `cont_damage` activates the continuum damage model for hypoelastic solid materials (requires `hypoelasticity = T`; HLL/HLLC only). Damage is produced by tensile maximum principal Cauchy stress beyond `tau_star` (\f$\geq 0\f$) at rate `(alpha_bar*(sigma_1 - tau_star))**cont_damage_s` and is transported with the damageable-solid partial mass; see @ref equations for the model statement (\cite Cao19; \cite Spratt24). `tau_star`, `cont_damage_s` (\f$> 0\f$), and `alpha_bar` (\f$\geq 0\f$) are empirically determined.
+`reactive_burn` supports two rate laws. Model 0 uses two fluids, transferring reactant mass and volume to products at fixed total energy. Model 1 is the Ignition-and-Growth (I&G) model, using three fluids: air (1), unreacted explosive (2), and products (3). Fluids 2 and 3 must share the same JWL coefficients. Their combined mass and volume are conserved by the reaction, while fluid 2 mass divided by total density is the reactant mass fraction `Y_R` in Garno's formulation. Set `rburn%%q` to the energy release `Q`; the source adds `Q` times the reacted mass to total energy. The JWL energy offset `Y_R Δe` is represented by `fluid_pp(2)%%qv - fluid_pp(3)%%qv = -Δe`. The standard exponents `m1 = n1 = n2 = 1` use an exact bounded local update; other exponents use a bounded second-order update. `rburn%%substeps` resolves rate feedback within a flow step. Model 1 uses MFC's pressure-equilibrium closure for cells mixing air and explosive; the paper's interface closure differs. The paper's explosive-specific rate coefficients require calibration and are not supplied as defaults.
 
 - `reactive_burn` converts a "reactant" fluid into a "product" fluid (`num_fluids = 2`, ``chemistry = 'F'``) via a programmed pressure burn `dlambda/dt = rburn%%k (1 - lambda) ((p - rburn%%pign)/rburn%%pref)^rburn%%n`. The two fluids share the same `gamma`/`pi_inf` and differ only in `qv`, so the conversion releases `qv` through the mixture EOS — a reactive-Euler/ZND detonation model on the diffuse-interface framework. It runs on the 5-equation (`model_eqns = 2`) and 6-equation (`model_eqns = 3`) multi-fluid models. Setting `rburn%%ta > 0` multiplies the rate by an Arrhenius factor `exp(-rburn%%ta/T)`, where `T` is the reactant phasic temperature, giving temperature-driven ignition instead of a pure pressure switch.
+
+- `cont_damage` activates the continuum damage model for hypoelastic solid materials (requires `hypoelasticity = T`; HLL/HLLC only). Damage is produced by tensile maximum principal Cauchy stress beyond `tau_star` (\f$\geq 0\f$) at rate `(alpha_bar*(sigma_1 - tau_star))**cont_damage_s` and is transported with the damageable-solid partial mass; see @ref equations for the model statement (\cite Cao19; \cite Spratt24). `tau_star`, `cont_damage_s` (\f$> 0\f$), and `alpha_bar` (\f$\geq 0\f$) are empirically determined.
 
 ### 16. Cylindrical Coordinates
 

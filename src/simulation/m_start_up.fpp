@@ -34,6 +34,7 @@ module m_start_up
     use m_viscous
     use m_bubbles_EE
     use m_bubbles_EL
+    use m_particles_EL
     use ieee_arithmetic
     use m_helper_basic
     use m_helper
@@ -45,6 +46,7 @@ module m_start_up
     use m_ib_patches
     use m_model
     use m_collisions
+    use m_lso_filter
     use m_compile_specific
     use m_checker_common
     use m_checker
@@ -782,6 +784,44 @@ contains
             save_count = t_step
         end if
 
+        ! Apply LSO Gaussian filter before writing.
+        ! The filter kernels run on device data; afterwards copy filtered interior
+        ! back to host so s_write_data_files reads the correct values.
+        if (lso_filter .and. lso_filter_wrt) then
+            call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_T_sf)
+            do i = 1, sys_size
+#ifndef FRONTIER_UNIFIED
+                $:GPU_UPDATE(host='[q_filt_vf(i)%sf]')
+#endif
+            end do
+#ifndef FRONTIER_UNIFIED
+            if (ib) then
+                $:GPU_UPDATE(host='[q_lso_mask_vf(1)%sf]')
+            end if
+#endif
+            lso_file_prefix = 'lso_'
+            if (lso_down_sample_factor > 1) then
+                call s_lso_stride_sample(q_filt_vf, q_filt_ds_vf)
+                if (ib) call s_lso_stride_sample(q_lso_mask_vf, q_lso_mask_ds_vf)
+                call s_lso_filter_stage2()
+                call s_write_data_files(q_filt_ds_vf, q_T_sf, q_prim_vf, save_count, bc_type)
+                if (ib .and. parallel_io) call s_write_lso_stat_file(q_lso_mask_ds_vf, 1, save_count, 'lso_mask_')
+            else
+                call s_write_data_files(q_filt_vf, q_T_sf, q_prim_vf, save_count, bc_type)
+                if (ib .and. parallel_io) call s_write_lso_stat_file(q_lso_mask_vf, 1, save_count, 'lso_mask_')
+            end if
+            lso_file_prefix = ''
+            if (lso_stat_wrt .and. n_lso_stat > 0 .and. parallel_io) then
+                if (lso_down_sample_factor > 1) then
+                    call s_lso_stat_stride_sample()
+                    if (lso2_n_passes_x > 0) call s_apply_lso_filter_coarse(q_lso_stat_ds_vf)
+                    call s_write_lso_stat_file(q_lso_stat_ds_vf, n_lso_stat, save_count)
+                else
+                    call s_write_lso_stat_file(q_lso_stat_vf, n_lso_stat, save_count)
+                end if
+            end if
+        end if
+
         if (bubbles_lagrange) then
             $:GPU_UPDATE(host='[lag_id, mtn_pos, mtn_posPrev, mtn_vel, intfc_rad, intfc_vel, bub_R0, Rmax_stats, Rmin_stats, &
                          & bub_dphidt, gas_p, gas_mv, gas_mg, gas_betaT, gas_betaC]')
@@ -796,6 +836,20 @@ contains
             $:GPU_UPDATE(host='[Rmax_stats, Rmin_stats, gas_p, gas_mv, intfc_vel]')
             call s_write_restart_lag_bubbles(save_count)  ! parallel
             if (lag_params%write_bubbles_stats) call s_write_lag_bubble_stats()
+        else if (particles_lagrange) then
+            $:GPU_UPDATE(host='[lag_part_id, particle_pos, particle_posPrev, particle_vel, particle_rad, particle_R0, &
+                         & Rmax_stats_part, Rmin_stats_part, particle_mass]')
+            do i = 1, n_el_particles_loc
+                if (ieee_is_nan(particle_rad(i, 1)) .or. particle_rad(i, 1) <= 0._wp) then
+                    call s_mpi_abort("Particle radius is negative or NaN, please reduce dt.")
+                end if
+            end do
+
+            $:GPU_UPDATE(host='[q_particles(1)%sf]')
+            call s_write_data_files(q_cons_ts(stor)%vf, q_T_sf, q_prim_vf, save_count, bc_type, q_particles(1))
+            $:GPU_UPDATE(host='[Rmax_stats_part, Rmin_stats_part]')
+            call s_write_restart_lag_particles(save_count)
+            if (lag_params%write_bubbles_stats) call s_write_lag_particle_stats()
         else
             call s_write_data_files(q_cons_ts(stor)%vf, q_T_sf, q_prim_vf, save_count, bc_type)
         end if
@@ -839,11 +893,30 @@ contains
         if (bubbles_euler .or. bubbles_lagrange) then
             call s_initialize_bubbles_model()
         end if
-        call s_initialize_mpi_common_module(exchange_all_chemistry_temperatures_in=.false., use_rdma_transport_in=rdma_mpi)
+        call s_initialize_mpi_common_module(exchange_all_chemistry_temperatures_in=.false., use_rdma_transport_in=rdma_mpi, &
+                                            & particle_betas_in=particles_lagrange)
         call s_initialize_mpi_proxy_module()
         call s_initialize_eos_module()
         call s_initialize_variables_conversion_module(enforce_density_floor=.true., preserve_qbmm_number=.true.)
         if (grid_geometry == 3) call s_initialize_fftw_module()
+
+        if (lso_filter_wrt .and. lso_stat_wrt) then
+            lso_stat_phi_p_beg = 1; lso_stat_phi_p_end = 1
+            lso_stat_rho_beg = 2; lso_stat_rho_end = 2
+            lso_stat_rhoke_beg = 3; lso_stat_rhoke_end = 3
+            lso_stat_up_beg = 4; lso_stat_up_end = lso_stat_up_beg + num_dims - 1
+            lso_stat_rhou_beg = lso_stat_up_end + 1; lso_stat_rhou_end = lso_stat_rhou_beg + num_dims - 1
+            lso_stat_rhouu_beg = lso_stat_rhou_end + 1
+            lso_stat_rhouu_end = lso_stat_rhouu_beg + num_dims*(num_dims + 1)/2 - 1
+            lso_stat_rhouke_beg = lso_stat_rhouu_end + 1; lso_stat_rhouke_end = lso_stat_rhouke_beg + num_dims - 1
+            lso_stat_rhouT_beg = lso_stat_rhouke_end + 1; lso_stat_rhouT_end = lso_stat_rhouT_beg + num_dims - 1
+            lso_stat_tau_beg = lso_stat_rhouT_end + 1; lso_stat_tau_end = lso_stat_tau_beg + num_dims*(num_dims + 1)/2 - 1
+            lso_stat_q_beg = lso_stat_tau_end + 1; lso_stat_q_end = lso_stat_q_beg + num_dims - 1
+            lso_stat_rhotau_u_beg = lso_stat_q_end + 1
+            lso_stat_rhotau_u_end = lso_stat_rhotau_u_beg + num_dims - 1
+            n_lso_stat = lso_stat_rhotau_u_end
+        end if
+        if (lso_filter .and. (lso_filter_wrt .or. lso_stat_wrt)) call s_initialize_lso_filter_module()
 
         if (bubbles_euler) call s_initialize_bubbles_EE_module()
         if (ib) then
@@ -869,7 +942,7 @@ contains
         call s_initialize_derived_variables_module()
         call s_initialize_time_steppers_module()
 
-        call s_initialize_boundary_common_module(use_dirichlet_buffers=.true.)
+        call s_initialize_boundary_common_module(use_dirichlet_buffers=.true., use_particle_betas=particles_lagrange)
 
         if (down_sample) then
             m_ds = int((m + 1)/3) - 1
@@ -956,12 +1029,37 @@ contains
         if (int_comp > 0) call s_initialize_thinc_module()
         call s_initialize_derived_variables()
         if (bubbles_lagrange) call s_initialize_bubbles_EL_module(q_cons_ts(1)%vf, bc_type)
+        if (particles_lagrange) call s_initialize_particles_EL_module(q_cons_ts(1)%vf, bc_type)
 
         if (hypoelasticity) call s_initialize_hypoelastic_module()
 
     end subroutine s_initialize_modules
 
     !> Set up the MPI execution environment, bind GPUs, and decompose the computational domain
+    !> Coarse cell J belongs to the rank holding its first fine cell factor*J, so any rank layout tiles the coarse grid; a coarse
+    !! sample then reads at most factor - 1 fine ghost cells.
+    impure subroutine s_set_lso_coarse_extents
+
+        integer :: d, f, sidx(3), cells(3), ext(3), glb(3)
+
+        f = lso_down_sample_factor
+        sidx = 0
+        if (allocated(start_idx)) sidx(1:size(start_idx)) = start_idx
+        cells = [m, n, p] + 1
+        glb = [m_glb, n_glb, p_glb] + 1
+        ext = 0
+        do d = 1, num_dims
+            lso_ds_lo(d) = (sidx(d) + f - 1)/f
+            ext(d) = (sidx(d) + cells(d) - 1)/f - lso_ds_lo(d)
+            glb(d) = glb(d)/f
+        end do
+        m_lso_ds = ext(1); n_lso_ds = ext(2); p_lso_ds = ext(3)
+        m_glb_lso_ds = glb(1) - 1
+        n_glb_lso_ds = merge(glb(2) - 1, 0, num_dims > 1)
+        p_glb_lso_ds = merge(glb(3) - 1, 0, num_dims > 2)
+
+    end subroutine s_set_lso_coarse_extents
+
     impure subroutine s_initialize_mpi_domain
 
         integer :: ierr
@@ -1033,6 +1131,8 @@ contains
         call s_initialize_parallel_io()
 
         call s_mpi_decompose_computational_domain(write_silo_ghost_offsets=.false., adjust_local_domains=.false.)
+        if (lso_filter_wrt .and. lso_down_sample_factor > 1) call s_set_lso_coarse_extents()
+        call s_check_lso_decomposition()
 
         bc = bc_xyz_info(bc_x, bc_y, bc_z)
 
@@ -1078,6 +1178,8 @@ contains
 
         $:GPU_UPDATE(device='[acoustic_source, num_source]')
         $:GPU_UPDATE(device='[sigma, surface_tension]')
+        $:GPU_UPDATE(device='[lso_R_gas, lso_mu, lso_n_passes_x, lso_n_passes_y, lso_n_passes_z, lso_a_x, lso_a_y, lso_a_z, &
+                     & lso2_n_passes_x, lso2_n_passes_y, lso2_n_passes_z, lso2_a_x, lso2_a_y, lso2_a_z]')
 
         $:GPU_UPDATE(device='[dx, dy, dz, x_cb, x_cc, y_cb, y_cc, z_cb, z_cc]')
         $:GPU_UPDATE(device='[bc_x%beg, bc_x%end, bc_y%beg, bc_y%end, bc_z%beg, bc_z%end]')
@@ -1141,11 +1243,13 @@ contains
         call s_finalize_variables_conversion_module()
         call s_finalize_eos_module()
         if (grid_geometry == 3) call s_finalize_fftw_module
+        if (lso_filter .and. (lso_filter_wrt .or. lso_stat_wrt)) call s_finalize_lso_filter_module()
         call s_finalize_mpi_common_module()
         call s_finalize_global_parameters_module()
         call s_finalize_boundary_common_module()
         if (relax) call s_finalize_relaxation_solver_module()
         if (bubbles_lagrange) call s_finalize_lagrangian_solver()
+        if (particles_lagrange) call s_finalize_particle_lagrangian_solver()
         if (viscous .and. (.not. igr)) then
             call s_finalize_viscous_module()
         end if

@@ -12,12 +12,13 @@ module m_time_steppers
     use m_global_parameters
     use m_rhs
     use m_chemistry
-    use m_reactive_burn, only: s_reactive_burn_substep
+    use m_reactive_burn, only: s_reactive_burn_substep, s_program_burn_step
     use m_pressure_relaxation
     use m_hypoelastic, only: s_enforce_cont_damage_bounds
     use m_data_output
     use m_bubbles_EE
     use m_bubbles_EL
+    use m_particles_EL
     use m_ibm
     use m_collisions, only: collisions_active
     use m_mpi_proxy
@@ -502,6 +503,7 @@ contains
             end if
 
             if (bubbles_lagrange .and. .not. adap_dt) call s_update_lagrange_tdv_rk(q_prim_vf, bc_type, stage=s)
+            if (particles_lagrange) call s_update_lagrange_particles_tdv_rk(q_prim_vf, bc_type, stage=s)
             $:GPU_PARALLEL_LOOP(collapse=4)
             do i = 1, sys_size
                 do l = 0, p
@@ -601,12 +603,21 @@ contains
             call nvtxEndRange
         end if
 
-        ! Operator-split condensed-phase burn: integrate the progress variable per cell after the flow
-        ! update, with sub-stepping, instead of adding the source to the flow RHS (rburn%substeps > 0).
-        if (reactive_burn .and. rburn%substeps > 0) then
+        ! Integrate split pressure burn and the added JWL ignition-and-growth model after the flow update.
+        if (reactive_burn .and. (rburn%substeps > 0 .or. rburn%model == 1)) then
             call nvtxStartRange("BURN-SUBSTEP")
             call s_reactive_burn_substep(q_cons_ts(1)%vf, dt, idwint)
+            if (rburn%model == 1 .and. model_eqns == model_eqns_6eq .and. (.not. relax)) then
+                call s_pressure_relaxation_procedure(q_cons_ts(1)%vf)
+            end if
             call nvtxEndRange
+        end if
+
+        if (prog_burn) then
+            call s_program_burn_step(q_cons_ts(1)%vf, mytime, dt)
+            if (model_eqns == model_eqns_6eq .and. (.not. relax)) then
+                call s_pressure_relaxation_procedure(q_cons_ts(1)%vf)
+            end if
         end if
 
         if (ib) then
