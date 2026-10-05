@@ -155,6 +155,8 @@ module m_derived_types
         integer               :: c        !< Color function equation
         integer               :: damage   !< Damage variable equation
         integer               :: psi      !< Psi variable equation
+        integer               :: abn      !< JWL afterburn progress equation
+        integer               :: rxn      !< JWL++ reaction progress equation
     end type eqn_idx_info
 
     !> Indices of the projected Lagrangian particle fields (q_particles); vector ranges span num_dims
@@ -342,6 +344,7 @@ module m_derived_types
         real(wp) :: m0  !< Bubble velocity
         integer :: hcid  !< Hardcoded initial condition ID
         real(wp) :: cf_val  !< Color function value
+        real(wp) :: rxn_val  !< Initial JWL++ reaction progress
         real(wp) :: Y(1:num_species)  !< Species mass fractions
 
         ! STL/OBJ model patch: index into the shared stl_models(:) table
@@ -449,43 +452,46 @@ module m_derived_types
     !> Derived type annexing the physical parameters (PP) of the fluids. These include the specific heat ratio function and liquid
     !! stiffness function.
     type physical_parameters
-        real(wp)               :: gamma              !< Sp. heat ratio
-        real(wp)               :: pi_inf             !< Liquid stiffness
-        real(wp), dimension(2) :: Re                 !< Reynolds number
-        real(wp)               :: k_therm            !< Thermal conductivity (name avoids %K, the Herschel-Bulkley index)
-        real(wp)               :: cv                 !< heat capacity
-        real(wp)               :: qv                 !< reference energy per unit mass for SGEOS, q (see Le Metayer (2004))
-        real(wp)               :: qvp                !< reference entropy per unit mass for SGEOS, q' (see Le Metayer (2004))
+        real(wp)               :: gamma  !< Sp. heat ratio
+        real(wp)               :: pi_inf  !< Liquid stiffness
+        real(wp), dimension(2) :: Re  !< Reynolds number
+        real(wp)               :: k_therm  !< Thermal conductivity (name avoids %K, the Herschel-Bulkley index)
+        real(wp)               :: cv  !< heat capacity
+        real(wp)               :: qv  !< reference energy per unit mass for SGEOS, q (see Le Metayer (2004))
+        real(wp)               :: qvp  !< reference entropy per unit mass for SGEOS, q' (see Le Metayer (2004))
         real(wp)               :: G
-        integer                :: eos                !< Equation of state selector (eos_* in m_constants)
-        real(wp)               :: mg_rho0            !< Mie-Gruneisen reference density
-        real(wp)               :: mg_c0              !< Mie-Gruneisen bulk sound speed at mg_rho0
-        real(wp)               :: mg_s               !< Mie-Gruneisen linear Hugoniot slope, u_s = c0 + s u_p
-        real(wp)               :: mg_gruneisen       !< Gruneisen coefficient Gamma_G (not the shear modulus G)
-        real(wp)               :: mg_gruneisen_a     !< d(Gamma_G)/d(mu): Gamma_G = Gamma_0 + a mu, zero keeps it constant
-        real(wp)               :: mg_t0              !< temperature at the reference density (for T output)
-        real(wp)               :: mg_s2, mg_s3       !< u_s = c0 + s u_p + s2 u_p^2 + s3 u_p^3; zero keeps the fit linear
-        real(wp)               :: jwl_a              !< JWL A
-        real(wp)               :: jwl_b              !< JWL B
-        real(wp)               :: jwl_r1             !< JWL R1
-        real(wp)               :: jwl_r2             !< JWL R2
-        real(wp)               :: jwl_omega          !< JWL omega (its Gruneisen coefficient)
-        real(wp)               :: jwl_rho0           !< JWL reference density
-        real(wp)               :: jwl_t0             !< temperature at the reference density (for T output)
-        real(wp)               :: vinet_k0           !< Vinet bulk modulus at rho0
-        real(wp)               :: vinet_k0p          !< Vinet pressure derivative of the bulk modulus
-        real(wp)               :: vinet_rho0         !< Vinet reference density
-        real(wp)               :: vinet_gruneisen    !< Gruneisen coefficient at rho0
+        integer                :: eos  !< Equation of state selector (eos_* in m_constants)
+        real(wp)               :: mg_rho0  !< Mie-Gruneisen reference density
+        real(wp)               :: mg_c0  !< Mie-Gruneisen bulk sound speed at mg_rho0
+        real(wp)               :: mg_s  !< Mie-Gruneisen linear Hugoniot slope, u_s = c0 + s u_p
+        real(wp)               :: mg_gruneisen  !< Gruneisen coefficient Gamma_G (not the shear modulus G)
+        real(wp)               :: mg_gruneisen_a  !< d(Gamma_G)/d(mu): Gamma_G = Gamma_0 + a mu, zero keeps it constant
+        real(wp)               :: mg_t0  !< temperature at the reference density (for T output)
+        real(wp)               :: mg_s2, mg_s3  !< u_s = c0 + s u_p + s2 u_p^2 + s3 u_p^3; zero keeps the fit linear
+        real(wp)               :: jwl_a  !< JWL A
+        real(wp)               :: jwl_b  !< JWL B
+        real(wp)               :: jwl_r1  !< JWL R1
+        real(wp)               :: jwl_r2  !< JWL R2
+        real(wp)               :: jwl_omega  !< JWL omega (its Gruneisen coefficient)
+        real(wp)               :: jwl_rho0  !< JWL reference density
+        real(wp)               :: jwl_t0  !< temperature at the reference density (for T output)
+        real(wp)               :: jwl_Q, jwl_E0  !< JWL detonation energy, in specific or volumetric form
+        real(wp)               :: jwl_air_e0, jwl_air_rho0, jwl_air_p0  !< ambient reference state for the mixed closure
+        real(wp)               :: jwl_ej_rho_ref, jwl_delta_e  !< products-energy reference and reactant offset
+        real(wp)               :: vinet_k0  !< Vinet bulk modulus at rho0
+        real(wp)               :: vinet_k0p  !< Vinet pressure derivative of the bulk modulus
+        real(wp)               :: vinet_rho0  !< Vinet reference density
+        real(wp)               :: vinet_gruneisen  !< Gruneisen coefficient at rho0
         real(wp)               :: vinet_gruneisen_a  !< d(Gamma_G)/d(mu)
-        real(wp)               :: vinet_t0           !< temperature at the reference density (for T output)
-        logical                :: non_newtonian      !< Enable Herschel-Bulkley non-Newtonian viscosity
-        real(wp)               :: K                  !< HB consistency index
-        real(wp)               :: nn                 !< HB flow behavior index
-        real(wp)               :: tau0               !< HB yield stress (0 => power-law)
-        real(wp)               :: hb_m               !< Papanastasiou regularization parameter
-        real(wp)               :: mu_min             !< Lower viscosity clamp (inactive sentinel = dflt_real)
-        real(wp)               :: mu_max             !< Upper viscosity clamp (required when non_newtonian)
-        real(wp)               :: mu_bulk            !< Bulk viscosity for NN (inactive sentinel = dflt_real)
+        real(wp)               :: vinet_t0  !< temperature at the reference density (for T output)
+        logical                :: non_newtonian  !< Enable Herschel-Bulkley non-Newtonian viscosity
+        real(wp)               :: K  !< HB consistency index
+        real(wp)               :: nn  !< HB flow behavior index
+        real(wp)               :: tau0  !< HB yield stress (0 => power-law)
+        real(wp)               :: hb_m  !< Papanastasiou regularization parameter
+        real(wp)               :: mu_min  !< Lower viscosity clamp (inactive sentinel = dflt_real)
+        real(wp)               :: mu_max  !< Upper viscosity clamp (required when non_newtonian)
+        real(wp)               :: mu_bulk  !< Bulk viscosity for NN (inactive sentinel = dflt_real)
     end type physical_parameters
 
     !> Derived type annexing the physical parameters required for sub-grid bubble models
@@ -617,15 +623,21 @@ module m_derived_types
         logical :: transport_dt
     end type chemistry_parameters
 
-    !> Condensed-phase reactive-burn (programmed pressure detonation) parameters. The rate is
-    !> dlambda/dt = k (1 - lambda) ((p - pign)/pref)^n, optionally scaled by exp(-ta/T) when ta > 0.
+    !> Condensed-phase reactive-burn parameters. Model 0 is pressure-driven; model 1 is the
+    !> density-based ignition-and-growth law.
     type reactive_burn_parameters
-        real(wp) :: k         !< Rate coefficient [1/s]
-        real(wp) :: pign      !< Ignition pressure threshold [Pa]
-        real(wp) :: pref      !< Reference pressure for the pressure drive [Pa]
-        real(wp) :: n         !< Pressure-drive exponent
-        real(wp) :: ta        !< Activation temperature [K] (0 = pure pressure-driven; > 0 adds exp(-ta/T))
-        integer  :: substeps  !< Operator-split sub-steps per time step (0 = source added to the flow RHS)
+        integer  :: model       !< 0 = pressure law, 1 = ignition-and-growth
+        real(wp) :: k           !< Rate coefficient [1/s]
+        real(wp) :: pign        !< Ignition pressure threshold [Pa]
+        real(wp) :: pref        !< Reference pressure for the pressure drive [Pa]
+        real(wp) :: n           !< Pressure-drive exponent
+        real(wp) :: ta          !< Activation temperature [K] (0 = pure pressure-driven; > 0 adds exp(-ta/T))
+        real(wp) :: rho0        !< Reference density [kg/m^3]
+        real(wp) :: q           !< Reaction energy per unit reacted mass [J/kg]
+        real(wp) :: ki, kg      !< Ignition and growth coefficients
+        real(wp) :: m1, m2      !< Ignition exponents
+        real(wp) :: n1, n2, n3  !< Growth exponents
+        integer  :: substeps    !< Operator-split sub-steps (0 = flow RHS for model 0; one bounded update for model 1)
     end type reactive_burn_parameters
 
     !> Coefficients of one fluid's equation of state, resolved once at init. Held as a record per fluid rather than as parallel

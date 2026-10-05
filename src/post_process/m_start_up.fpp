@@ -29,6 +29,7 @@ module m_start_up
     use m_finite_differences
     use m_constants, only: model_eqns_gamma_law, model_eqns_5eq, model_eqns_6eq, format_silo
     use m_chemistry
+    use m_lso_pp_filter
 
 #ifdef MFC_MPI
     use mpi
@@ -87,6 +88,13 @@ contains
                 p = int((p + 1)/3) - 1
             end if
 
+            if (lso_filter_wrt .and. lso_down_sample_factor > 1) then
+                m = (m + 1)/lso_down_sample_factor - 1
+                if (n > 0) n = (n + 1)/lso_down_sample_factor - 1
+                if (p > 0) p = (p + 1)/lso_down_sample_factor - 1
+                call s_update_cell_bounds(cells_bounds, m, n, p)
+            end if
+
             m_glb = m
             n_glb = n
             p_glb = p
@@ -94,6 +102,11 @@ contains
             nGlobal = int(m_glb + 1, kind=8)*int(n_glb + 1, kind=8)*int(p_glb + 1, kind=8)
 
             if (cfl_adap_dt .or. cfl_const_dt) cfl_dt = .true.
+            if (cfl_dt) then
+                ! Post-process filenames and marker offsets use save indices in CFL mode.
+                t_step_start = n_start
+                t_step_save = 1
+            end if
 
             if (any((/bc_x%beg, bc_x%end, bc_y%beg, bc_y%end, bc_z%beg, bc_z%end/) == -17) .or. num_bc_patches > 0) then
                 bc_io = .true.
@@ -130,7 +143,7 @@ contains
     impure subroutine s_perform_time_step(t_step)
 
         integer, intent(inout) :: t_step
-        integer                :: eta_hh, eta_mm, eta_ss
+        integer                :: eta_hh, eta_mm, eta_ss, c
         real(wp)               :: eta_sec
 
         if (proc_rank == 0) then
@@ -155,6 +168,33 @@ contains
         end if
 
         call s_read_data_files(t_step)
+
+        if (t_step > t_step_start .and. lso_stat_wrt .and. n_lso_stat > 0 .and. (lso_filter_wrt .or. .not. lso_pp_filter)) then
+            call s_read_lso_fields(q_lso_pp_stat_vf, n_lso_stat, t_step, 'lso_stat_')
+        end if
+        if (t_step > t_step_start .and. ib .and. (lso_pp_filter .or. lso_closure_wrt)) then
+            call s_read_lso_fields(q_lso_pp_w_vf, 1, t_step, 'lso_mask_')
+        end if
+
+        if (t_step > t_step_start .and. lso_pp_filter) then
+            if (lso_stat_wrt .and. .not. lso_filter_wrt) then
+                if (ib) then
+                    call s_compute_lso_pp_stat_fields(q_cons_vf, q_lso_pp_w_vf)
+                else
+                    call s_compute_lso_pp_stat_fields(q_cons_vf)
+                end if
+            else
+                do c = 1, n_lso_stat, sys_size
+                    call s_apply_lso_pp_filter(q_lso_pp_stat_vf(c:min(c + sys_size - 1, n_lso_stat)))
+                end do
+            end if
+            if (ib) then
+                call s_apply_lso_pp_filter_masked(q_cons_vf, q_lso_pp_w_vf)
+            else
+                call s_apply_lso_pp_filter(q_cons_vf)
+            end if
+            if (lso_stat_wrt .and. .not. lso_filter_wrt) call s_filter_lso_pp_stat_fields()
+        end if
 
         ! seed the chemistry temperature over the INTERIOR only (mirrors the simulation,
         ! m_start_up): the ghost q_cons is unread at this point, so a ghost-inclusive sweep
@@ -218,6 +258,8 @@ contains
         real(wp), dimension(num_fluids) :: alpha_rho
         real(wp)                        :: T
         integer                         :: x_beg, x_end, y_beg, y_end, z_beg, z_end
+        type(scalar_field), allocatable :: q_lso_cls_vf(:)
+        integer                         :: lso_n_cls
 
         if (output_partial_domain) then
             call s_define_output_region
@@ -249,6 +291,31 @@ contains
         end if
 
         call s_write_grid_to_formatted_database_file(t_step)
+
+        if (t_step > t_step_start .and. lso_stat_wrt .and. n_lso_stat > 0) then
+            do i = 1, n_lso_stat
+                out%q_sf = q_lso_pp_stat_vf(i)%sf(x_beg:x_end,y_beg:y_end,z_beg:z_end)
+                write (varname, '(A,I3.3)') 'lso_stat_', i
+                call s_write_variable_to_formatted_database_file(varname, t_step)
+            end do
+        end if
+
+        if (t_step > t_step_start .and. lso_closure_wrt .and. lso_stat_wrt .and. n_lso_stat > 0) then
+            lso_n_cls = f_lso_n_closure()
+            allocate (q_lso_cls_vf(1:lso_n_cls))
+            do i = 1, lso_n_cls
+                allocate (q_lso_cls_vf(i)%sf(idwbuff(1)%beg:idwbuff(1)%end,idwbuff(2)%beg:idwbuff(2)%end, &
+                          & idwbuff(3)%beg:idwbuff(3)%end))
+            end do
+            call s_compute_lso_closure_fields(q_lso_pp_stat_vf, q_cons_vf, q_lso_pp_w_vf, q_lso_cls_vf)
+            do i = 1, lso_n_cls
+                out%q_sf = q_lso_cls_vf(i)%sf(x_beg:x_end,y_beg:y_end,z_beg:z_end)
+                write (varname, '(A,I3.3)') 'lso_closure_', i
+                call s_write_variable_to_formatted_database_file(varname, t_step)
+                deallocate (q_lso_cls_vf(i)%sf)
+            end do
+            deallocate (q_lso_cls_vf)
+        end if
 
         if (omega_wrt(2) .or. omega_wrt(3) .or. qm_wrt .or. liutex_wrt .or. schlieren_wrt) then
             call s_compute_finite_difference_coefficients(m, x_cc, fd%fd_coeff_x, buff_size, fd_number, fd_order, offset_x)
@@ -820,6 +887,7 @@ contains
         call s_initialize_eos_module()
         call s_initialize_variables_conversion_module(store_mixture_fields=.true., lagrange_beta_index=beta_idx)
         call s_initialize_data_input_module()
+        call s_initialize_lso_pp_filter_module()
         call s_initialize_derived_variables_module()
         call s_initialize_data_output_module()
 
@@ -984,6 +1052,26 @@ contains
         ib_bc_y = bc_y
         ib_bc_z = bc_z
 
+        num_dims = 1 + min(1, n) + min(1, p)
+        if (lso_stat_wrt .and. (lso_pp_filter .or. lso_filter_wrt)) then
+            block
+                integer :: nt
+                nt = num_dims*(num_dims + 1)/2
+                lso_stat_phi_p_beg = 1; lso_stat_phi_p_end = 1
+                lso_stat_rho_beg = 2; lso_stat_rho_end = 2
+                lso_stat_rhoke_beg = 3; lso_stat_rhoke_end = 3
+                lso_stat_up_beg = 4; lso_stat_up_end = lso_stat_up_beg + num_dims - 1
+                lso_stat_rhou_beg = lso_stat_up_end + 1; lso_stat_rhou_end = lso_stat_rhou_beg + num_dims - 1
+                lso_stat_rhouu_beg = lso_stat_rhou_end + 1; lso_stat_rhouu_end = lso_stat_rhouu_beg + nt - 1
+                lso_stat_rhouke_beg = lso_stat_rhouu_end + 1; lso_stat_rhouke_end = lso_stat_rhouke_beg + num_dims - 1
+                lso_stat_rhouT_beg = lso_stat_rhouke_end + 1; lso_stat_rhouT_end = lso_stat_rhouT_beg + num_dims - 1
+                lso_stat_tau_beg = lso_stat_rhouT_end + 1; lso_stat_tau_end = lso_stat_tau_beg + nt - 1
+                lso_stat_q_beg = lso_stat_tau_end + 1; lso_stat_q_end = lso_stat_q_beg + num_dims - 1
+                lso_stat_rhotau_u_beg = lso_stat_q_end + 1
+                lso_stat_rhotau_u_end = lso_stat_rhotau_u_beg + num_dims - 1
+                n_lso_stat = lso_stat_rhotau_u_end
+            end block
+        end if
         call s_initialize_parallel_io()
         output_offsets = (/offset_x, offset_y, offset_z/)
         call s_mpi_decompose_computational_domain(write_silo_ghost_offsets=format == format_silo, adjust_local_domains=.false., &
@@ -1027,6 +1115,7 @@ contains
         call s_finalize_data_output_module()
         call s_finalize_derived_variables_module()
         call s_finalize_data_input_module()
+        call s_finalize_lso_pp_filter_module()
         call s_finalize_variables_conversion_module()
         call s_finalize_eos_module()
         if (num_procs > 1) then
