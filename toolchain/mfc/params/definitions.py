@@ -683,6 +683,19 @@ def _load():
     _r("sigma", REAL, {"surface_tension"}, math=r"\f$\sigma\f$")
     _r("surface_tension", LOG, {"surface_tension"})
 
+    # JWL reaction and diagnostic controls
+    _r("jwl_wrt", LOG, desc="Write JWL temperature, product fraction, and reaction progress")
+    _r("jwl_afterburn", LOG, desc="Enable JWL afterburn energy release")
+    _r("jwl_ab_model", INT, desc="JWL afterburn rate model")
+    for n in ["jwl_q_ab", "jwl_ab_tau", "jwl_ab_A", "jwl_ab_theta", "jwl_ab_n"]:
+        _r(n, REAL)
+    _r("jwl_reactive", LOG, desc="Enable JWL++ pressure-driven reactive burn")
+    for n in ["jwl_G", "jwl_b_exp"]:
+        _r(n, REAL)
+    _r("prog_burn", LOG, desc="Enable kinematic JWL program burn")
+    for n in ["pb_D_cj", "pb_width", "pb_x_det", "pb_y_det", "pb_z_det", "pb_t_det"]:
+        _r(n, REAL)
+
     # Chemistry
     _r("cantera_file", STR, {"chemistry"})
     _r("surface_cantera_file", STR, {"chemistry"})
@@ -691,7 +704,10 @@ def _load():
 
     # Condensed-phase reactive burn (programmed pressure burn on the multi-fluid model)
     _r("reactive_burn", LOG, {"reactive_burn"})
+    _r("rburn%model", INT, {"reactive_burn"})
     for a in ["k", "pign", "pref", "n", "ta"]:
+        _r(f"rburn%{a}", REAL, {"reactive_burn"})
+    for a in ["rho0", "q", "ki", "kg", "m1", "m2", "n1", "n2", "n3"]:
         _r(f"rburn%{a}", REAL, {"reactive_burn"})
     _r("rburn%substeps", INT, {"reactive_burn"})
 
@@ -727,6 +743,35 @@ def _load():
     _r("ib_force_stride", INT, {"output", "ib"})
     for n in ["parallel_io", "file_per_process", "run_time_info", "prim_vars_wrt", "cons_vars_wrt", "fft_wrt", "ib_state_wrt", "ib_force_wrt", "ib_surface_wrt", "ib_heat_wrt"]:
         _r(n, LOG, {"output"})
+
+    # LSO variable-weight filter
+    _r("lso_filter", LOG, {"filter"})
+    _r("lso_filter_wrt", LOG, {"filter"})
+    _r("filter_sigma", REAL, {"filter"})
+    _r("lso_filter_sigma_in", REAL, {"filter"})
+    _r("lso_filter_sigma_target", REAL, {"filter"})
+    _r("lso_down_sample_factor", INT, {"filter"})
+    _r("lso_stat_wrt", LOG, {"filter"})
+    _r("lso_R_gas", REAL, {"filter"})
+    _r("lso_mu", REAL, {"filter"})
+    for n in ["lso_n_passes_x", "lso_n_passes_y", "lso_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso_a_x", "lso_a_y", "lso_a_z"]:
+        _r(f"{n}(1)", REAL, {"filter"})
+    for n in ["lso2_n_passes_x", "lso2_n_passes_y", "lso2_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso2_a_x", "lso2_a_y", "lso2_a_z"]:
+        _r(f"{n}(1)", REAL, {"filter"})
+    _r("lso_pp_filter", LOG, {"filter"})
+    _r("lso_closure_wrt", LOG, {"filter"})
+    for n in ["lso_pp_n_passes_x", "lso_pp_n_passes_y", "lso_pp_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso_pp_a_x", "lso_pp_a_y", "lso_pp_a_z"]:
+        _r(f"{n}(1)", REAL, {"filter"})
+    for n in ["lso_pp2_n_passes_x", "lso_pp2_n_passes_y", "lso_pp2_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso_pp2_a_x", "lso_pp2_a_y", "lso_pp2_a_z"]:
+        _r(f"{n}(1)", REAL, {"filter"})
     for n in [
         "schlieren_wrt",
         "alpha_wrt",
@@ -921,6 +966,7 @@ def _load():
             _r(f"{px}a({j})", REAL)
         _r(f"{px}pres", A_REAL, math=r"\f$p\f$")
         _r(f"{px}cf_val", A_REAL)
+        _r(f"{px}rxn_val", A_REAL)
         # MHD fields
         for a, sym in [("Bx", r"\f$B_x\f$"), ("By", r"\f$B_y\f$"), ("Bz", r"\f$B_z\f$")]:
             _r(f"{px}{a}", A_REAL, {"mhd"}, math=sym)
@@ -975,6 +1021,7 @@ def _load():
                 continue
             for suffix, sym in fam.required + fam.optional:
                 _r(f"{px}{fam.prefix}_{suffix}", REAL, math=sym)
+        _r(f"{px}jwl_Q", REAL, math=r"\f$Q_k\f$")
         _r(f"{px}G", REAL, {"hypoelasticity"}, math=r"\f$G_k\f$")
         _r(f"{px}Re(1)", REAL, {"viscosity"}, math=r"\f$\mathrm{Re}_k\f$ (shear)")
         _r(f"{px}Re(2)", REAL, {"viscosity"}, math=r"\f$\mathrm{Re}_k\f$ (bulk)")
@@ -1301,6 +1348,18 @@ FORTRAN_ARRAY_DIMS: dict[str, str] = {
     "vel_wrt": "3",
     "mean_dpdx": "3",
     "mean_mflux": "3",
+    "lso_a_x": "5, 60",
+    "lso_a_y": "5, 60",
+    "lso_a_z": "5, 60",
+    "lso2_a_x": "5, 60",
+    "lso2_a_y": "5, 60",
+    "lso2_a_z": "5, 60",
+    "lso_pp_a_x": "5, 60",
+    "lso_pp_a_y": "5, 60",
+    "lso_pp_a_z": "5, 60",
+    "lso_pp2_a_x": "5, 60",
+    "lso_pp2_a_y": "5, 60",
+    "lso_pp2_a_z": "5, 60",
 }
 
 # Derived-type namelist variables whose Fortran declarations come from generated_decls.fpp.
@@ -1407,6 +1466,8 @@ _nv(
     "adv_n",
     "hypoelasticity",
     "surface_tension",
+    "jwl_afterburn",
+    "jwl_reactive",
     "relativity",
     "ib",
     "num_ibs",
@@ -1442,6 +1503,78 @@ _nv(
     _ALL,
     "num_particle_clouds",
     "particle_cloud",
+)
+_nv(
+    _SIM_POST,
+    "lso_filter",
+    "lso_filter_wrt",
+    "filter_sigma",
+    "lso_down_sample_factor",
+    "lso_stat_wrt",
+    "lso_R_gas",
+    "lso_mu",
+    "lso_pp_filter",
+    "lso_closure_wrt",
+    "lso_n_passes_x",
+    "lso_n_passes_y",
+    "lso_n_passes_z",
+    "lso_a_x",
+    "lso_a_y",
+    "lso_a_z",
+    "lso2_n_passes_x",
+    "lso2_n_passes_y",
+    "lso2_n_passes_z",
+    "lso2_a_x",
+    "lso2_a_y",
+    "lso2_a_z",
+    "lso_pp_n_passes_x",
+    "lso_pp_n_passes_y",
+    "lso_pp_n_passes_z",
+    "lso_pp_a_x",
+    "lso_pp_a_y",
+    "lso_pp_a_z",
+    "lso_pp2_n_passes_x",
+    "lso_pp2_n_passes_y",
+    "lso_pp2_n_passes_z",
+    "lso_pp2_a_x",
+    "lso_pp2_a_y",
+    "lso_pp2_a_z",
+)
+_decl(
+    _POST,
+    "lso_filter",
+    "lso_filter_wrt",
+    "filter_sigma",
+    "lso_down_sample_factor",
+    "lso_stat_wrt",
+    "lso_R_gas",
+    "lso_mu",
+    "lso_pp_filter",
+    "lso_closure_wrt",
+    "lso_n_passes_x",
+    "lso_n_passes_y",
+    "lso_n_passes_z",
+    "lso_a_x",
+    "lso_a_y",
+    "lso_a_z",
+    "lso2_n_passes_x",
+    "lso2_n_passes_y",
+    "lso2_n_passes_z",
+    "lso2_a_x",
+    "lso2_a_y",
+    "lso2_a_z",
+    "lso_pp_n_passes_x",
+    "lso_pp_n_passes_y",
+    "lso_pp_n_passes_z",
+    "lso_pp_a_x",
+    "lso_pp_a_y",
+    "lso_pp_a_z",
+    "lso_pp2_n_passes_x",
+    "lso_pp2_n_passes_y",
+    "lso_pp2_n_passes_z",
+    "lso_pp2_a_x",
+    "lso_pp2_a_y",
+    "lso_pp2_a_z",
 )
 _nv(
     _PRE_SIM,
@@ -1485,8 +1618,25 @@ _nv(
     "run_time_info",
     "bubble_model",
     "lag_params",
+    "particle_pp",
+    "particles_lagrange",
     "probe_wrt",
     "num_probes",
+    "jwl_ab_model",
+    "jwl_q_ab",
+    "jwl_ab_tau",
+    "jwl_ab_A",
+    "jwl_ab_theta",
+    "jwl_ab_n",
+    "prog_burn",
+    "pb_D_cj",
+    "pb_width",
+    "pb_x_det",
+    "pb_y_det",
+    "pb_z_det",
+    "pb_t_det",
+    "jwl_G",
+    "jwl_b_exp",
     "probe",
     "acoustic_source",
     "num_source",
@@ -1631,6 +1781,7 @@ _nv(
     "flux_wrt",
     "alpha_wrt",
     "cf_wrt",
+    "jwl_wrt",
     "chem_wrt_T",
     "chem_wrt_Y",
     "alpha_rho_e_wrt",

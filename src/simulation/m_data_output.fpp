@@ -30,11 +30,12 @@ module m_data_output
     implicit none
 
     private
+    character(LEN=8), public :: lso_file_prefix = ''
     public :: s_initialize_data_output_module, s_open_run_time_information_file, s_open_probe_files, &
         & s_write_run_time_information, s_write_data_files, s_write_serial_data_files, s_write_parallel_data_files, &
         & s_write_ib_data_file, s_write_probe_files, s_write_ib_state_file, s_write_ib_history, s_close_ib_history, &
         & s_close_run_time_information_file, s_close_probe_files, s_finalize_data_output_module, s_initialize_lag_output, &
-        & s_write_lag_particle_evol_if_due, s_write_lag_step_output, s_write_lag_save_data
+        & s_write_lag_particle_evol_if_due, s_write_lag_step_output, s_write_lag_save_data, s_write_lso_stat_file
 
     !> @name ICFL, VCFL, CCFL, TCFL, and Rc stability criteria extrema over all the time-steps
     !> @{
@@ -123,6 +124,8 @@ contains
 
         if (bubbles_lagrange) then
             write (3, '(13X,A10)', advance="no") trim('N Bubbles')
+        else if (particles_lagrange) then
+            write (3, '(13X,A10)', advance="no") trim('N Particles')
         end if
 
         write (3, *)  ! new line
@@ -322,6 +325,8 @@ contains
 
             if (bubbles_lagrange) then
                 write (3, '(13X,I10)', advance="no") n_el_bubs_glb
+            else if (particles_lagrange) then
+                write (3, '(13X,I10)', advance="no") n_el_particles_glb
             end if
 
             write (3, *)  ! new line
@@ -502,7 +507,13 @@ contains
         character(LEN=path_len + 3*name_len) :: file_path   !< Relative path to the grid and conservative variables data files
         logical :: file_exist                               !< Logical used to check existence of current time-step directory
         character(LEN=15) :: FMT
-        integer :: i, j, k, l, r
+        integer :: i, j, k, l, r, m_out, n_out, p_out
+
+        if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+            m_out = m_lso_ds; n_out = n_lso_ds; p_out = p_lso_ds
+        else
+            m_out = m; n_out = n; p_out = p
+        end if
 
         write (t_step_dir, '(A,I0,A,I0)') trim(case_dir) // '/p_all'
         write (t_step_dir, '(a,i0,a,i0)') trim(case_dir) // '/p_all/p', proc_rank, '/', t_step
@@ -514,32 +525,36 @@ contains
         ! Serial readers (post_process, restart) need bc_type.dat and bc_buffers.dat in every step directory, not just step 0.
         if (bc_io) call s_write_serial_boundary_condition_files(bc_type, t_step_dir, .false.)
 
-        file_path = trim(t_step_dir) // '/x_cb.dat'
-
-        open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
-        write (2) x_cb(-1:m); close (2)
-
-        if (n > 0) then
-            file_path = trim(t_step_dir) // '/y_cb.dat'
+        if (lso_file_prefix == '') then
+            file_path = trim(t_step_dir) // '/x_cb.dat'
 
             open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
-            write (2) y_cb(-1:n); close (2)
+            write (2) x_cb(-1:m); close (2)
 
-            if (p > 0) then
-                file_path = trim(t_step_dir) // '/z_cb.dat'
+            if (n > 0) then
+                file_path = trim(t_step_dir) // '/y_cb.dat'
 
                 open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
-                write (2) z_cb(-1:p); close (2)
+                write (2) y_cb(-1:n); close (2)
+
+                if (p > 0) then
+                    file_path = trim(t_step_dir) // '/z_cb.dat'
+
+                    open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
+                    write (2) z_cb(-1:p); close (2)
+                end if
             end if
         end if
 
         do i = 1, sys_size
-            write (file_path, '(A,I0,A)') trim(t_step_dir) // '/q_cons_vf', i, '.dat'
+            write (file_path, '(A,I0,A)') trim(t_step_dir) // '/' // trim(lso_file_prefix) // 'q_cons_vf', i, '.dat'
 
             open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
 
-            write (2) q_cons_vf(i)%sf(0:m,0:n,0:p); close (2)
+            write (2) q_cons_vf(i)%sf(0:m_out,0:n_out,0:p_out); close (2)
         end do
+
+        if (lso_file_prefix /= '') return
 
         ! Lagrangian beta (void fraction) written as q_cons_vf(sys_size+1) to match the parallel I/O path and allow post_process to
         ! read it.
@@ -548,7 +563,7 @@ contains
 
             open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
 
-            write (2) beta%sf(0:m,0:n,0:p); close (2)
+            write (2) beta%sf(0:m_out,0:n_out,0:p_out); close (2)
         end if
 
         if (qbmm .and. .not. polytropic) then
@@ -573,8 +588,8 @@ contains
             end do
         end if
 
-        ! Writing the IB markers
-        if (ib) then
+        ! Writing the IB markers - only on the primary pass.
+        if (ib .and. lso_file_prefix == '') then
             call s_write_serial_ib_data(t_step)
         end if
 
@@ -843,6 +858,42 @@ contains
 
     end subroutine s_write_serial_data_files
 
+    !> Set up MPI views for stride-downsampled LSO fields.
+    impure subroutine s_initialize_mpi_data_lso_ds(q_filt_ds_vf)
+
+        type(scalar_field), dimension(sys_size), intent(in) :: q_filt_ds_vf
+
+#ifdef MFC_MPI
+        integer, dimension(num_dims) :: sizes_glb, sizes_loc, start_lso
+        integer                      :: i, ierr
+
+        do i = 1, sys_size
+            MPI_IO_DATA%var(i)%sf => q_filt_ds_vf(i)%sf(0:m_lso_ds,0:n_lso_ds,0:p_lso_ds)
+        end do
+
+        sizes_glb(1) = m_glb_lso_ds + 1
+        sizes_loc(1) = m_lso_ds + 1
+        start_lso(1) = lso_ds_lo(1)
+        if (num_dims >= 2) then
+            sizes_glb(2) = n_glb_lso_ds + 1
+            sizes_loc(2) = n_lso_ds + 1
+            start_lso(2) = lso_ds_lo(2)
+        end if
+        if (num_dims == 3) then
+            sizes_glb(3) = p_glb_lso_ds + 1
+            sizes_loc(3) = p_lso_ds + 1
+            start_lso(3) = lso_ds_lo(3)
+        end if
+
+        do i = 1, sys_size
+            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_lso, MPI_ORDER_FORTRAN, mpi_p, &
+                                          & MPI_IO_DATA%view(i), ierr)
+            call MPI_TYPE_COMMIT(MPI_IO_DATA%view(i), ierr)
+        end do
+#endif
+
+    end subroutine s_initialize_mpi_data_lso_ds
+
     !> Write grid and conservative variable data files in parallel via MPI I/O
     impure subroutine s_write_parallel_data_files(q_cons_vf, t_step, beta, q_T_sf)
 
@@ -882,12 +933,16 @@ contains
         if (file_per_process) then
             call s_int_to_str(t_step, t_step_string)
 
-            if (down_sample) then
+            if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+                call s_initialize_mpi_data_lso_ds(q_cons_vf)
+            else if (down_sample) then
                 call s_initialize_mpi_data_ds(m_ds, n_ds, p_ds)
             else
                 if (ib) then
                     call s_initialize_mpi_data(q_cons_vf, ib_markers=ib_markers, ib_mpi_data=MPI_IO_IB_DATA, qbmm_pb=pb_ts(1), &
                                                & qbmm_mv=mv_ts(1))
+                else if (present(beta)) then
+                    call s_initialize_mpi_data(q_cons_vf, beta=beta, qbmm_pb=pb_ts(1), qbmm_mv=mv_ts(1))
                 else
                     call s_initialize_mpi_data(q_cons_vf, qbmm_pb=pb_ts(1), qbmm_mv=mv_ts(1))
                 end if
@@ -917,6 +972,11 @@ contains
                 m_glb_save = m_glb_ds + 1
                 n_glb_save = n_glb_ds + 1
                 p_glb_save = p_glb_ds + 1
+            else if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+                data_size = (m_lso_ds + 1)*(n_lso_ds + 1)*(p_lso_ds + 1)
+                m_glb_save = m_glb_lso_ds + 1
+                n_glb_save = n_glb_lso_ds + 1
+                p_glb_save = p_glb_lso_ds + 1
             else
                 data_size = (m + 1)*(n + 1)*(p + 1)
                 m_glb_save = m_glb + 1
@@ -959,6 +1019,9 @@ contains
                         call MPI_FILE_WRITE_ALL(ifile, MPI_IO_DATA%var(i)%sf(:,:,:), data_size*mpi_io_type, mpi_io_p, status, ierr)
                     end do
                 end if
+                if (present(beta)) then
+                    call MPI_FILE_WRITE_ALL(ifile, MPI_IO_DATA%var(sys_size + 1)%sf, data_size*mpi_io_type, mpi_io_p, status, ierr)
+                end if
             end if
 
             call MPI_FILE_CLOSE(ifile, ierr)
@@ -967,7 +1030,9 @@ contains
                 call s_write_parallel_ib_data(t_step)
             end if
         else
-            if (ib) then
+            if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+                call s_initialize_mpi_data_lso_ds(q_cons_vf)
+            else if (ib) then
                 call s_initialize_mpi_data(q_cons_vf, ib_markers=ib_markers, ib_mpi_data=MPI_IO_IB_DATA, qbmm_pb=pb_ts(1), &
                                            & qbmm_mv=mv_ts(1))
             else if (present(beta)) then
@@ -976,7 +1041,7 @@ contains
                 call s_initialize_mpi_data(q_cons_vf, qbmm_pb=pb_ts(1), qbmm_mv=mv_ts(1))
             end if
 
-            write (file_loc, '(I0,A)') t_step, '.dat'
+            write (file_loc, '(A,I0,A)') trim(lso_file_prefix), t_step, '.dat'
             file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
             inquire (FILE=trim(file_loc), EXIST=file_exist)
             if (file_exist .and. proc_rank == 0) then
@@ -985,11 +1050,17 @@ contains
             call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
             call s_check_mpi_file_open(ierr, file_loc)
 
-            data_size = (m + 1)*(n + 1)*(p + 1)
-
-            m_MOK = int(m_glb + 1, MPI_OFFSET_KIND)
-            n_MOK = int(n_glb + 1, MPI_OFFSET_KIND)
-            p_MOK = int(p_glb + 1, MPI_OFFSET_KIND)
+            if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+                data_size = (m_lso_ds + 1)*(n_lso_ds + 1)*(p_lso_ds + 1)
+                m_MOK = int(m_glb_lso_ds + 1, MPI_OFFSET_KIND)
+                n_MOK = int(n_glb_lso_ds + 1, MPI_OFFSET_KIND)
+                p_MOK = int(p_glb_lso_ds + 1, MPI_OFFSET_KIND)
+            else
+                data_size = (m + 1)*(n + 1)*(p + 1)
+                m_MOK = int(m_glb + 1, MPI_OFFSET_KIND)
+                n_MOK = int(n_glb + 1, MPI_OFFSET_KIND)
+                p_MOK = int(p_glb + 1, MPI_OFFSET_KIND)
+            end if
             WP_MOK = int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
             MOK = int(1._wp, MPI_OFFSET_KIND)
             str_MOK = int(name_len, MPI_OFFSET_KIND)
@@ -1073,7 +1144,7 @@ contains
         integer(kind=MPI_OFFSET_kind)        :: disp
         integer(kind=MPI_OFFSET_kind)        :: m_MOK, n_MOK, p_MOK
         integer(kind=MPI_OFFSET_kind)        :: WP_MOK, var_MOK, MOK
-        integer                              :: ifile, ierr, data_size
+        integer                              :: ifile, ierr, data_size, save_index
         integer, dimension(MPI_STATUS_SIZE)  :: status
         character(len=10)                    :: t_step_string
 
@@ -2496,5 +2567,71 @@ contains
         f_probe_owned = v <= hi .and. (v > lo .or. (first .and. v >= lo))
 
     end function f_probe_owned
+
+    impure subroutine s_write_lso_stat_file(q_stat_vf, n_stat, t_step, fname)
+
+        type(scalar_field), intent(in)         :: q_stat_vf(:)
+        integer, intent(in)                    :: n_stat, t_step
+        character(LEN=*), intent(in), optional :: fname
+
+#ifdef MFC_MPI
+        integer                              :: ifile, ierr, data_size, i, j, k, l, mpi_view
+        integer, dimension(MPI_STATUS_SIZE)  :: status
+        integer(kind=MPI_OFFSET_KIND)        :: disp, field_size, var_MOK
+        integer, dimension(num_dims)         :: sizes_glb, sizes_loc, start_stat
+        integer                              :: m_loc, n_loc, p_loc
+        real(stp), allocatable               :: stat_io_buf(:,:,:)
+        character(LEN=path_len + 2*name_len) :: file_loc
+        logical                              :: file_exist
+
+        if (lso_down_sample_factor > 1) then
+            m_loc = m_lso_ds; n_loc = n_lso_ds; p_loc = p_lso_ds
+            sizes_glb(1) = m_glb_lso_ds + 1; sizes_loc(1) = m_loc + 1; start_stat(1) = lso_ds_lo(1)
+            if (num_dims >= 2) then
+                sizes_glb(2) = n_glb_lso_ds + 1; sizes_loc(2) = n_loc + 1; start_stat(2) = lso_ds_lo(2)
+            end if
+            if (num_dims == 3) then
+                sizes_glb(3) = p_glb_lso_ds + 1; sizes_loc(3) = p_loc + 1; start_stat(3) = lso_ds_lo(3)
+            end if
+        else
+            m_loc = m; n_loc = n; p_loc = p
+            sizes_glb(1) = m_glb + 1; sizes_loc(1) = m_loc + 1; start_stat(1) = start_idx(1)
+            if (num_dims >= 2) then
+                sizes_glb(2) = n_glb + 1; sizes_loc(2) = n_loc + 1; start_stat(2) = start_idx(2)
+            end if
+            if (num_dims == 3) then
+                sizes_glb(3) = p_glb + 1; sizes_loc(3) = p_loc + 1; start_stat(3) = start_idx(3)
+            end if
+        end if
+
+        data_size = (m_loc + 1)*(n_loc + 1)*(p_loc + 1)
+        field_size = int(product(sizes_glb), MPI_OFFSET_KIND)*int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
+        if (present(fname)) then
+            write (file_loc, '(A,I0,A)') trim(fname), t_step, '.dat'
+        else
+            write (file_loc, '(A,I0,A)') 'lso_stat_', t_step, '.dat'
+        end if
+        file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
+        inquire (FILE=trim(file_loc), EXIST=file_exist)
+        if (file_exist .and. proc_rank == 0) call MPI_FILE_DELETE(file_loc, mpi_info_int, ierr)
+        call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+        allocate (stat_io_buf(0:m_loc,0:n_loc,0:p_loc))
+        do i = 1, n_stat
+            do l = 0, p_loc; do k = 0, n_loc; do j = 0, m_loc
+                stat_io_buf(j, k, l) = q_stat_vf(i)%sf(j, k, l)
+            end do; end do; end do
+            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_stat, MPI_ORDER_FORTRAN, mpi_p, mpi_view, ierr)
+            call MPI_TYPE_COMMIT(mpi_view, ierr)
+            var_MOK = int(i, MPI_OFFSET_KIND)
+            disp = field_size*(var_MOK - 1)
+            call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, mpi_view, 'native', mpi_info_int, ierr)
+            call MPI_FILE_WRITE_ALL(ifile, stat_io_buf, data_size, mpi_io_p, status, ierr)
+            call MPI_TYPE_FREE(mpi_view, ierr)
+        end do
+        deallocate (stat_io_buf)
+        call MPI_FILE_CLOSE(ifile, ierr)
+#endif
+
+    end subroutine s_write_lso_stat_file
 
 end module m_data_output
