@@ -10,6 +10,8 @@ exercises configurations that are meant to pass).
 import unittest
 
 from .case_validator import CaseConstraintError, CaseValidator
+from .lso_filter import find_min_lso_passes
+from .params.definitions import CONSTRAINTS
 
 # A minimal 1D case that passes simulation validation.
 BASE = {
@@ -71,6 +73,30 @@ REACTIVE_BURN = {
     "fluid_pp(2)%qv": 0.0,
     "patch_icpp(1)%alpha_rho(2)": 0.0,
     "patch_icpp(1)%alpha(2)": 0.0,
+}
+
+IGNITION_GROWTH_BURN = {
+    **REACTIVE_BURN,
+    "num_fluids": 3,
+    "rburn%model": 1,
+    "rburn%rho0": 1900.0,
+    "rburn%q": 4.0e6,
+    "rburn%ki": 1.0e9,
+    "rburn%kg": 1.0e8,
+    "rburn%m1": 1.0,
+    "rburn%m2": 4.0,
+    "rburn%n1": 1.0,
+    "rburn%n2": 1.0,
+    "rburn%n3": 2.0,
+    "fluid_pp(2)%eos": 4,
+    "fluid_pp(2)%gamma": None,
+    "fluid_pp(2)%pi_inf": None,
+    "fluid_pp(2)%qv": 1.0e6,
+    "fluid_pp(3)%eos": 4,
+    "fluid_pp(3)%qv": 0.0,
+    "patch_icpp(1)%alpha_rho(3)": 0.0,
+    "patch_icpp(1)%alpha(3)": 0.0,
+    **{f"fluid_pp({phase})%{name}": value for phase in (2, 3) for name, value in {"jwl_a": 3.0e10, "jwl_b": 2.0e9, "jwl_r1": 4.15, "jwl_r2": 0.95, "jwl_omega": 0.3, "jwl_rho0": 1900.0}.items()},
 }
 
 CHEMISTRY = {**BASE, "chemistry": "T", "cantera_file": "h2o2.yaml"}
@@ -153,6 +179,106 @@ class TestImmersedBoundaryFlags(ConstraintTestCase):
 
     def test_not_tripped_when_disabled(self):
         self.assertAccepts(BASE)
+
+
+class TestProgramBurnConstraints(unittest.TestCase):
+    def errors_for(self, **changes):
+        params = {
+            "prog_burn": "T",
+            "num_fluids": 1,
+            "fluid_pp(1)%eos": CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"],
+            "fluid_pp(1)%jwl_Q": 1.0,
+            "pb_D_cj": 1.0,
+            "pb_width": 0.1,
+            "pb_t_det": 0.0,
+        }
+        params.update(changes)
+        validator = CaseValidator(params)
+        validator.check_prog_burn()
+        return " ".join(validator.errors)
+
+    def test_valid_front(self):
+        self.assertEqual(self.errors_for(), "")
+
+    def test_requires_positive_energy_and_width(self):
+        self.assertIn("jwl_Q", self.errors_for(**{"fluid_pp(1)%jwl_Q": 0.0}))
+        self.assertIn("pb_width", self.errors_for(pb_width=0.0))
+
+    def test_requires_jwl_and_unique_source(self):
+        self.assertIn("exactly one JWL", self.errors_for(**{"fluid_pp(1)%eos": 1}))
+        self.assertIn("cannot be combined", self.errors_for(jwl_reactive="T"))
+
+
+class TestLsoFilterConstraints(unittest.TestCase):
+    BASE = {
+        "lso_filter": "T",
+        "lso_filter_wrt": "T",
+        "lso_stat_wrt": "T",
+        "filter_sigma": 0.1,
+        "lso_down_sample_factor": 1,
+        "parallel_io": "T",
+        "num_fluids": 1,
+        "fluid_pp(1)%eos": CONSTRAINTS["fluid_pp(1)%eos"]["names"]["ideal_gas"],
+        "fluid_pp(1)%cv": 1.0,
+    }
+
+    @staticmethod
+    def errors(params, stage):
+        validator = CaseValidator(params)
+        validator.check_lso_filter(stage)
+        return validator.errors
+
+    def test_stat_output_requires_filtered_mpi_output(self):
+        params = {**self.BASE, "lso_filter_wrt": "F"}
+        self.assertTrue(any("lso_stat_wrt" in error for error in self.errors(params, "simulation")))
+        params = {**self.BASE, "parallel_io": "F"}
+        self.assertTrue(any("parallel_io" in error for error in self.errors(params, "simulation")))
+        params = {**self.BASE, "lso_R_gas": 0.0}
+        self.assertTrue(any("lso_R_gas" in error for error in self.errors(params, "simulation")))
+        params = {**self.BASE, "fluid_pp(1)%eos": CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"], "fluid_pp(1)%cv": 0.0}
+        self.assertTrue(any("state-dependent EOS" in error for error in self.errors(params, "simulation")))
+
+    def test_post_closure_rejects_general_eos(self):
+        params = {**self.BASE, "lso_closure_wrt": "T", "fluid_pp(1)%eos": CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"]}
+        self.assertTrue(any("calorically perfect" in error for error in self.errors(params, "post_process")))
+
+    def test_statistics_reject_mixture_momentum_over_partial_density(self):
+        for stage in ("simulation", "post_process"):
+            params = {**self.BASE, "num_fluids": 2}
+            self.assertTrue(any("LSO statistics currently require num_fluids = 1" in error for error in self.errors(params, stage)))
+            self.assertEqual(self.errors({**params, "lso_stat_wrt": "F"}, stage), [])
+
+    def test_supported_closure_is_accepted(self):
+        self.assertEqual(self.errors({**self.BASE, "lso_closure_wrt": "T"}, "post_process"), [])
+
+    def test_statistics_reject_unsupported_el_particle_products(self):
+        params = {**self.BASE, "particles_lagrange": "T"}
+        for stage in ("pre_process", "simulation", "post_process"):
+            self.assertTrue(any("not particles_lagrange" in error for error in self.errors(params, stage)))
+            self.assertEqual(self.errors({**params, "lso_stat_wrt": "F"}, stage), [])
+
+    def test_ib_post_filter_requires_parallel_io_for_saved_mask(self):
+        params = {**self.BASE, "ib": "T", "lso_pp_filter": "T", "parallel_io": "F"}
+        self.assertTrue(any("IBM LSO post-process filtering requires parallel_io" in error for error in self.errors(params, "post_process")))
+        self.assertEqual(self.errors({**params, "parallel_io": "T"}, "post_process"), [])
+
+    def test_stretched_x_allows_decimation_but_not_post_filter(self):
+        stretched = {**self.BASE, "stretch_x": "T"}
+        for stage in ("simulation", "post_process"):
+            self.assertEqual(self.errors(stretched, stage), [])
+            self.assertEqual(self.errors({**stretched, "m": 31, "lso_down_sample_factor": 4}, stage), [])
+            self.assertTrue(any("uniform y and z" in e for e in self.errors({**self.BASE, "stretch_y": "T"}, stage)))
+        self.assertTrue(any("uniform x" in e for e in self.errors({**stretched, "lso_pp_filter": "T"}, "post_process")))
+
+    def test_filter_design_fails_when_tolerance_is_unreachable(self):
+        with self.assertRaisesRegex(ValueError, "did not reach"):
+            find_min_lso_passes(1.0, conv_tol=0.0, max_passes=1, n_xi=16)
+
+    def test_downsampled_reader_rejects_unsupported_layouts(self):
+        base = {**self.BASE, "m": 31, "lso_down_sample_factor": 2, "lso_stat_wrt": "F"}
+        self.assertEqual(self.errors(base, "post_process"), [])
+        for extra in ({"parallel_io": "F"}, {"file_per_process": "T"}, {"down_sample": "T"}, {"bc_x%beg": -17}, {"num_bc_patches": 1}, {"m": 1}):
+            self.assertTrue(any("Downsampled LSO" in e or "legacy down_sample" in e for e in self.errors({**base, **extra}, "post_process")))
 
 
 class TestBodyForceSpatialSupport(ConstraintTestCase):
@@ -240,6 +366,26 @@ class TestReactiveBurnFluidPairing(ConstraintTestCase):
 
     def test_accepts_valid_configuration(self):
         self.assertAccepts(REACTIVE_BURN)
+
+    def test_accepts_ignition_growth(self):
+        self.assertAccepts(IGNITION_GROWTH_BURN)
+
+    def test_rejects_ignition_growth_without_required_density(self):
+        params = {k: v for k, v in IGNITION_GROWTH_BURN.items() if k != "rburn%rho0"}
+        self.assertRejects(params, "Ignition-and-Growth reactive_burn requires rburn%rho0 > 0")
+
+    def test_rejects_ignition_growth_wrong_material_count(self):
+        self.assertRejects({**IGNITION_GROWTH_BURN, "num_fluids": 2}, "Ignition-and-Growth reactive_burn requires num_fluids = 3")
+
+    def test_rejects_ignition_growth_mismatched_jwl(self):
+        self.assertRejects({**IGNITION_GROWTH_BURN, "fluid_pp(3)%jwl_a": 2.0e10}, "matching JWL jwl_a")
+
+    def test_rejects_ignition_growth_odd_ignition_exponent(self):
+        self.assertRejects({**IGNITION_GROWTH_BURN, "rburn%m2": 3.0}, "even integer rburn%m2")
+
+    def test_rejects_ignition_growth_missing_heat_release(self):
+        params = {k: v for k, v in IGNITION_GROWTH_BURN.items() if k != "rburn%q"}
+        self.assertRejects(params, "Ignition-and-Growth reactive_burn requires rburn%q > 0")
 
 
 class TestPhaseChangeFluidPairing(ConstraintTestCase):
@@ -440,6 +586,24 @@ class TestMieGruneisenSelector(ConstraintTestCase):
         self.assertRejects({**BASE, **self.MG, "T_wrt": "T", "fluid_pp(1)%cv": 0.0}, "T_wrt = T needs fluid_pp(1)%cv > 0")
         self.assertRejects({**BASE, **self.MG, "T_wrt": "T", "fluid_pp(1)%cv": 400.0}, "needs fluid_pp(1)%mg_t0 > 0")
         self.assertAccepts({**BASE, **self.MG, "T_wrt": "T", "fluid_pp(1)%cv": 400.0, "fluid_pp(1)%mg_t0": 300.0})
+
+    def test_dynamic_ibm_needs_complete_temperature_eos(self):
+        ib = {
+            **BASE_2D,
+            **TestJwlSelector.JWL,
+            "ib": "T",
+            "num_ibs": 1,
+            "fd_order": 2,
+            "patch_ib(1)%geometry": 2,
+            "patch_ib(1)%x_centroid": 0.5,
+            "patch_ib(1)%y_centroid": 0.5,
+            "patch_ib(1)%radius": 0.1,
+            "patch_ib(1)%moving_ibm": 2,
+            "patch_ib(1)%mass": 1.0,
+        }
+        self.assertRejects(ib, "temperature of fluid 1 needs fluid_pp(1)%cv > 0")
+        self.assertRejects({**ib, "fluid_pp(1)%cv": 400.0}, "needs fluid_pp(1)%jwl_t0 > 0")
+        self.assertAccepts({**ib, "fluid_pp(1)%cv": 400.0, "fluid_pp(1)%jwl_t0": 300.0})
 
     def test_zero_density_is_singular(self):
         self.assertRejects({**BASE, **self.MG, "patch_icpp(1)%alpha_rho(1)": 0.0, "patch_icpp(1)%alpha(1)": 1.0}, "outside its equation of state")
