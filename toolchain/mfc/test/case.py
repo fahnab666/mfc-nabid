@@ -423,6 +423,8 @@ if "post_process" in ARGS["mfc"]["targets"]:
 else:
     mods = {json.dumps(POST_PROCESS_OFF_PARAMS)}
 {HONOR_IO_SNIPPET if self.honor_io_keys else ""}
+    if any(case.get(key, "F") == "T" for key in ("lso_stat_wrt", "lso_pp_filter", "lso_closure_wrt")):
+        mods["parallel_io"] = "T"
 
 print(json.dumps({{**case, **mods}}))
 """,

@@ -28,6 +28,7 @@ Welcome to the Multi-component Flow Code (MFC) documentation.
 - @ref expectedPerformance "Performance" - Optimization and benchmarks
 - @ref amr "Adaptive Mesh Refinement" - Block-structured AMR: algorithm, physics support, and parameters
 - @ref gpuParallelization "GPU Parallelization" - GPU macro API (developer reference)
+- @ref lso-filter-testing "LSO Filter Verification" - Statistical-product and closure production gates
 - @ref docker "Containers" - Docker usage
 - @ref troubleshooting "Troubleshooting" - Debugging and common issues
 
