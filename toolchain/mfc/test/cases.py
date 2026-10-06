@@ -3874,9 +3874,9 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         stack.push("substeps", {"rburn%substeps": 10})
         cases.append(define_case_d(stack, "", {}, ppn=2))
         stack.pop()
-        # At the initial pressure, k*dt*((p-pign)/pref) = 3. The former explicit
-        # RK source could send the reactant fraction below zero in one flow step.
-        stack.push("stiff bounded burn", {"rburn%k": 6.0e9, "t_step_stop": 2, "t_step_save": 1})
+        # At the initial pressure, k*dt*((p-pign)/pref) = 3. An explicit RHS source would carry the
+        # reactant fraction below zero in one flow step; the operator-split burn caps it at spent.
+        stack.push("stiff bounded burn", {"rburn%substeps": 1, "rburn%k": 6.0e9, "t_step_stop": 2, "t_step_save": 1})
         cases.append(define_case_d(stack, "", {}))
         cases.append(define_case_d(stack, "6eq", {"model_eqns": 3}))
         stack.pop()

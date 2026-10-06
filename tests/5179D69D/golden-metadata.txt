@@ -1,119 +1,154 @@
-This file was created on 2026-09-25 04:42:12.314201.
+This file was created on 2026-10-05 23:00:23.202085.
 
 mfc.sh:
 
-    Invocation: test --only Reactive Burn --generate --no-build --no-gpu -j 1
+    Invocation: test --only 5179D69D 3D70B98C --generate --no-examples --no-build --no-gpu -j 2
     Lock:       mpi=Yes & gpu=No & debug=No & reldebug=No & gcov=No & unified=No & single=No & mixed=No & fastmath=No
-    Git:        55c75ac18b5ff10d2f11f19c557a61d1e310e03f on fix/program-reactive-burn (dirty)
-
-simulation:
-
-    CMake Configuration:
-
-        CMake v4.3.2 on Fahads-MacBook-Pro.local
-
-        C       : AppleClang v21.0.0.21000101 (/usr/bin/cc)
-        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
-
-        PRE_PROCESS   : OFF
-        SIMULATION    : ON
-        POST_PROCESS  : OFF
-        SYSCHECK      : OFF
-        DOCUMENTATION : OFF
-        ALL           : OFF
-
-        MPI     : ON
-        OpenACC : OFF
-        OpenMP  : OFF
-
-        Fypp    : /Users/fahadnabid/code/mfc-burn-stability/build/venv/bin/fypp
-        Doxygen :
-
-        Build Type : Release
-
-    Configuration Environment:
-
-        CC       : /usr/bin/cc
-        CXX      : /usr/bin/c++
-        FC       : /opt/homebrew/bin/gfortran
-        OMPI_CC  :
-        OMPI_CXX :
-        OMPI_FC  :
-
-syscheck:
-
-    CMake Configuration:
-
-        CMake v4.3.2 on Fahads-MacBook-Pro.local
-
-        C       : AppleClang v21.0.0.21000101 (/usr/bin/cc)
-        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
-
-        PRE_PROCESS   : OFF
-        SIMULATION    : OFF
-        POST_PROCESS  : OFF
-        SYSCHECK      : ON
-        DOCUMENTATION : OFF
-        ALL           : OFF
-
-        MPI     : ON
-        OpenACC : OFF
-        OpenMP  : OFF
-
-        Fypp    : /Users/fahadnabid/code/mfc-burn-stability/build/venv/bin/fypp
-        Doxygen :
-
-        Build Type : Release
-
-    Configuration Environment:
-
-        CC       : /usr/bin/cc
-        CXX      : /usr/bin/c++
-        FC       : /opt/homebrew/bin/gfortran
-        OMPI_CC  :
-        OMPI_CXX :
-        OMPI_FC  :
+    Git:        2a558bff248f4a32eed4d5011c4e67cff50aa464 on maintenance/el-jwl-iso-rebased-20261005 (dirty)
 
 pre_process:
 
     CMake Configuration:
-
+    
         CMake v4.3.2 on Fahads-MacBook-Pro.local
-
+    
         C       : AppleClang v21.0.0.21000101 (/usr/bin/cc)
         Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
-
+    
         PRE_PROCESS   : ON
         SIMULATION    : OFF
         POST_PROCESS  : OFF
         SYSCHECK      : OFF
         DOCUMENTATION : OFF
         ALL           : OFF
-
+    
         MPI     : ON
         OpenACC : OFF
         OpenMP  : OFF
-
-        Fypp    : /Users/fahadnabid/code/mfc-burn-stability/build/venv/bin/fypp
-        Doxygen :
-
+    
+        Fypp    : /Users/fahadnabid/code/mfc-el-jwl-iso-rebased/build/venv/bin/fypp
+        Doxygen : 
+    
         Build Type : Release
-
+    
     Configuration Environment:
-
+    
         CC       : /usr/bin/cc
         CXX      : /usr/bin/c++
         FC       : /opt/homebrew/bin/gfortran
-        OMPI_CC  :
-        OMPI_CXX :
-        OMPI_FC  :
+        OMPI_CC  : 
+        OMPI_CXX : 
+        OMPI_FC  : 
+
+simulation:
+
+    CMake Configuration:
+    
+        CMake v4.3.2 on Fahads-MacBook-Pro.local
+    
+        C       : AppleClang v21.0.0.21000101 (/usr/bin/cc)
+        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
+    
+        PRE_PROCESS   : OFF
+        SIMULATION    : ON
+        POST_PROCESS  : OFF
+        SYSCHECK      : OFF
+        DOCUMENTATION : OFF
+        ALL           : OFF
+    
+        MPI     : ON
+        OpenACC : OFF
+        OpenMP  : OFF
+    
+        Fypp    : /Users/fahadnabid/code/mfc-el-jwl-iso-rebased/build/venv/bin/fypp
+        Doxygen : 
+    
+        Build Type : Release
+    
+    Configuration Environment:
+    
+        CC       : /usr/bin/cc
+        CXX      : /usr/bin/c++
+        FC       : /opt/homebrew/bin/gfortran
+        OMPI_CC  : 
+        OMPI_CXX : 
+        OMPI_FC  : 
+
+post_process:
+
+    CMake Configuration:
+    
+        CMake v4.3.2 on Fahads-MacBook-Pro.local
+    
+        C       : AppleClang v21.0.0.21000101 (/usr/bin/cc)
+        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
+    
+        PRE_PROCESS   : OFF
+        SIMULATION    : OFF
+        POST_PROCESS  : ON
+        SYSCHECK      : OFF
+        DOCUMENTATION : OFF
+        ALL           : OFF
+    
+        MPI     : ON
+        OpenACC : OFF
+        OpenMP  : OFF
+    
+        Fypp    : /Users/fahadnabid/code/mfc-el-jwl-iso-rebased/build/venv/bin/fypp
+        Doxygen : 
+    
+        Build Type : Release
+    
+    Configuration Environment:
+    
+        CC       : /usr/bin/cc
+        CXX      : /usr/bin/c++
+        FC       : /opt/homebrew/bin/gfortran
+        OMPI_CC  : 
+        OMPI_CXX : 
+        OMPI_FC  : 
+
+syscheck:
+
+    CMake Configuration:
+    
+        CMake v4.3.2 on Fahads-MacBook-Pro.local
+    
+        C       : AppleClang v21.0.0.21000101 (/usr/bin/cc)
+        Fortran : GNU v15.2.0 (/opt/homebrew/bin/gfortran)
+    
+        PRE_PROCESS   : OFF
+        SIMULATION    : OFF
+        POST_PROCESS  : OFF
+        SYSCHECK      : ON
+        DOCUMENTATION : OFF
+        ALL           : OFF
+    
+        MPI     : ON
+        OpenACC : OFF
+        OpenMP  : OFF
+    
+        Fypp    : /Users/fahadnabid/code/mfc-el-jwl-iso-rebased/build/venv/bin/fypp
+        Doxygen : 
+    
+        Build Type : Release
+    
+    Configuration Environment:
+    
+        CC       : /usr/bin/cc
+        CXX      : /usr/bin/c++
+        FC       : /opt/homebrew/bin/gfortran
+        OMPI_CC  : 
+        OMPI_CXX : 
+        OMPI_FC  : 
 
 CPU:
 
     CPU Info:
-    From sysctl -a
+    From sysctl -a 
     machdep.cpu.cores_per_package: 14
     machdep.cpu.core_count: 14
     machdep.cpu.logical_per_package: 14
     machdep.cpu.thread_count: 14
     machdep.cpu.brand_string: Apple M4 Pro
+
