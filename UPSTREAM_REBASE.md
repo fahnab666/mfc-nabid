@@ -80,11 +80,16 @@ On macOS with GNU Fortran 15, double precision and CPU MPI:
 - All three solver targets built from the rebased sources.
 - All 61 non-chemistry IBM regressions passed across all three solver targets.
 - The selected EOS, burn, LSO and periodic IBM regressions passed 21 of 23 cases.
-  `5179D69D` and `3D70B98C`, the stiff bounded-burn cases, failed. The original
-  checkout's October 1 log, `build/validation/upstream-alignment-regressions.log`,
-  records the same failures and matching values before this rebase. Reactive-burn,
-  RHS and time-stepper sources are unchanged from the original feature tip.
-  These failures remain unresolved; no goldens were regenerated.
+  `5179D69D` and `3D70B98C`, the stiff bounded-burn cases, failed. Their goldens
+  predate upstream's burn update: they came from a fork burn that always applied a
+  bounded exponential update, while upstream integrates `rburn%substeps = 0` as an
+  explicit RHS source. The two cases now set `rburn%substeps = 1`, which selects
+  upstream's operator-split burn, and their goldens were regenerated from it. The
+  reactant is spent in one step, the product holds the full initial mass and the
+  energy is unchanged. No solver source changed.
+- With that change the full CPU suite without chemistry passes 605 of 607 cases
+  before the golden regeneration, the two failures being those stiff cases, and all
+  12 reactive-burn cases pass after it. Every golden owned by upstream matches.
 - A reduced two-rank EL/LSO smoke case completed with exit code zero and produced
   nonempty restart fields at steps 0, 1 and 2 and LSO fields at steps 1 and 2.
   Post-processing those fields on two ranks also completed with exit code zero.
