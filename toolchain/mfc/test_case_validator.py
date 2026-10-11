@@ -670,6 +670,22 @@ class TestJwlSelector(ConstraintTestCase):
     def test_accepts_complete_set(self):
         self.assertAccepts({**BASE, **self.JWL})
 
+    def test_lso_statistics_need_a_reference_temperature(self):
+        stats = {
+            **BASE,
+            **self.JWL,
+            "lso_filter": "T",
+            "lso_filter_wrt": "T",
+            "lso_stat_wrt": "T",
+            "filter_sigma": 0.05,
+            "parallel_io": "T",
+            "fluid_pp(1)%cv": 400.0,
+        }
+        self.assertRejects(stats, "needs fluid_pp(1)%jwl_t0 > 0")
+        self.assertRejects({**stats, "fluid_pp(1)%jwl_t0": 0.0}, "needs fluid_pp(1)%jwl_t0 > 0")
+        self.assertAccepts({**stats, "fluid_pp(1)%jwl_t0": 300.0})
+        self.assertAccepts({**stats, "lso_stat_wrt": "F"})
+
     def test_requires_all_six(self):
         p = {**BASE, **self.JWL}
         del p["fluid_pp(1)%jwl_omega"]
