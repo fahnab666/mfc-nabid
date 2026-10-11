@@ -255,6 +255,7 @@ PHYSICS_DOCS = {
         "category": "Numerical Schemes",
         "explanation": (
             "LSO statistical products require one fluid and are written by simulation MPI I/O and consumed by post-process. "
+            "State-dependent EOS statistics require positive cv and reference temperature. "
             "Particle products support IBM markers, not particles_lagrange. "
             "Closure reconstruction currently supports one calorically perfect ideal or stiffened gas."
         ),
@@ -1209,7 +1210,13 @@ class CaseValidator:
         )
         for i, prefix in state_dependent.items():
             el_temperature = self.get("particles_lagrange", "F") == "T" and (self.get(f"lag_params%suth({i})", 0) or 0) > 0
-            needs_temperature = self.get("T_wrt", "F") == "T" or (i == 1 and self._is_numeric(rta) and rta > 0) or (dynamic_ib and prefix == "jwl") or el_temperature
+            needs_temperature = (
+                self.get("T_wrt", "F") == "T"
+                or (i == 1 and self._is_numeric(rta) and rta > 0)
+                or (i == 1 and self.get("lso_stat_wrt", "F") == "T")
+                or (dynamic_ib and prefix == "jwl")
+                or el_temperature
+            )
             if needs_temperature:
                 cv = self.get(f"fluid_pp({i})%cv")
                 self.prohibit(cv is None or cv <= 0, f"the temperature of fluid {i} needs fluid_pp({i})%cv > 0")
