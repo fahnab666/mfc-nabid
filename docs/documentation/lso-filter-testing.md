@@ -435,5 +435,3 @@ Run, in order:
 No golden may be generated until the independent numerical checks pass. Generate only the
 LSO goldens from a clean checkout of the reviewed commit. Record compiler, backend, rank
 count, precision, case-optimization state, and the maximum error for each invariant.
-
-<div style='text-align:center; font-size:0.75rem; color:#888; padding:16px 0 0;'>Page last updated: 2026-09-20</div>
