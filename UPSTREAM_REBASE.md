@@ -194,3 +194,30 @@ Validation against `8c2bec88`, using GNU Fortran 15 and CPU MPI:
 
 Logs and smoke artifacts use the `build/validation/upbase-20261027-` prefix.
 GPU execution and chemistry were not tested.
+
+
+## October 28 upstream follow-up
+
+The final rebase base is upstream master `732209d0`. This adds upstream's
+second-order IBM implementation from PR #1958 (`4e96e0da`) and its coverage-map
+refresh. The rebase applied without conflicts. The feature delta relative to
+this base retains the JWL moving-body density correction, while the isothermal
+implementation continues to come from upstream PR #2038. The older copy
+`e876419f` is absent from the final history.
+
+
+Validation of the final base:
+
+- All three release targets rebuilt, and all seven precheck gates passed after
+  formatting the added MPI call.
+- The affected non-chemistry IBM suite passed 63 of 64 cases across all three
+  targets in 4m 12.2s, including isothermal case `5BBDFB29` and both new
+  second-order cases, `731ACB1A` and `284ABF4C`. The sole failure remains
+  `B43894C4`, with the same numerical discrepancy reported above.
+- All 55 upstream-only files match master. Of 65 feature-only files, only this
+  rebase report differs from the previous feature tip. The older isothermal
+  copy is excluded, and the merged upstream implementation is an ancestor.
+- No golden files were regenerated locally.
+
+Final build, precheck, IBM and integrity logs use the
+`build/validation/upbase-20261028-` prefix.
