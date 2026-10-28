@@ -1018,7 +1018,7 @@ contains
                     do i = 1, sys_size  ! TODO: check if sys_size is correct
                         var_MOK = int(i, MPI_OFFSET_KIND)
 
-                        call MPI_FILE_WRITE_ALL(ifile, q_cons_temp_ds(i)%sf, data_size*mpi_io_type, mpi_io_p, status, ierr)
+                        call MPI_FILE_WRITE_ALL(ifile, q_cons_temp_ds(i)%sf(:,:,:), data_size*mpi_io_type, mpi_io_p, status, ierr)
                     end do
                 else
                     do i = 1, sys_size  ! TODO: check if sys_size is correct
@@ -1028,7 +1028,8 @@ contains
                     end do
                 end if
                 if (present(beta)) then
-                    call MPI_FILE_WRITE_ALL(ifile, MPI_IO_DATA%var(sys_size + 1)%sf, data_size*mpi_io_type, mpi_io_p, status, ierr)
+                    call MPI_FILE_WRITE_ALL(ifile, MPI_IO_DATA%var(sys_size + 1)%sf(:,:,:), data_size*mpi_io_type, mpi_io_p, status, &
+                                            & ierr)
                 end if
             end if
 

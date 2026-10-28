@@ -5,7 +5,7 @@ as origin. Keep upstream changes in the branch's ancestry and feature changes
 in commits above that base. Rebase onto `upstream/master` rather than merging
 master repeatedly. Upstream master itself does not receive these fork features.
 
-## Current baseline
+## October 5 baseline
 
 The October 11, 2026 rebase starts at upstream commit `ce6194eb`.
 The previous feature tip was `7db05b7b`; its three commits were replayed without
@@ -153,3 +153,44 @@ OMP_NUM_THREADS=1 ./mfc.sh test --only F52F0D4C --no-build \
 Completed suite logs are `build/validation/rebase-20261011-release-regressions.log`,
 `rebase-20261011-release-retry.log` and `rebase-20261011-reacting-surface-final.log`.
 Build, precheck and fresh smoke artifacts share the `rebase-20261011-` prefix.
+
+## October 27 rebase
+
+The branch is rebased onto upstream master `8c2bec88`, including the merged
+isothermal immersed-boundary implementation from PR #2038 (`d01ec1fb`). The
+earlier copy of that PR, `e876419f`, is dropped because its contents are upstream.
+The previous feature tip is retained locally as
+`backup/el-jwl-iso-before-upbase-20261027` at `e876419f`.
+
+The JWL same-temperature density helper remains: it supplies the moving-body
+pressure correction, rather than a second prescribed-wall-temperature path.
+The MPI conflict retains upstream's full-array-section arguments together with
+LSO's initial-field selection. The two additional LSO MPI writes use the same
+full-array-section convention as upstream's corresponding writes.
+
+Before these MPI argument and documentation follow-ups, all 70 feature-only
+files match the previous feature tip, all 49 upstream-only files match master,
+and the IBM and EOS sources and isothermal golden match the previous tip.
+Range-diff records only the required EOS, IBM and MPI adaptations; the burn,
+visualization, LSO validation and previous documentation commits are unchanged.
+
+
+Validation against `8c2bec88`, using GNU Fortran 15 and CPU MPI:
+
+- All seven precheck gates passed. All three targets built in release and debug.
+- The complete release suite without examples or chemistry passed 613 of 614
+  cases across all three targets in 22m 8.6s. `B43894C4`, the moving JWL circle,
+  has a tolerance mismatch in both release and debug: the largest absolute
+  discrepancy among failing values is `7.97e-4` in total energy. Its EOS and IBM
+  source files match the previous feature tip exactly. The cause of the mismatch
+  has not been established; no golden files were regenerated.
+- Upstream's isothermal regression `5BBDFB29` passed in release and debug.
+- Fresh two-rank EL/LSO pre-processing, simulation and post-processing completed.
+  Restart fields at steps 0, 1 and 2, filtered fields at steps 1 and 2, and Silo
+  output were verified.
+- Fresh three-rank visualization produced four frames over 30 selected cells.
+  Primitive fields match restart-derived float32 values bit for bit, and frame
+  times match the fixed-step times exactly.
+
+Logs and smoke artifacts use the `build/validation/upbase-20261027-` prefix.
+GPU execution and chemistry were not tested.
