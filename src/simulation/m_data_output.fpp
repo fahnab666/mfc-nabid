@@ -1028,8 +1028,8 @@ contains
                     end do
                 end if
                 if (present(beta)) then
-                    call MPI_FILE_WRITE_ALL(ifile, MPI_IO_DATA%var(sys_size + 1)%sf(:,:,:), data_size*mpi_io_type, mpi_io_p, status, &
-                                            & ierr)
+                    call MPI_FILE_WRITE_ALL(ifile, MPI_IO_DATA%var(sys_size + 1)%sf(:,:,:), data_size*mpi_io_type, mpi_io_p, &
+                                            & status, ierr)
                 end if
             end if
 
