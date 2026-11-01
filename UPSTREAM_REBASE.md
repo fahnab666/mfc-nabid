@@ -221,3 +221,36 @@ Validation of the final base:
 
 Final build, precheck, IBM and integrity logs use the
 `build/validation/upbase-20261028-` prefix.
+
+## November 1 upstream follow-up
+
+The branch is rebased onto upstream master `a03848a0`, adding the MPI I/O
+allocation-leak fix from PR #2114 and the CI updates from PR #2115. The previous
+remote tip, `61fbf4ca`, is retained locally as
+`backup/el-jwl-iso-before-upbase-20261101`.
+
+The simulation global-parameters conflict retains upstream's removal of unused
+MPI field allocations, including the particle variant of the removed loop. The
+particle array sizing and finite-difference initialization remain. Range-diff
+shows only this adaptation to the first feature commit; the other six commits
+replay unchanged. Before this report update, all 77 feature-only files match the
+previous tip, and all six upstream-only files match master byte for byte.
+
+Validation with GNU Fortran and CPU MPI:
+
+- All seven precheck gates passed, and all three release targets built.
+- The complete suite without examples or chemistry passed 615 of 616 cases
+  across all three targets in 11m 23.5s. The sole failure remains `B43894C4`:
+  its reported candidate values and maximum absolute discrepancy, `7.97e-4`,
+  match the October 28 run. No golden files were regenerated.
+- Fresh two-rank EL/LSO pre-processing, simulation and post-processing completed.
+  Restart fields at steps 0, 1 and 2, filtered fields at steps 1 and 2, and Silo
+  output were verified.
+- Fresh three-rank visualization produced four frames over 30 cells. Primitive
+  fields match restart-derived float32 values bit for bit, and frame times match
+  the fixed-step times exactly.
+
+Logs and smoke artifacts use the `build/validation/upbase-20261101-` prefix.
+The completed suite log is `upbase-20261101-regressions-unrestricted.log`; MPI
+requires local communication sockets that the sandbox blocks. GPU execution and
+chemistry were not tested locally.
