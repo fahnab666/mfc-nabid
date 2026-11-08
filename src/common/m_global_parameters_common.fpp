@@ -446,23 +446,6 @@ contains
         ! equation indices are shared so pre/post can read the same state layout.
         jwl_afterburn = .false.
         jwl_reactive = .false.
-#ifdef MFC_SIMULATION
-        prog_burn = .false.
-        jwl_ab_model = 2
-        jwl_q_ab = dflt_real
-        jwl_ab_tau = dflt_real
-        jwl_ab_A = dflt_real
-        jwl_ab_theta = dflt_real
-        jwl_ab_n = 0._wp
-        pb_D_cj = dflt_real
-        pb_width = dflt_real
-        pb_x_det = 0._wp
-        pb_y_det = 0._wp
-        pb_z_det = 0._wp
-        pb_t_det = 0._wp
-        jwl_G = dflt_real
-        jwl_b_exp = dflt_real
-#endif
 
     end subroutine s_assign_common_defaults
 

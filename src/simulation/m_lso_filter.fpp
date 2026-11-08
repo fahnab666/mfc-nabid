@@ -115,12 +115,12 @@ contains
         @:ALLOCATE(lso_tmp(0:m, 0:n, 0:p))
 
         if (lso_filter_wrt) then
-            @:ALLOCATE(q_filt_vf(1:sys_size))
-            do i = 1, sys_size
+            @:ALLOCATE(q_filt_vf(1:sys_size + merge(1, 0, euler_lagrange)))
+            do i = 1, size(q_filt_vf)
                 @:ALLOCATE(q_filt_vf(i)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                            & idwbuff(3)%beg:idwbuff(3)%end))
             end do
-            do i = 1, sys_size
+            do i = 1, size(q_filt_vf)
                 @:ACC_SETUP_SFs(q_filt_vf(i))
             end do
 
@@ -141,8 +141,8 @@ contains
                 if (p_lso_ds > 0) then
                     crs_lo(3) = -lso_crs_gw; crs_hi(3) = p_lso_ds + lso_crs_gw
                 end if
-                @:ALLOCATE(q_filt_ds_vf(1:sys_size))
-                do i = 1, sys_size
+                @:ALLOCATE(q_filt_ds_vf(1:size(q_filt_vf)))
+                do i = 1, size(q_filt_vf)
                     @:ALLOCATE(q_filt_ds_vf(i)%sf(crs_lo(1):crs_hi(1), crs_lo(2):crs_hi(2), crs_lo(3):crs_hi(3)))
                 end do
                 if (ib) then
@@ -154,7 +154,7 @@ contains
 #ifdef MFC_MPI
                     block
                         integer :: nv_max, face_max
-                        nv_max = max(sys_size, max(n_lso_stat, 1))
+                        nv_max = max(size(q_filt_vf), max(n_lso_stat, 1))
                         face_max = max((n_lso_ds + 1)*(p_lso_ds + 1), (m_lso_ds + 1)*(p_lso_ds + 1), (m_lso_ds + 1)*(n_lso_ds + 1))
                         allocate (buff_crs_send(0:nv_max*lso_crs_gw*face_max - 1))
                         allocate (buff_crs_recv(0:nv_max*lso_crs_gw*face_max - 1))
@@ -253,7 +253,7 @@ contains
         end if
 
         if (lso_filter_wrt) then
-            do i = 1, sys_size
+            do i = 1, size(q_filt_vf)
                 @:DEALLOCATE(q_filt_vf(i)%sf)
             end do
             @:DEALLOCATE(q_filt_vf)
@@ -264,7 +264,7 @@ contains
             end if
 
             if (lso_down_sample_factor > 1) then
-                do i = 1, sys_size
+                do i = 1, size(q_filt_ds_vf)
                     @:DEALLOCATE(q_filt_ds_vf(i)%sf)
                 end do
                 @:DEALLOCATE(q_filt_ds_vf)
@@ -306,12 +306,13 @@ contains
 
     !> Copy q_cons_vf into q_filt_vf on the device and filter in place, leaving the original conserved array untouched for the
     !! primary write.
-    impure subroutine s_copy_and_apply_lso_filter(q_cons_vf, q_T_sf)
+    impure subroutine s_copy_and_apply_lso_filter(q_cons_vf, q_T_sf, beta)
 
-        type(scalar_field), intent(inout) :: q_cons_vf(:)
-        type(scalar_field), intent(in)    :: q_T_sf
-        integer                           :: i, j, k, l
-        real(wp)                          :: T
+        type(scalar_field), intent(inout)        :: q_cons_vf(:)
+        type(scalar_field), intent(in)           :: q_T_sf
+        type(scalar_field), intent(in), optional :: beta
+        integer                                  :: i, j, k, l
+        real(wp)                                 :: T
 
         call nvtxStartRange("LSO-FILTER")
 
@@ -376,6 +377,18 @@ contains
         end do
         $:END_GPU_PARALLEL_LOOP()
         call nvtxEndRange
+
+        if (present(beta)) then
+            $:GPU_PARALLEL_LOOP(collapse=3)
+            do l = 0, p
+                do k = 0, n
+                    do j = 0, m
+                        q_filt_vf(sys_size + 1)%sf(j, k, l) = beta%sf(j, k, l)
+                    end do
+                end do
+            end do
+            $:END_GPU_PARALLEL_LOOP()
+        end if
 
         if (ib) then
             ! Normalized convolution q_filt = filter(m*q)/filter(m) with the gas mask m (1 in fluid, 0 in solid).
