@@ -51,6 +51,13 @@ The two-rank check exposed missing LSO coefficient broadcasts during conflict
 resolution: rank 1 filtered every field to zero. Restoring those broadcasts fixes
 the complete field, without altering master's particle communication routines.
 
+The fork's four-cell LSO halo floor is applied after master's shared coordinate
+bounds helper. Third-order reconstruction otherwise supplies only three ghosts
+for the nine-point filter; the 3D bounds-checked output test detects that error.
+Serial saves write the primary fields first, then append the filtered fields
+without deleting the primary directory. The uneven-rank test checks the supported
+coarse-cell ownership rule instead of expecting an obsolete alignment rejection.
+
 Validation logs and fresh smoke outputs use `build/validation/upbase-20261108/`.
 The dated sections below describe earlier baselines, not the current test results.
 

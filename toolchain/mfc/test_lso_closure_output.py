@@ -165,11 +165,7 @@ def test_lso_reader_preserves_fields_and_cell_centres(tmp_path, ndim, factor, ra
     case_path.write_text(json.dumps(case))
     options = ["--debug", "-j", "4"] if ndim == 3 else ["--no-debug", "--no-build"]
     result = subprocess.run([str(root / "mfc.sh"), "run", str(case_path), "-n", str(ranks), *options], cwd=root, capture_output=True, text=True, timeout=180, check=False)
-    if mode == "unaligned":
-        assert result.returncode != 0
-        assert "LSO downsampling requires per-rank cells" in result.stdout + result.stderr
-        assert not (tmp_path / "restart_data/lustre_lso_2.dat").exists()
-        return
+    # Uneven rank blocks are supported by assigning each coarse cell to its first fine-cell owner.
     assert result.returncode == 0, result.stdout + result.stderr
     names = ["alpha_rho1", *[f"mom{i}" for i in range(1, ndim + 1)], "E", "alpha1"]
     coarse = cells // factor

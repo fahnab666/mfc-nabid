@@ -822,6 +822,18 @@ contains
             save_count = t_step
         end if
 
+        if (bubbles_lagrange) then
+            call s_sync_bubbles_for_save()
+            call s_write_data_files(q_cons_ts(stor)%vf, q_T_sf, q_prim_vf, save_count, bc_type, q_beta(bub_q_idx%alphaf))
+            call s_write_lag_save_data(save_count)
+        else if (particles_lagrange) then
+            call s_sync_particles_for_save()
+            call s_write_data_files(q_cons_ts(stor)%vf, q_T_sf, q_prim_vf, save_count, bc_type, q_particles(part_q_idx%alphaf))
+            call s_write_lag_save_data(save_count)
+        else
+            call s_write_data_files(q_cons_ts(stor)%vf, q_T_sf, q_prim_vf, save_count, bc_type)
+        end if
+
         ! Apply LSO Gaussian filter before writing.
         ! The filter kernels run on device data; afterwards copy filtered interior
         ! back to host so s_write_data_files reads the correct values.
@@ -873,18 +885,6 @@ contains
                     call s_write_lso_stat_file(q_lso_stat_vf, n_lso_stat, save_count)
                 end if
             end if
-        end if
-
-        if (bubbles_lagrange) then
-            call s_sync_bubbles_for_save()
-            call s_write_data_files(q_cons_ts(stor)%vf, q_T_sf, q_prim_vf, save_count, bc_type, q_beta(bub_q_idx%alphaf))
-            call s_write_lag_save_data(save_count)
-        else if (particles_lagrange) then
-            call s_sync_particles_for_save()
-            call s_write_data_files(q_cons_ts(stor)%vf, q_T_sf, q_prim_vf, save_count, bc_type, q_particles(part_q_idx%alphaf))
-            call s_write_lag_save_data(save_count)
-        else
-            call s_write_data_files(q_cons_ts(stor)%vf, q_T_sf, q_prim_vf, save_count, bc_type)
         end if
 
         ! Write IB kinematic state for restart
