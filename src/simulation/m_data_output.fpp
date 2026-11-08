@@ -870,17 +870,24 @@ contains
     end subroutine s_write_serial_data_files
 
     !> Set up MPI views for stride-downsampled LSO fields.
-    impure subroutine s_initialize_mpi_data_lso_ds(q_filt_ds_vf)
+    impure subroutine s_initialize_mpi_data_lso_ds(q_filt_ds_vf, beta)
 
         type(scalar_field), dimension(sys_size), intent(in) :: q_filt_ds_vf
+        type(scalar_field), intent(in), optional            :: beta
 
 #ifdef MFC_MPI
         integer, dimension(num_dims) :: sizes_glb, sizes_loc, start_lso
-        integer                      :: i, ierr
+        integer                      :: i, ierr, nvars
 
         do i = 1, sys_size
             MPI_IO_DATA%var(i)%sf => q_filt_ds_vf(i)%sf(0:m_lso_ds,0:n_lso_ds,0:p_lso_ds)
         end do
+
+        nvars = sys_size
+        if (present(beta)) then
+            nvars = sys_size + 1
+            MPI_IO_DATA%var(nvars)%sf => beta%sf(0:m_lso_ds,0:n_lso_ds,0:p_lso_ds)
+        end if
 
         sizes_glb(1) = m_glb_lso_ds + 1
         sizes_loc(1) = m_lso_ds + 1
@@ -896,7 +903,7 @@ contains
             start_lso(3) = lso_ds_lo(3)
         end if
 
-        do i = 1, sys_size
+        do i = 1, nvars
             call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_lso, MPI_ORDER_FORTRAN, mpi_p, &
                                           & MPI_IO_DATA%view(i), ierr)
             call MPI_TYPE_COMMIT(MPI_IO_DATA%view(i), ierr)
@@ -945,7 +952,7 @@ contains
             call s_int_to_str(t_step, t_step_string)
 
             if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
-                call s_initialize_mpi_data_lso_ds(q_cons_vf)
+                call s_initialize_mpi_data_lso_ds(q_cons_vf, beta)
             else if (down_sample) then
                 call s_initialize_mpi_data_ds(m_ds, n_ds, p_ds)
             else
@@ -969,7 +976,7 @@ contains
             call s_mpi_barrier()
             call s_delay_file_access(proc_rank)
 
-            write (file_loc, '(I0,A,i7.7,A)') t_step, '_', proc_rank, '.dat'
+            write (file_loc, '(A,I0,A,i7.7,A)') trim(lso_file_prefix), t_step, '_', proc_rank, '.dat'
             file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc)
             inquire (FILE=trim(file_loc), EXIST=file_exist)
             if (file_exist .and. proc_rank == 0) then
@@ -1043,7 +1050,7 @@ contains
             end if
         else
             if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
-                call s_initialize_mpi_data_lso_ds(q_cons_vf)
+                call s_initialize_mpi_data_lso_ds(q_cons_vf, beta)
             else if (ib) then
                 call s_initialize_mpi_data(q_cons_vf, ib_markers=ib_markers, ib_mpi_data=MPI_IO_IB_DATA, qbmm_pb=pb_ts(1), &
                                            & qbmm_mv=mv_ts(1))

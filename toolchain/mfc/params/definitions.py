@@ -1631,8 +1631,6 @@ _nv(
     "run_time_info",
     "bubble_model",
     "lag_params",
-    "particle_pp",
-    "particles_lagrange",
     "probe_wrt",
     "num_probes",
     "jwl_ab_model",

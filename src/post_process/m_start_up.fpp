@@ -217,6 +217,55 @@ contains
 
     end subroutine s_perform_time_step
 
+    !> Read a saved LSO statistical or gas-mask field.
+    impure subroutine s_read_lso_fields(q_vf, nv, t_step, prefix)
+
+        type(scalar_field), intent(inout) :: q_vf(:)
+        integer, intent(in)               :: nv, t_step
+        character(LEN=*), intent(in)      :: prefix
+
+#ifdef MFC_MPI
+        integer                              :: ifile, i, mpi_view, data_size
+        integer, dimension(MPI_STATUS_SIZE)  :: status
+        integer(kind=MPI_OFFSET_KIND)        :: disp, field_size
+        integer, dimension(num_dims)         :: sizes_glb, sizes_loc, starts
+        real(stp), allocatable               :: field_io_buf(:,:,:)
+        character(LEN=path_len + 2*name_len) :: file_loc
+        logical                              :: file_exist
+
+        sizes_glb(1) = m_glb + 1; sizes_loc(1) = m + 1; starts(1) = start_idx(1)
+        if (num_dims >= 2) then
+            sizes_glb(2) = n_glb + 1; sizes_loc(2) = n + 1; starts(2) = start_idx(2)
+        end if
+        if (num_dims == 3) then
+            sizes_glb(3) = p_glb + 1; sizes_loc(3) = p + 1; starts(3) = start_idx(3)
+        end if
+        data_size = product(sizes_loc)
+        field_size = int(product(sizes_glb), MPI_OFFSET_KIND)*int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
+
+        write (file_loc, '(A,A,I0,A)') trim(case_dir) // '/restart_data' // trim(mpiiofs), trim(prefix), t_step, '.dat'
+        inquire (FILE=trim(file_loc), EXIST=file_exist)
+        if (.not. file_exist) call s_mpi_abort('Required LSO file ' // trim(file_loc) // ' is missing.')
+
+        call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, MPI_MODE_RDONLY, mpi_info_int, ifile, ierr)
+        allocate (field_io_buf(0:m,0:n,0:p))
+        do i = 1, nv
+            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, starts, MPI_ORDER_FORTRAN, mpi_p, mpi_view, ierr)
+            call MPI_TYPE_COMMIT(mpi_view, ierr)
+            disp = field_size*int(i - 1, MPI_OFFSET_KIND)
+            call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, mpi_view, 'native', mpi_info_int, ierr)
+            call MPI_FILE_READ_ALL(ifile, field_io_buf, data_size*mpi_io_type, mpi_io_p, status, ierr)
+            q_vf(i)%sf(0:m,0:n,0:p) = field_io_buf
+            call MPI_TYPE_FREE(mpi_view, ierr)
+        end do
+        deallocate (field_io_buf)
+        call MPI_FILE_CLOSE(ifile, ierr)
+#else
+        call s_mpi_abort('LSO statistical output requires an MPI build.')
+#endif
+
+    end subroutine s_read_lso_fields
+
     !> Fill the ghost layers of ib_markers from neighbor ranks, then copy the ghost-inclusive field to q_sf.
     impure subroutine s_exchange_ib_markers_halo(q_sf)
 

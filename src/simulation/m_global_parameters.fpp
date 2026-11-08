@@ -579,6 +579,23 @@ contains
         ib_ip_interp = 1
         ib_wall_order = 1
 
+        ! Simulation-only JWL source defaults
+        prog_burn = .false.
+        jwl_ab_model = 2
+        jwl_q_ab = dflt_real
+        jwl_ab_tau = dflt_real
+        jwl_ab_A = dflt_real
+        jwl_ab_theta = dflt_real
+        jwl_ab_n = 0._wp
+        pb_D_cj = dflt_real
+        pb_width = dflt_real
+        pb_x_det = 0._wp
+        pb_y_det = 0._wp
+        pb_z_det = 0._wp
+        pb_t_det = 0._wp
+        jwl_G = dflt_real
+        jwl_b_exp = dflt_real
+
         ! In-situ visualization output (viz_wrt)
         viz_wrt = .false.
         viz_t_save = dflt_real

@@ -148,6 +148,14 @@ contains
         ! manual: periodic_bc (set from bc_x/y/z in s_read_input_file, before the decomposition overwrites them)
         call MPI_BCAST(periodic_bc, 3, MPI_LOGICAL, 0, MPI_COMM_WORLD, ierr)
 
+        ! LSO coefficient tables are two-dimensional manual broadcast arrays.
+        call MPI_BCAST(lso_a_x(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso_a_y(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso_a_z(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso2_a_x(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso2_a_y(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso2_a_z(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+
         ! manual: bc_x/y/z member broadcasts (struct members not in NAMELIST_VARS)
         #:for VAR in [ 'bc_x%beg', 'bc_x%end', 'bc_y%beg', 'bc_y%end', 'bc_z%beg', 'bc_z%end']
             call MPI_BCAST(${VAR}$, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)

@@ -826,8 +826,14 @@ contains
         ! The filter kernels run on device data; afterwards copy filtered interior
         ! back to host so s_write_data_files reads the correct values.
         if (lso_filter .and. lso_filter_wrt) then
-            call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_T_sf)
-            do i = 1, sys_size
+            if (particles_lagrange) then
+                call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_T_sf, q_particles(part_q_idx%alphaf))
+            else if (bubbles_lagrange) then
+                call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_T_sf, q_beta(bub_q_idx%alphaf))
+            else
+                call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_T_sf)
+            end if
+            do i = 1, size(q_filt_vf)
 #ifndef FRONTIER_UNIFIED
                 $:GPU_UPDATE(host='[q_filt_vf(i)%sf]')
 #endif
@@ -842,10 +848,19 @@ contains
                 call s_lso_stride_sample(q_filt_vf, q_filt_ds_vf)
                 if (ib) call s_lso_stride_sample(q_lso_mask_vf, q_lso_mask_ds_vf)
                 call s_lso_filter_stage2()
-                call s_write_data_files(q_filt_ds_vf, q_T_sf, q_prim_vf, save_count, bc_type)
+                if (euler_lagrange) then
+                    call s_write_data_files(q_filt_ds_vf(1:sys_size), q_T_sf, q_prim_vf, save_count, bc_type, &
+                                            & q_filt_ds_vf(sys_size + 1))
+                else
+                    call s_write_data_files(q_filt_ds_vf, q_T_sf, q_prim_vf, save_count, bc_type)
+                end if
                 if (ib .and. parallel_io) call s_write_lso_stat_file(q_lso_mask_ds_vf, 1, save_count, 'lso_mask_')
             else
-                call s_write_data_files(q_filt_vf, q_T_sf, q_prim_vf, save_count, bc_type)
+                if (euler_lagrange) then
+                    call s_write_data_files(q_filt_vf(1:sys_size), q_T_sf, q_prim_vf, save_count, bc_type, q_filt_vf(sys_size + 1))
+                else
+                    call s_write_data_files(q_filt_vf, q_T_sf, q_prim_vf, save_count, bc_type)
+                end if
                 if (ib .and. parallel_io) call s_write_lso_stat_file(q_lso_mask_vf, 1, save_count, 'lso_mask_')
             end if
             lso_file_prefix = ''
