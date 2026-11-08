@@ -294,3 +294,69 @@ def test_lso_temperature_products_use_saved_state(tmp_path, ranks, conductivity,
                 expected += a[offset] * (padded[:, 4 - offset : 68 - offset] + padded[:, 4 + offset : 68 + offset])
         actual = np.fromfile(tmp_path / f"restart_data/lustre_lso_stat_{step}.dat").reshape((-1, 64))
         np.testing.assert_allclose(actual[[1, 4, 7, 9]], expected, rtol=1e-11, atol=1e-11, err_msg=f"step={step}")
+
+
+@pytest.mark.skipif(os.environ.get("MFC_TEST_LSO_OUTPUT") != "1", reason="requires prebuilt MFC executables")
+@pytest.mark.parametrize("factor,ranks", [(1, 1), (2, 2)])
+def test_el_lso_filters_the_gas_volume_with_the_conserved_fields(tmp_path, factor, ranks):
+    from .viz.silo_reader import read_silo_file
+
+    root = Path(__file__).resolve().parents[2]
+    # The coarse post-process grid must also fit five reconstruction stencils per rank.
+    cells = 64
+    source = root / "examples/3D_el_lso_mach3/case.py"
+    case = json.loads(subprocess.check_output([os.sys.executable, str(source)], text=True))
+    particle_file = tmp_path / "particles.dat"
+    particle_file.write_text("0 0 0 0 0 0 0.05\n")
+    case.update(
+        {
+            "m": cells - 1,
+            "n": cells - 1,
+            "p": cells - 1,
+            "weno_order": 3,
+            "mp_weno": "F",
+            "t_step_stop": 2,
+            "t_step_save": 2,
+            "particle_params%nparticles_glb": 1,
+            "particle_params%input_path": str(particle_file),
+            "particle_params%qs_force": 0,
+            "filter_sigma": 0.08,
+            "lso_down_sample_factor": factor,
+        }
+    )
+    path = tmp_path / "case.json"
+    path.write_text(json.dumps(case))
+    result = subprocess.run(
+        [str(root / "mfc.sh"), "run", str(path), "-n", str(ranks), "--no-debug", "--no-reldebug", "--no-gpu", "--no-build"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    # Six conserved fields and the upstream EL gas-volume fraction share one output file.
+    primary = np.fromfile(tmp_path / "restart_data/lustre_2.dat").reshape((7, cells, cells, cells))
+    expected = primary[-1].copy()
+    assert np.ptp(expected) > 1e-5, "a constant beta cannot detect a missing or unfiltered field"
+    inp = dict(line.split(" = ", 1) for line in (tmp_path / "simulation.inp").read_text().splitlines() if " = " in line)
+    for direction, axis in (("x", 2), ("y", 1), ("z", 0)):
+        passes = int(inp[f"lso_n_passes_{direction}"])
+        coefficients = np.array([float(v.replace("d", "e")) for v in inp[f"lso_a_{direction}"].split()[: 5 * passes]]).reshape((-1, 5))
+        for a in coefficients:
+            pads = [(0, 0)] * 3
+            pads[axis] = (4, 4)
+            padded = np.pad(expected, pads, mode="edge")
+            expected = a[0] * np.take(padded, np.arange(cells) + 4, axis=axis)
+            for offset in range(1, 5):
+                expected += a[offset] * (np.take(padded, np.arange(cells) + 4 - offset, axis=axis) + np.take(padded, np.arange(cells) + 4 + offset, axis=axis))
+    if factor == 2:
+        # Coarse cell centres lie halfway between the fine centres in each direction.
+        for axis in range(3):
+            expected = 0.5 * (np.take(expected, np.arange(0, cells, 2), axis=axis) + np.take(expected, np.arange(1, cells, 2), axis=axis))
+    actual = np.fromfile(tmp_path / "restart_data/lustre_lso_2.dat").reshape((7,) + expected.shape)
+    np.testing.assert_allclose(actual[-1], expected, rtol=1e-12, atol=1e-12)
+    fields = read_silo_file(str(tmp_path / "silo_hdf5/p0/2.silo")).variables
+    assert np.isfinite(fields["pres"]).all()
+    assert np.isfinite(fields["voidFraction"]).all()
+    assert np.max(fields["voidFraction"]) > 1e-6

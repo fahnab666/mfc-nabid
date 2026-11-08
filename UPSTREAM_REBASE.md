@@ -5,7 +5,56 @@ as origin. Keep upstream changes in the branch's ancestry and feature changes
 in commits above that base. Rebase onto `upstream/master` rather than merging
 master repeatedly. Upstream master itself does not receive these fork features.
 
-## October 5 baseline
+## November 8, 2026 baseline
+
+The branch is rebased onto upstream master `16962b62fb7031b169ec656e07fd455fdb98b8d6`.
+The previous remote tip, `22292d6038d4d13656291912f949ed6b12d4121b`, is retained on
+`backup/el-jwl-iso-before-upbase-20261108`. Work was done in
+`maintenance/el-jwl-iso-upbase-20261108`, leaving the older feature worktree alone.
+
+### Conflict decisions
+
+Master's Euler-Lagrange implementation from PR #1926 takes precedence over the
+fork's older particle modules. The shared Euler-Lagrange utilities, bubble and
+particle solvers, boundary routines and common MPI implementation match master.
+Simulation MPI input distribution retains master's implementation plus the six
+LSO coefficient-table broadcasts required by the fork's filter.
+
+The EL/LSO example now uses upstream `particle_params` inputs. It keeps fixed
+particles and one-way coupling, uses the upstream even interpolation order, and
+uses extrapolation at the transverse boundaries because upstream does not support
+periodic solid-particle boundaries. The old particle collision and thermal
+parameters are removed from this example. The fork's legacy EL collision solver
+is not carried alongside upstream's solver; upstream's documented restrictions
+apply. The previous implementation remains available on the backup branch.
+
+Master's flat Riemann buffers, face-flux IBM forces, component-wise GPU stores,
+thermal-layer inputs, mean-pressure-gradient controller, periodic-BC broadcasts,
+memory cleanup and compiler fixes are retained. The JWL density reconstruction,
+burn models, LSO filters and in-situ visualization remain fork additions.
+
+The shared-file resolutions also retain master's parameter types and generated
+struct broadcasts. Simulation-only JWL defaults now live in the simulation
+directory, as required by the upstream stage-independence lint rule.
+
+### EL/LSO output integration
+
+Upstream post-processing expects the gas-volume fraction after the conserved
+fields. The LSO workspace now filters that field with the same coefficients and
+writes it through upstream's optional-beta I/O interface, including coarsened
+output. The primary restart fields remain unfiltered.
+
+An executable regression independently applies the filter in NumPy and compares
+the saved gas-volume field on one rank and on two ranks with coarsening. It also
+checks finite post-processed pressure and a nonzero particle volume fraction.
+The two-rank check exposed missing LSO coefficient broadcasts during conflict
+resolution: rank 1 filtered every field to zero. Restoring those broadcasts fixes
+the complete field, without altering master's particle communication routines.
+
+Validation logs and fresh smoke outputs use `build/validation/upbase-20261108/`.
+The dated sections below describe earlier baselines, not the current test results.
+
+## October 11 baseline
 
 The October 11, 2026 rebase starts at upstream commit `ce6194eb`.
 The previous feature tip was `7db05b7b`; its three commits were replayed without

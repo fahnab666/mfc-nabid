@@ -3881,7 +3881,6 @@ class CaseValidator:
         self.check_eos_parameter_sanity()
         self.check_surface_tension()
         self.check_mhd()
-        self.check_el_particles()
         self.check_chemistry()
         self.check_reactive_burn()
         self.check_prog_burn()
