@@ -70,7 +70,8 @@ PHYSICS_DOCS = {
             "a formation energy shared by every family. A family's parameters are read only when that family is selected, and a "
             "temperature (T_wrt, or an Arrhenius burn rate) needs the reference temperature *_t0 as well as cv. The initial state "
             "of every patch must lie inside the equation of state (rho e > 0 and c^2 > 0). The features a state-dependent fluid "
-            "is refused with still read stiffened-gas coefficients directly."
+            "is refused with still read stiffened-gas coefficients directly. Two-fluid JWL/ambient PT relaxation uses "
+            "model_eqns = 2 and relax_model = 5, with positive phase heat capacities."
         ),
         "references": ["Wilfong26"],
     },
@@ -1360,9 +1361,28 @@ class CaseValidator:
         for j in range(1, (self.get("num_patches") or 0) + 1):
             self.prohibit(self.get(f"patch_icpp({j})%hcid") in (202, 203), f"patch_icpp({j})%hcid = 202/203 read fluid_pp(1)%gamma, which a state-dependent eos does not set")
         has_jwl = any(prefix == "jwl" for prefix in state_dependent.values())
-        unsupported = ("bubbles_euler", "particles_lagrange", "igr", "relativity", "mhd", "chemistry", "relax")
+        unsupported = ("bubbles_euler", "particles_lagrange", "igr", "relativity", "mhd", "chemistry")
         if not has_jwl:
-            unsupported += ("bubbles_lagrange", "ib")
+            unsupported += ("bubbles_lagrange", "ib", "relax")
+        elif self.get("relax", "F") == "T":
+            self.prohibit(
+                num_fluids != 2 or self.get("model_eqns") != 2 or self.get("relax_model") != 5 or len(state_dependent) != 1,
+                "JWL PT relaxation requires two fluids, exactly one JWL fluid, model_eqns = 2 and relax_model = 5",
+            )
+            for i in range(1, num_fluids + 1):
+                cv = self.get(f"fluid_pp({i})%cv")
+                self.prohibit(cv is None or cv <= 0, "JWL PT relaxation requires positive phase heat capacities")
+                if state_dependent.get(i) == "jwl":
+                    self.prohibit((self.get(f"fluid_pp({i})%jwl_t0") or 0) < 0, "JWL PT relaxation requires nonnegative jwl_t0")
+                    self.prohibit((self.get(f"fluid_pp({i})%jwl_b") or 0) < 0, "JWL PT relaxation requires nonnegative jwl_b")
+                else:
+                    self.prohibit(
+                        self.get(f"fluid_pp({i})%eos", eos_names["stiffened_gas"]) not in (eos_ideal_gas, eos_names["stiffened_gas"]),
+                        "JWL PT relaxation requires an ideal or stiffened ambient",
+                    )
+                    self.prohibit((self.get(f"fluid_pp({i})%pi_inf") or 0) < 0, "JWL PT relaxation requires nonnegative ambient stiffness")
+            for flag in ("ib", "bubbles_lagrange", "hypoelasticity", "heat_conduction"):
+                self.prohibit(self.get(flag, "F") == "T", f"JWL PT relaxation is not supported with {flag} = T")
         for flag in unsupported:
             self.prohibit(self.get(flag, "F") == "T", f"a state-dependent eos ({state_dependent_names}) is not supported with {flag} = T")
 

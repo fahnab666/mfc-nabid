@@ -1331,6 +1331,27 @@ The parameters are optionally used to define initial velocity profiles and pertu
 
 - `ptgalpha_eps` Specifies the tolerance used for the Newton Solvers used in the pTg-equilibrium model.
 
+#### JWL pressure-temperature equilibrium
+
+For two fluids, one JWL and one ideal or stiffened gas, `relax = T` with
+`model_eqns = 2` and `relax_model = 5` selects Fast PT relaxation. It updates the
+phase volume fractions at initialization and after each complete flow step,
+preserving both partial densities, momentum and total energy. The hyperbolic
+step keeps the existing mixture EOS and sound-speed choice. This option is a
+relaxation model, not an always-on equilibrium EOS at reconstructed cell faces.
+
+Both phases require positive `cv`. JWL requires nonnegative `jwl_b` and
+`jwl_t0`, and the ambient stiffness must be nonnegative. The JWL reference
+temperature follows the exact isentrope in this mode; other modes keep their
+existing temperature evaluation. The scalar solver uses precision-dependent
+residual bounds, rather than the stiffened-gas `palpha_eps` iteration tolerance.
+It reports failure when a positive, hyperbolic equilibrium cannot be resolved.
+It does not substitute another mixture closure. Immersed bodies, Euler-Lagrange
+coupling, elasticity and heat conduction are unsupported with this option.
+
+The synthetic example `examples/1D_jwl_pt_relaxation/case.py` relaxes an initially
+unequal-temperature mixture to a known 1800 K equilibrium.
+
 ### 12. Artificial Mach Number {#sec-artificial-mach-number}
 | Parameter              | Type    | Description                                    |
 | ---:                   | :----:  |          :---                                  |
