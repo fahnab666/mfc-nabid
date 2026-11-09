@@ -233,15 +233,21 @@ class Case:
         if sigma_in < 0.0 or sigma_target <= sigma_in:
             raise common.MFCException("lso_filter_sigma_target must be greater than lso_filter_sigma_in >= 0.")
         sigma2 = math.sqrt(sigma_target * sigma_target - sigma_in * sigma_in)
+        if str(p.get("lso_pp_pyramid_wrt", "F")).upper() == "T":
+            for tag, d in (("x", dx), ("y", dy), ("z", dz)):
+                if d > 0.0 and sigma2 / d < 1.53 * factor:
+                    cons.print(
+                        f"[yellow]Warning:[/yellow] LSO pyramid stage 1: sigma = {sigma2 / d:.1f} cells in {tag} is below the "
+                        f"~{1.53 * factor:.1f}-cell anti-aliasing minimum for {factor}x decimation; use max(8, 1.6 F) cells."
+                    )
         d_min = min(d for d in (dx, dy, dz) if d > 0.0)
         if sigma2 / d_min > PP_SPLIT_CELLS:
             sigma_stage = sigma2 / math.sqrt(2.0)
             if sigma_stage / d_min > PP_STAGE_MAX_CELLS:
                 raise common.MFCException(
                     f"lso_pp_filter: sigma_2 = {sigma2 / d_min:.1f} cells exceeds what the two post_process "
-                    f"cascades can carry (~{PP_STAGE_MAX_CELLS:.0f} cells each). Filter in situ with "
-                    f"lso_down_sample_factor > 1 so the post_process pass runs on the coarse grid, or lower "
-                    f"lso_filter_sigma_target."
+                    f"cascades can carry (~{PP_STAGE_MAX_CELLS:.0f} cells each). Run an LSO pyramid: filter and decimate "
+                    f"with lso_pp_pyramid_wrt = T, then widen on the coarse grid in a second post_process run."
                 )
             cons.print(
                 f"[cyan]LSO filter (post_process):[/cyan] sigma_in={sigma_in:.4g}, "

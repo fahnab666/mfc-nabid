@@ -356,6 +356,7 @@ DESCRIPTIONS.update(
         "lso_pp_filter": "Apply an additional LSO filter pass in post_process before writing output, to the in-situ filtered data (lso_filter_wrt=True) or to the original data (lso_filter_wrt=False)",
         "lso_filter_sigma_in": "Gaussian sigma (physical units) of the filter already applied to the input data; toolchain-only input used to size the post_process pass",
         "lso_filter_sigma_target": "Target Gaussian sigma (physical units) for the post_process filter; toolchain-only input, must be greater than lso_filter_sigma_in",
+        "lso_pp_pyramid_wrt": "Write a decimated, post-filtered LSO restart pyramid stage for a second post_process widening run.",
         "lso_closure_wrt": "Write Euler-Lagrange closure fields (R_sg, Q_T, E_ku, W_tau_u, R_mu_sg, R_lam_sg, T_tilde, u_favre) computed from the LSO stat data to silo_hdf5_lso_closure/",
         "lso_pp2_n_passes_x": "Number of stage-2 post-process filter passes in x (derived; > 0 when a wide target is split across two cascades)",
         "lso_pp2_n_passes_y": "Number of stage-2 post-process filter passes in y (derived; > 0 when a wide target is split across two cascades)",
@@ -370,6 +371,9 @@ DESCRIPTIONS.update(
         "lso_pp_a_y": "Post-process per-pass stencil coefficients in y (5 x lso_max_passes, column-major)",
         "lso_pp_a_z": "Post-process per-pass stencil coefficients in z (5 x lso_max_passes, column-major)",
         "lso_mu": "Dynamic viscosity [Pa·s] for viscous stress computation in stat fields. Default 0 (inviscid).",
+        "lso_conductivity": "Thermal conductivity [W/(m·K)] for heat-flux computation in stat fields. Default 0 (adiabatic).",
+        "lso_mu_T_exp": "Power-law exponent n of mu(T) = lso_mu (T/lso_mu_T_ref)^n in stat fields and closures; conductivity follows mu. Default 0 (constant properties).",
+        "lso_mu_T_ref": "Reference temperature [K] of the lso_mu_T_exp power law.",
     }
 )
 

@@ -850,7 +850,7 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `lso_filter`            | Logical | Apply a least-squares optimized (LSO) variable-weight Gaussian filter to conserved variables at each save step |
 | `lso_filter_wrt`        | Logical | Write LSO-filtered fields with an lso_ filename prefix alongside unfiltered data |
 | `lso_down_sample_factor`| Integer | Stride factor for coarsening the filtered output grid (1 = no coarsening). Must divide each active global cell count. Uneven rank blocks are supported by the first filter stage; the stage-2 coarse filter also requires per-rank divisibility. Reduced-grid post-processing requires shared parallel I/O; see @ref lso-filter-testing for supported layouts. |
-| `lso_stat_wrt`          | Logical | Write 11 filtered product blocks (11/21/33 scalar components in 1D/2D/3D). Requires `num_fluids=1`, `lso_filter_wrt=T`, `parallel_io=T` and `particles_lagrange=F`; particle products use IBM markers. |
+| `lso_stat_wrt`          | Logical | Write filtered product blocks (12/23/36 scalar components in 1D/2D/3D). Requires `num_fluids=1`, `lso_filter_wrt=T`, `parallel_io=T` and `particles_lagrange=F`; particle products use IBM markers. |
 | `lso_R_gas`             | Real    | Specific gas constant [J/(kg·K)] for temperature reconstruction used in stat fields. Default 287.0 (dry air). |
 | `filter_sigma`          | Real    | Target Gaussian filter standard deviation in physical units. On a stretched x grid (`stretch_x=T`; y and z uniform, no `lso_pp_filter` or stage-2 coarse filter) simulation replaces the x weights with ceil((σ/(1.2 Δx_min))²) passes of per-cell weights whose zeroth, first and second physical moments are exact. |
 | `lso_n_passes_x`        | Integer | Number of filter passes in x (auto-computed by toolchain from `filter_sigma` and grid spacing) |
@@ -866,7 +866,8 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `lso2_a_y`              | Real    | Stage-2 per-pass stencil coefficients in y (auto-computed) |
 | `lso2_a_z`              | Real    | Stage-2 per-pass stencil coefficients in z (auto-computed) |
 | `lso_closure_wrt`       | Logical | Write R_sg, Q_T, E_ku, W_tau_u, R_mu_sg, R_lam_sg, T_tilde and Favre velocity with the lso_closure_ variable prefix in the ordinary post-process database. Requires `lso_filter_wrt=T`, `lso_stat_wrt=T`, one calorically perfect ideal or stiffened gas, and no chemistry. Downsampling is not required. See @ref lso-filter-testing for acceptance limits. |
-| `lso_pp_filter`         | Logical | Apply an additional filter to saved in-situ filtered data; requires `lso_filter_wrt=T`. Wide targets use two same-grid cascades. Matching statistical and flow filter widths remains a production requirement; see @ref lso-filter-testing. |
+| `lso_pp_filter`         | Logical | Apply an additional filter to saved data. Normally requires `lso_filter_wrt=T`; original data can be filtered and decimated for a pyramid run with `lso_pp_pyramid_wrt=T`. Wide targets use two same-grid cascades. |
+| `lso_pp_pyramid_wrt`   | Logical | Write stage-one filtered, decimated restart files for a second post_process widening run. Requires shared MPI I/O, `lso_down_sample_factor >= 2`, and `lso_pp_filter=T` on original data. |
 | `lso_filter_sigma_in`   | Real    | Toolchain-only input (not forwarded to Fortran): Gaussian sigma (physical units) already applied to the input data. Defaults to the in-situ width (`filter_sigma`, or d_p/2) when reading filtered data (`lso_filter_wrt=T`), and to 0 when reading original data (`lso_filter_wrt=F`). The toolchain sizes the post_process pass for sqrt(target² − in²) |
 | `lso_filter_sigma_target`| Real   | Toolchain-only input: target Gaussian sigma (physical units) for the post_process filter; must be &gt; `lso_filter_sigma_in` |
 | `lso_pp_n_passes_x`     | Integer | Number of post-process filter passes in x |
@@ -878,6 +879,9 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `lso_pp_a_y`            | Real    | Post-process per-pass stencil coefficients in y (5 × lso_max_passes) |
 | `lso_pp_a_z`            | Real    | Post-process per-pass stencil coefficients in z (5 × lso_max_passes) |
 | `lso_mu`                | Real    | Dynamic viscosity [Pa·s] for viscous stress computation in stat fields. Default 0 (inviscid). |
+| `lso_conductivity`      | Real    | Optional thermal conductivity [W/(m·K)] for LSO heat flux. If zero, use `fluid_pp(1)%%k_therm`. |
+| `lso_mu_T_exp`          | Real    | Exponent for `mu(T)=lso_mu (T/lso_mu_T_ref)^n`; zero keeps constant properties. |
+| `lso_mu_T_ref`          | Real    | Reference temperature [K] for the LSO viscosity power law; required when `lso_mu_T_exp > 0`. |
 | `fluid_pp(i)%%k_therm`  | Real    | Thermal conductivity used for heat-flux closure fields; see Fluid Materials. |
 | `sim_data`              | Logical | Write interface and energy data files (post_process) |
 | `down_sample`           | Logical | Enable output downsampling |
