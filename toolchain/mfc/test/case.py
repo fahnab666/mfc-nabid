@@ -12,6 +12,7 @@ from typing import Callable, List, Optional, Set, Union
 
 from .. import case, common
 from ..build import SIMULATION, MFCTarget, get_target
+from ..params.eos_families import EOS_FAMILIES
 from ..run import input
 from ..state import ARG
 
@@ -172,6 +173,12 @@ class TestCase(case.Case):
         self.convergence_spec = convergence_spec
         self.canary = canary
         merge = {**BASE_CFG.copy(), **mods}
+        # A reference-curve EOS must not inherit the ideal-gas defaults. Explicit invalid inputs remain visible to validation.
+        for key in BASE_CFG.keys() - mods.keys():
+            if key.startswith("fluid_pp(") and key.endswith(("%gamma", "%pi_inf")):
+                eos = merge.get(f"{key.split('%')[0]}%eos")
+                if any(f.state_dependent and eos in (f.value, f.suffix) for f in EOS_FAMILIES):
+                    merge.pop(key, None)
         merge = {key: val for key, val in merge.items() if val is not None}
         super().__init__(merge)
 
