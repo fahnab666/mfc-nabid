@@ -58,7 +58,34 @@ Serial saves write the primary fields first, then append the filtered fields
 without deleting the primary directory. The uneven-rank test checks the supported
 coarse-cell ownership rule instead of expecting an obsolete alignment rejection.
 
+### Validation
+
+Validation uses GNU Fortran 15 and CPU MPI on macOS:
+
+- All three release targets build, and all seven precheck gates pass.
+- All 24 executable LSO output checks pass. These cover serial companion saves,
+  fixed and CFL stepping, 3D bounds checking, uneven-rank coarsening, analytical
+  closure checks, saved-temperature products and the new EL gas-volume checks.
+- The complete release suite without examples or chemistry passes 646 of 647
+  cases across all three targets in 28m 19.4s. This includes upstream's one-way
+  and two-way EL particle cases and the fork's reactive-burn and LSO cases.
+  The sole failure is `B43894C4`, the moving JWL circle, which also failed in
+  the October and November 1 baselines. Its current maximum absolute discrepancy
+  among failing values is `9.75e-4` in total energy, compared with `7.97e-4` on
+  the previous baseline. The cause remains unresolved; the reference is unchanged.
+- A fresh two-rank EL/LSO case completes all three stages. Primary and filtered
+  restart fields are finite, the fixed-particle gas-volume field is preserved,
+  and Silo output is present. A fresh three-rank visualization case produces
+  four frames over 30 selected cells; the saved primitives match the values
+  reconstructed from primary restart data bit for bit in float32, with exact
+  fixed-step times.
+- All 182 files changed only by master match master byte for byte. The eight
+  shared EL, boundary and common MPI files listed in the integrity report also
+  match master exactly. Master is an ancestor of the rebased branch.
+- No golden files were regenerated. All upstream golden files are unchanged.
+
 Validation logs and fresh smoke outputs use `build/validation/upbase-20261108/`.
+GPU execution and chemistry are not tested locally.
 The dated sections below describe earlier baselines, not the current test results.
 
 ## October 11 baseline
