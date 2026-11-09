@@ -13,7 +13,7 @@ module m_phase_change
     use m_mpi_proxy
     use m_variables_conversion
     use m_eos
-    use m_jwl_pt, only: jwl_pt_parameters, s_jwl_pt_equilibrium
+    use m_jwl_pt, only: jwl_pt_parameters, s_jwl_pt_equilibrium, s_jwl_pt_equilibrium_matrix
     use m_mpi_common, only: s_prohibit_abort
     use ieee_arithmetic
     use m_helper_basic
@@ -58,8 +58,8 @@ contains
 
         pt_jwl = 0; pt_ambient = 0
         if (.not. any_state_dependent_eos) return
-        @:PROHIBIT(num_fluids /= 2 .or. model_eqns /= model_eqns_5eq .or. relax_model /= 5, &
-                   & 'State-dependent PT relaxation requires two fluids, model_eqns = 2 and relax_model = 5.')
+        @:PROHIBIT(num_fluids /= 2 .or. model_eqns /= model_eqns_5eq .or. (relax_model /= 5 .and. relax_model /= 7), &
+                   & 'State-dependent PT relaxation requires two fluids, model_eqns = 2 and relax_model = 5 (fast) or 7 (matrix).')
         do i = 1, num_fluids
             if (eoss(i) == eos_jwl) pt_jwl = i
         end do
@@ -110,7 +110,11 @@ contains
                         end do
                     end if
                     guess = q_cons_vf(eqn_idx%adv%beg + pt_jwl - 1)%sf(j, k, l)
-                    call s_jwl_pt_equilibrium(mj, ma, rhoe, guess, pt_material, pres, temp, aj, aa, c2, converged)
+                    if (relax_model == 7) then
+                        call s_jwl_pt_equilibrium_matrix(mj, ma, rhoe, guess, pt_material, pres, temp, aj, aa, c2, converged)
+                    else
+                        call s_jwl_pt_equilibrium(mj, ma, rhoe, guess, pt_material, pres, temp, aj, aa, c2, converged)
+                    end if
                     if (converged) then
                         q_cons_vf(eqn_idx%adv%beg + pt_jwl - 1)%sf(j, k, l) = aj
                         q_cons_vf(eqn_idx%adv%beg + pt_ambient - 1)%sf(j, k, l) = aa

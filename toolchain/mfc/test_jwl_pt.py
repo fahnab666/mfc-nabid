@@ -34,12 +34,16 @@ def solve(request, tmp_path_factory):
 use iso_c_binding
 use m_jwl_pt
 implicit none
-real(c_{'float' if bits == 32 else 'double'}),intent(in)::x(17)
+real(c_{'float' if bits == 32 else 'double'}),intent(in)::x(18)
 real(c_{'float' if bits == 32 else 'double'}),intent(out)::y(6)
 type(jwl_pt_parameters)::mat
 logical::ok
 mat=jwl_pt_parameters(x(5),x(6),x(7),x(8),x(9),x(10),x(11),x(12),x(13),x(14),x(15),x(16),x(17))
-call s_jwl_pt_equilibrium(x(1),x(2),x(3),x(4),mat,y(1),y(2),y(3),y(4),y(5),ok)
+if (nint(x(18))==7) then
+ call s_jwl_pt_equilibrium_matrix(x(1),x(2),x(3),x(4),mat,y(1),y(2),y(3),y(4),y(5),ok)
+else
+ call s_jwl_pt_equilibrium(x(1),x(2),x(3),x(4),mat,y(1),y(2),y(3),y(4),y(5),ok)
+end if
 y(6)=merge(1.,0.,ok)
 end subroutine
 """
@@ -58,8 +62,8 @@ end subroutine
     func.argtypes = [pointer, pointer]
     dtype = np.float32 if bits == 32 else np.float64
 
-    def call(mj, ma, energy, mat=MAT, guess=0.5):
-        args = np.array([mj, ma, energy, guess, *mat], dtype=dtype)
+    def call(mj, ma, energy, mat=MAT, guess=0.5, solver="fast"):
+        args = np.array([mj, ma, energy, guess, *mat, 7 if solver == "matrix" else 5], dtype=dtype)
         result = np.empty(6, dtype=dtype)
         func(args.ctypes.data_as(pointer), result.ctypes.data_as(pointer))
         return result.astype(float)
@@ -97,6 +101,37 @@ def test_manufactured_equilibria(solve, stiffness, t0):
         np.testing.assert_allclose(actual[:3], [pressure, temp, alpha], rtol=solve.rtol)
         assert actual[4] > 0
         assert actual[2] + actual[3] == pytest.approx(1, abs=1e-7)
+
+
+def test_matrix_solver_manufactured_equilibria(solve):
+    rng = np.random.default_rng(815)
+    for _ in range(30):
+        rj = 10 ** rng.uniform(1, 3.5)
+        temp = 300 * (rj / MAT[5]) ** MAT[4] + 10 ** rng.uniform(2.5, 4.2)
+        yj = rng.uniform(0.05, 0.95)
+        mj, ma, energy, pressure, alpha = manufactured(rj, temp, yj, MAT)
+        actual = solve(mj, ma, energy, MAT, alpha * 0.8, solver="matrix")
+        assert actual[5] == 1, (rj, temp, yj, actual)
+        np.testing.assert_allclose(actual[:3], [pressure, temp, alpha], rtol=solve.rtol)
+
+
+def test_fast_and_matrix_solvers_agree(solve):
+    rng = np.random.default_rng(191)
+    errors = np.zeros(4)
+    for _ in range(40):
+        mat = MAT.copy()
+        mat[6] = rng.choice([0.0, 300.0])
+        mat[10] = rng.choice([0.0, 1e7])
+        mat[11:] = rng.uniform(-2e5, 2e5, 2)
+        rj = 10 ** rng.uniform(1.5, 3.2)
+        temp = mat[6] * (rj / mat[5]) ** mat[4] + 10 ** rng.uniform(2.7, 3.8)
+        yj = rng.uniform(0.03, 0.97)
+        mj, ma, energy, _, _ = manufactured(rj, temp, yj, mat)
+        fast = solve(mj, ma, energy, mat, solver="fast")
+        matrix = solve(mj, ma, energy, mat, solver="matrix")
+        assert fast[5] == matrix[5] == 1, (rj, temp, yj, fast, matrix)
+        errors = np.maximum(errors, np.abs(fast[:4] - matrix[:4]) / np.maximum(np.abs(fast[:4]), 1.0))
+    assert np.max(errors) <= solve.rtol, errors
 
 
 def test_precision_and_pressure_unit_regressions(solve):
@@ -197,9 +232,17 @@ def test_validator_rejects_unsupported_pt_inputs(change):
 
 
 def test_validator_accepts_jwl_pt():
-    validator = CaseValidator(pt_case())
+    for mode in (5, 7):
+        validator = CaseValidator(pt_case() | {"relax_model": mode})
+        validator.check_eos_selector()
+        assert validator.errors == []
+
+
+@pytest.mark.parametrize("change", [{"relax": "F"}, {"fluid_pp(1)%eos": CONSTRAINTS["fluid_pp(1)%eos"]["names"]["ideal_gas"]}])
+def test_validator_reserves_matrix_mode_for_jwl_relaxation(change):
+    validator = CaseValidator(pt_case() | {"relax_model": 7} | change)
     validator.check_eos_selector()
-    assert validator.errors == []
+    assert validator.errors
 
 
 def test_regression_case_does_not_inherit_an_inactive_gamma():

@@ -14,14 +14,18 @@ import pytest
 
 
 @pytest.mark.skipif(os.environ.get("MFC_TEST_JWL_PT_OUTPUT") != "1", reason="requires MFC builds and MPI execution")
-@pytest.mark.parametrize("single,ranks,swapped", [(False, 1, False), (False, 2, True), (True, 2, False)])
-def test_nonuniform_pt_preserves_conserved_fields_and_equalizes_temperature(tmp_path, single, ranks, swapped):
+@pytest.mark.parametrize(
+    "single,ranks,swapped,solver",
+    [(False, 1, False, "fast"), (False, 2, True, "fast"), (True, 2, False, "fast"), (False, 2, True, "matrix")],
+)
+def test_nonuniform_pt_preserves_conserved_fields_and_equalizes_temperature(tmp_path, single, ranks, swapped, solver):
     from .viz.silo_reader import read_silo_file
 
     root = Path(__file__).resolve().parents[2]
     with contextlib.redirect_stdout(io.StringIO()) as output:
         runpy.run_path(str(root / "examples/1D_jwl_pt_relaxation/case.py"))
     case = json.loads(output.getvalue())
+    case["relax_model"] = 5 if solver == "fast" else 7
     case["precision"] = "single" if single else "double"
     case.update({"num_patches": 2, "bc_x%beg": -2, "bc_x%end": -2})
     patch = {k: v for k, v in case.items() if k.startswith("patch_icpp(1)")}

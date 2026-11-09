@@ -818,8 +818,8 @@ class CaseValidator:
             "phase change requires num_fluids >= 2 (liquid = 1, vapor = 2)",
         )
         self.prohibit(
-            (model_eqns not in (2, 3) or (model_eqns == 2 and relax_model not in (5, 6)) or (model_eqns == 3 and relax_model not in (1, 4, 5, 6))),
-            "phase change requires model_eqns==2 with relax_model in [5,6] or model_eqns==3 with relax_model in [1,4,5,6]",
+            (model_eqns not in (2, 3) or (model_eqns == 2 and relax_model not in (5, 6, 7)) or (model_eqns == 3 and relax_model not in (1, 4, 5, 6))),
+            "phase change requires model_eqns==2 with relax_model in [5,6,7] or model_eqns==3 with relax_model in [1,4,5,6]",
         )
         self.prohibit(palpha_eps is not None and palpha_eps <= 0, "palpha_eps must be positive")
         self.prohibit(palpha_eps is not None and palpha_eps >= 1, "palpha_eps must be less than 1")
@@ -1330,6 +1330,11 @@ class CaseValidator:
             for i in range(1, (self.get("num_fluids") or 0) + 1):
                 cv = self.get(f"fluid_pp({i})%cv")
                 self.prohibit(cv is None or cv <= 0, f"T_wrt = T needs fluid_pp({i})%cv > 0")
+        if self.get("relax_model") == 7:
+            self.prohibit(
+                self.get("relax", "F") != "T" or not any(prefix == "jwl" for prefix in state_dependent.values()),
+                "relax_model = 7 is reserved for the two-fluid JWL matrix PT relaxation",
+            )
         if not state_dependent:
             return
         # A temperature integrates from the reference state, so it needs T at rho0 as well as cv.
@@ -1366,8 +1371,8 @@ class CaseValidator:
             unsupported += ("bubbles_lagrange", "ib", "relax")
         elif self.get("relax", "F") == "T":
             self.prohibit(
-                num_fluids != 2 or self.get("model_eqns") != 2 or self.get("relax_model") != 5 or len(state_dependent) != 1,
-                "JWL PT relaxation requires two fluids, exactly one JWL fluid, model_eqns = 2 and relax_model = 5",
+                num_fluids != 2 or self.get("model_eqns") != 2 or self.get("relax_model") not in (5, 7) or len(state_dependent) != 1,
+                "JWL PT relaxation requires two fluids, exactly one JWL fluid, model_eqns = 2 and relax_model = 5 (fast) or 7 (matrix)",
             )
             for i in range(1, num_fluids + 1):
                 cv = self.get(f"fluid_pp({i})%cv")
