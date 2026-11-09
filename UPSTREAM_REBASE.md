@@ -5,6 +5,53 @@ as origin. Keep upstream changes in the branch's ancestry and feature changes
 in commits above that base. Rebase onto `upstream/master` rather than merging
 master repeatedly. Upstream master itself does not receive these fork features.
 
+## Fast PT integration after the November 8 rebase
+
+The scalar PT method reviewed on `origin/jwl-uf-students` (restored by `40c4f051`)
+is adapted to the current branch through master's relaxation interface. Enable
+`relax = T`, `relax_model = 5` with two fluids, one JWL and one ideal or stiffened
+gas, and `model_eqns = 2`. This is a conservative volume-fraction projection at
+initialization and after each full flow step. It does not replace the Riemann
+solver's mixture EOS with the old always-on equilibrium closure. Restrictions
+and the example are documented in the phase-change section of `case.md`.
+
+The solver uses the logarithm of the ratio of phase volumes, computing both
+volumes independently. This removes the density subtraction that rounded to zero
+in single precision. Pure endpoints use their constituent caloric laws, with no
+finite mass-fraction cutoff. The pressure scale follows the state and the chosen
+units; every Newton result passes the same residual, temperature and stability
+checks as a bracketed result. Unresolved pressure cancellation and non-convergence
+return failure. The host reports a diagnostic instead of substituting another EOS.
+The fallback scan keeps immutable endpoints and rejects unphysical roots.
+
+The native JWL reference temperature and formation energies are retained. In PT
+mode the JWL reference temperature follows its exact isentrope, so the scalar
+solve and phase-temperature output agree. Other modes keep the previous reference
+temperature integrator. Master's phase pressure, internal-energy, bulk-modulus,
+mixture-coefficient and sound-speed routines retain their implementations.
+
+CPU validation with GNU Fortran 15:
+
+- All seven precheck gates pass. Seven native EOS routines and four native PT/PTg
+  routines are byte-identical to the pre-integration tip `31a7808f`.
+- The scalar and input-validation checks pass 28 tests, with one precision-specific
+  check skipped in the double-precision variant. They include 640 manufactured
+  equilibria, both precisions, endpoint continuity, pressure-unit scaling, formation
+  energy, poor starting volumes and explicit rejection of invalid states.
+- Three nonuniform full-stage checks pass: one rank, two ranks with reversed fluid
+  order, and two ranks in single precision. They verify evolving flow, mass and
+  total-energy conservation, equal constituent temperatures, and Silo output.
+- All three executables build in both precisions. The uniform synthetic example
+  also completes all stages on two ranks and has a known 1800 K equilibrium.
+- The 15 selected native regressions pass 14 cases: all 12 existing PT relaxation
+  cases and the two JWL mixture cases pass. The pre-existing moving JWL circle,
+  `B43894C4`, still fails with the same candidate values and `9.75e-4` maximum
+  absolute discrepancy as before this integration.
+
+Logs use `build/validation/fast-pt-20261108/`. GPU execution and chemistry are not
+tested locally. The previous branch tip is retained on
+`backup/el-jwl-iso-before-fast-pt-20261108`.
+
 ## November 8, 2026 baseline
 
 The branch is rebased onto upstream master `16962b62fb7031b169ec656e07fd455fdb98b8d6`.

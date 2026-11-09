@@ -5,7 +5,7 @@
 #:include 'case.fpp'
 #:include 'macros.fpp'
 
-!> @brief Phase transition relaxation solvers for liquid-vapor flows with cavitation and boiling
+!> @brief Liquid-vapor phase transition and JWL/ambient pressure-temperature relaxation solvers.
 module m_phase_change
 
     use m_derived_types
@@ -13,9 +13,11 @@ module m_phase_change
     use m_mpi_proxy
     use m_variables_conversion
     use m_eos
+    use m_jwl_pt, only: jwl_pt_parameters, s_jwl_pt_equilibrium
+    use m_mpi_common, only: s_prohibit_abort
     use ieee_arithmetic
     use m_helper_basic
-    use m_constants, only: model_eqns_6eq
+    use m_constants, only: model_eqns_5eq, model_eqns_6eq, eos_jwl, eos_ideal_gas, eos_stiffened_gas
 
     implicit none
 
@@ -33,6 +35,10 @@ module m_phase_change
     integer, parameter  :: vp = 2                       !< index for the vapor phase of the reacting fluid
     !> @}
 
+    integer                 :: pt_jwl = 0, pt_ambient = 0
+    type(jwl_pt_parameters) :: pt_material
+    $:GPU_DECLARE(create='[pt_jwl, pt_ambient, pt_material]')
+
 contains
 
     !> Dispatch to the correct relaxation solver. Replaces the procedure pointer, which CCE is breaking on.
@@ -45,10 +51,79 @@ contains
 
     end subroutine s_relaxation_solver
 
-    !> Initialize the phase change module (no module-level state to set up; the pT/pTg relaxation solvers are self-contained)
+    !> Resolve the optional JWL PT constituent data; the stiffened-gas relaxation path keeps its existing inputs.
     impure subroutine s_initialize_phasechange_module
 
+        integer :: i
+
+        pt_jwl = 0; pt_ambient = 0
+        if (.not. any_state_dependent_eos) return
+        @:PROHIBIT(num_fluids /= 2 .or. model_eqns /= model_eqns_5eq .or. relax_model /= 5, &
+                   & 'State-dependent PT relaxation requires two fluids, model_eqns = 2 and relax_model = 5.')
+        do i = 1, num_fluids
+            if (eoss(i) == eos_jwl) pt_jwl = i
+        end do
+        @:PROHIBIT(pt_jwl == 0, 'State-dependent PT relaxation requires one JWL fluid.')
+        pt_ambient = 3 - pt_jwl
+        @:PROHIBIT(eoss(pt_ambient) /= eos_ideal_gas .and. eoss(pt_ambient) /= eos_stiffened_gas, &
+                   & 'JWL PT relaxation requires an ideal or stiffened ambient.')
+        @:PROHIBIT(any(cvs <= 0._wp), 'JWL PT relaxation requires positive phase heat capacities.')
+        @:PROHIBIT(eos_coeffs(pt_jwl)%t0 < 0._wp .or. eos_coeffs(pt_jwl)%b < 0._wp, &
+                   & 'JWL PT relaxation requires nonnegative jwl_t0 and jwl_b.')
+        @:PROHIBIT(ib .or. euler_lagrange .or. hypoelasticity .or. heat_conduction, &
+                   & 'JWL PT relaxation does not support immersed bodies, EL coupling, elasticity or heat conduction.')
+        pt_material%a = eos_coeffs(pt_jwl)%a; pt_material%b = eos_coeffs(pt_jwl)%b
+        pt_material%r1 = eos_coeffs(pt_jwl)%r1; pt_material%r2 = eos_coeffs(pt_jwl)%r2
+        pt_material%omega = eos_coeffs(pt_jwl)%gruneisen0; pt_material%rho0 = eos_coeffs(pt_jwl)%rho0
+        pt_material%t0 = eos_coeffs(pt_jwl)%t0
+        pt_material%cv_j = cvs(pt_jwl); pt_material%cv_a = cvs(pt_ambient)
+        pt_material%gamma_a = 1._wp/gammas(pt_ambient)
+        pt_material%pi_a = isentrope_B(pt_ambient)
+        pt_material%qv_j = qvs(pt_jwl); pt_material%qv_a = qvs(pt_ambient)
+        @:PROHIBIT(pt_material%pi_a < 0._wp, 'JWL PT relaxation requires nonnegative ambient stiffness.')
+        $:GPU_UPDATE(device='[pt_jwl, pt_ambient, pt_material]')
+
     end subroutine s_initialize_phasechange_module
+
+    !> Project the volume fractions onto PT equilibrium, leaving both masses, momenta and total energy unchanged.
+    subroutine s_relax_jwl_pt(q_cons_vf)
+
+        type(scalar_field), dimension(sys_size), intent(inout) :: q_cons_vf
+        real(wp)                                               :: mj, ma, rho, rhoe, aj, aa, pres, temp, c2, guess
+        integer                                                :: j, k, l, i, failures
+        logical                                                :: converged
+
+        failures = 0
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[mj, ma, rho, rhoe, aj, aa, pres, temp, c2, guess, i, converged]', &
+                            & reduction='[[failures]]', reductionOp='[+]')
+        do l = 0, p
+            do k = 0, n
+                do j = 0, m
+                    mj = q_cons_vf(eqn_idx%cont%beg + pt_jwl - 1)%sf(j, k, l)
+                    ma = q_cons_vf(eqn_idx%cont%beg + pt_ambient - 1)%sf(j, k, l)
+                    rho = mj + ma
+                    rhoe = q_cons_vf(eqn_idx%E)%sf(j, k, l)
+                    if (rho > 0._wp) then
+                        $:GPU_LOOP(parallelism='[seq]')
+                        do i = eqn_idx%mom%beg, eqn_idx%mom%end
+                            rhoe = rhoe - 0.5_wp*q_cons_vf(i)%sf(j, k, l)**2/rho
+                        end do
+                    end if
+                    guess = q_cons_vf(eqn_idx%adv%beg + pt_jwl - 1)%sf(j, k, l)
+                    call s_jwl_pt_equilibrium(mj, ma, rhoe, guess, pt_material, pres, temp, aj, aa, c2, converged)
+                    if (converged) then
+                        q_cons_vf(eqn_idx%adv%beg + pt_jwl - 1)%sf(j, k, l) = aj
+                        q_cons_vf(eqn_idx%adv%beg + pt_ambient - 1)%sf(j, k, l) = aa
+                    else
+                        failures = failures + 1
+                    end if
+                end do
+            end do
+        end do
+        $:END_GPU_PARALLEL_LOOP()
+        @:PROHIBIT(failures > 0, 'JWL PT relaxation failed: no converged positive, hyperbolic equilibrium in one or more cells.')
+
+    end subroutine s_relax_jwl_pt
 
     !> Apply pT- or pTg-equilibrium relaxation with mass depletion based on the incoming state conditions.
     subroutine s_infinite_relaxation_k(q_cons_vf)
@@ -69,6 +144,11 @@ contains
 
         !> Generic loop iterators
         integer :: i, j, k, l
+
+        if (pt_jwl > 0) then
+            call s_relax_jwl_pt(q_cons_vf)
+            return
+        end if
 
 #ifdef MFC_OpenACC
         ! CCE 19 IPA workaround: prevent bring_routine_resident SIGSEGV

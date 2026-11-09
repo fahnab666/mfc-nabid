@@ -454,13 +454,30 @@ contains
         if (f_is_state_dependent(i)) then
             call s_reference_curve(rho, i, p_ref, e_ref, dp_drho, de_drho, G0, dG0)
             T0 = eos_coeffs(i)%t0
-            call s_rk4(ode_reference_temperature, i, 1._wp/eos_coeffs(i)%rho0, T0, 1._wp/rho, T_ref)
+            call s_reference_temperature(rho, i, T0, T_ref)
             T = T_ref + (pres - p_ref)/(rho*G0*cvs(i))
         else
             T = (pres + isentrope_B(i))/((isentrope_n(i) - 1._wp)*cvs(i)*rho)
         end if
 
     end subroutine s_phase_temperature
+
+    !> Fast PT uses the exact JWL reference isentrope, including at large density ratios.
+    subroutine s_reference_temperature(rho, i, T0, T_ref)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        real(wp), intent(in)  :: rho, T0
+        integer, intent(in)   :: i
+        real(wp), intent(out) :: T_ref
+
+        if (relax .and. relax_model == 5 .and. eoss(i) == eos_jwl) then
+            T_ref = T0*(rho/eos_coeffs(i)%rho0)**eos_coeffs(i)%gruneisen0
+        else
+            call s_rk4(ode_reference_temperature, i, 1._wp/eos_coeffs(i)%rho0, T0, 1._wp/rho, T_ref)
+        end if
+
+    end subroutine s_reference_temperature
 
     !> Density of phase i at (p, T), the inverse of s_phase_temperature (constant-coefficient EOS only).
     subroutine s_phase_density(pres, T, i, rho)
@@ -498,7 +515,7 @@ contains
         do iter = 1, 4
             call s_reference_curve(rho_to, i, p_ref, e_ref, dp_drho, de_drho, G0, dG0)
             T0 = eos_coeffs(i)%t0
-            call s_rk4(ode_reference_temperature, i, 1._wp/eos_coeffs(i)%rho0, T0, 1._wp/rho_to, T_ref)
+            call s_reference_temperature(rho_to, i, T0, T_ref)
             dTref_drho = de_drho/cvs(i) - p_ref/(cvs(i)*rho_to**2) + G0*T_ref/rho_to
             p_at = p_ref + rho_to*G0*cvs(i)*(T_target - T_ref)
             dp_at_drho = dp_drho + cvs(i)*((G0 + rho_to*dG0)*(T_target - T_ref) - rho_to*G0*dTref_drho)
