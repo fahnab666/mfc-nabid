@@ -1319,13 +1319,13 @@ The parameters are optionally used to define initial velocity profiles and pertu
 | Parameter              | Type    | Description                                    |
 | ---:                   | :----:  |          :---                                  |
 | `relax`                | Logical | Activates Phase Change model |
-| `relax_model`          | Integer | Phase change model: [5] pT-equilibrium; [6] pTg-equilibrium |
+| `relax_model`          | Integer | Phase change model: [5] pT-equilibrium; [6] pTg-equilibrium; [7] JWL matrix pT-equilibrium |
 | `palpha_eps`           | Real    | tolerance of the Newton Solver to activate pT-equilibrium  |
 | `ptgalpha_eps`         | Real    | tolerance of the Newton Solver to activate pTg-equilibrium |
 
 - `relax` Activates the Phase Change model.
 
-- `relax_model` Specifies the phase change model to be used: [5] enables pT-equilibrium, while [6] activates pTg-equilibrium (if criteria are met).
+- `relax_model` Specifies the phase change model: [5] pT-equilibrium, [6] pTg-equilibrium (if criteria are met), or [7] full 4x4 JWL pT-equilibrium.
 
 - `palpha_eps` Specifies the tolerance for the Newton Solvers used in the pT-equilibrium model.
 
@@ -1334,7 +1334,9 @@ The parameters are optionally used to define initial velocity profiles and pertu
 #### JWL pressure-temperature equilibrium
 
 For two fluids, one JWL and one ideal or stiffened gas, `relax = T` with
-`model_eqns = 2` and `relax_model = 5` selects Fast PT relaxation. It updates the
+`model_eqns = 2` selects JWL pressure-temperature relaxation with
+`relax_model = 5` for the reduced Fast PT solver or `relax_model = 7` for the
+full four-equation matrix solver. Both update the
 phase volume fractions at initialization and after each complete flow step,
 preserving both partial densities, momentum and total energy. The hyperbolic
 step keeps the existing mixture EOS and sound-speed choice. This option is a
@@ -1345,13 +1347,15 @@ Both phases require positive `cv`. JWL requires nonnegative `jwl_b` and
 (`T_wrt = T`) also requires positive `jwl_t0`. In this mode the JWL reference
 temperature follows the exact isentrope; other modes keep their
 existing temperature evaluation. The scalar solver uses precision-dependent
-residual bounds, rather than the stiffened-gas `palpha_eps` iteration tolerance.
+residual bounds; the matrix solver uses a scaled analytic 4x4 Newton system.
+Neither uses the stiffened-gas `palpha_eps` iteration tolerance.
 It reports failure when a positive, hyperbolic equilibrium cannot be resolved.
 It does not substitute another mixture closure. Immersed bodies, Euler-Lagrange
 coupling, elasticity and heat conduction are unsupported with this option.
 
-The synthetic example `examples/1D_jwl_pt_relaxation/case.py` relaxes an initially
-unequal-temperature mixture to a known 1800 K equilibrium.
+Set `MFC_JWL_PT_SOLVER=fast` or `MFC_JWL_PT_SOLVER=matrix` when running
+`examples/1D_jwl_pt_relaxation/case.py` to compare both solvers on the same
+initial state and known 1800 K equilibrium.
 
 ### 12. Artificial Mach Number {#sec-artificial-mach-number}
 | Parameter              | Type    | Description                                    |

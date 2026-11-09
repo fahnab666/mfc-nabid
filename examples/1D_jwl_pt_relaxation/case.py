@@ -3,6 +3,12 @@
 
 import json
 import math
+import os
+
+solver = os.environ.get("MFC_JWL_PT_SOLVER", "fast").strip().lower()
+if solver not in ("fast", "matrix"):
+    raise ValueError("MFC_JWL_PT_SOLVER must be 'fast' or 'matrix'")
+relax_model = 5 if solver == "fast" else 7
 
 # Synthetic coefficients; this is a solver verification case, not a material calibration.
 A, B, R1, R2, omega, rho0 = 2e10, 1e8, 4.0, 1.1, 0.3, 1000.0
@@ -43,7 +49,7 @@ print(
             "model_eqns": "5eq",
             "num_fluids": 2,
             "relax": "T",
-            "relax_model": 5,
+            "relax_model": relax_model,
             "mpp_lim": "F",
             "mixture_err": "F",
             "alt_soundspeed": "T",
