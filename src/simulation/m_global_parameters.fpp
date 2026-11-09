@@ -256,6 +256,8 @@ module m_global_parameters
     integer            :: lso_stat_tau_beg, lso_stat_tau_end
     integer            :: lso_stat_q_beg, lso_stat_q_end
     integer            :: lso_stat_rhotau_u_beg, lso_stat_rhotau_u_end
+    integer            :: lso_stat_gu_beg, lso_stat_gu_end
+    $:GPU_DECLARE(create='[lso_conductivity, lso_mu_T_exp, lso_mu_T_ref]')
     !> @}
 
     !> @name Bubble modeling
@@ -750,6 +752,9 @@ contains
         lso2_a_z = 0.0_wp
         lso_R_gas = 287.0_wp
         lso_mu = 0.0_wp
+        lso_conductivity = 0.0_wp
+        lso_mu_T_exp = 0.0_wp
+        lso_mu_T_ref = 0.0_wp
         lso_stat_phi_p_beg = 0; lso_stat_phi_p_end = 0
         lso_stat_rho_beg = 0; lso_stat_rho_end = 0
         lso_stat_rhoke_beg = 0; lso_stat_rhoke_end = 0
@@ -761,6 +766,7 @@ contains
         lso_stat_tau_beg = 0; lso_stat_tau_end = 0
         lso_stat_q_beg = 0; lso_stat_q_end = 0
         lso_stat_rhotau_u_beg = 0; lso_stat_rhotau_u_end = 0
+        lso_stat_gu_beg = 0; lso_stat_gu_end = 0
 
         bubble_model = 1
         polytropic = .true.
