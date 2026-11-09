@@ -20,6 +20,10 @@ module m_lso_pp_filter
     use m_constants
     use m_variables_conversion, only: gammas, pi_infs, qvs
     use m_eos, only: f_isentrope_pressure
+    use m_data_input, only: ib_markers
+#ifdef MFC_MPI
+    use mpi
+#endif
 
     implicit none
 
@@ -27,7 +31,7 @@ module m_lso_pp_filter
 
     public :: s_initialize_lso_pp_filter_module, s_finalize_lso_pp_filter_module, s_apply_lso_pp_filter, &
         & s_compute_lso_pp_stat_fields, s_filter_lso_pp_stat_fields, q_lso_pp_stat_vf, s_apply_lso_pp_filter_masked, &
-        & s_compute_lso_closure_fields, f_lso_n_closure, q_lso_pp_w_vf
+        & s_compute_lso_closure_fields, f_lso_n_closure, q_lso_pp_w_vf, s_write_lso_pp_pyramid_files, s_lso_pp_mask_from_ib
 
     ! Floor on the normalized-convolution denominator filter(w).
     real(wp), parameter :: lso_w_floor = 1.0e-3_wp
@@ -43,6 +47,22 @@ module m_lso_pp_filter
     type(scalar_field) :: q_lso_pp_w_vf(1:1)
 
 contains
+
+    !> Build the gas mask used to normalize post-process filtering from the current immersed-boundary markers.
+    impure subroutine s_lso_pp_mask_from_ib(w_vf)
+
+        type(scalar_field), intent(inout) :: w_vf(1:1)
+        integer                           :: j, k, l
+
+        do l = 0, p
+            do k = 0, n
+                do j = 0, m
+                    w_vf(1)%sf(j, k, l) = merge(0._stp, 1._stp, ib_markers%sf(j, k, l) > 0)
+                end do
+            end do
+        end do
+
+    end subroutine s_lso_pp_mask_from_ib
 
     impure subroutine s_initialize_lso_pp_filter_module()
 
@@ -297,6 +317,201 @@ contains
 
     end subroutine s_apply_lso_pp_filter_masked
 
+    !> Pyramid stage 1 (lso_pp_pyramid_wrt): sample the filtered conserved state, the filtered gas mask w = filter(g) and the
+    !! filtered stat products at the coarse-cell centres of an lso_down_sample_factor coarser grid (as s_lso_stride_sample does in
+    !! simulation) and write them as lso_<t>.dat, lso_mask_<t>.dat, lso_stat_<t>.dat and lso_[xyz]_cb.dat, the files the in-situ
+    !! pyramid writes. A second post_process run with lso_filter_wrt = T then widens them to the target on the coarse grid.
+    impure subroutine s_write_lso_pp_pyramid_files(q_cons_vf, t_step)
+
+        type(scalar_field), intent(in) :: q_cons_vf(:)
+        integer, intent(in)            :: t_step
+
+#ifdef MFC_MPI
+        integer                 :: fac, mc, nc, pc, i
+        integer                 :: nloc(3), sc(3), nglb(3)
+        real(stp), allocatable  :: buf(:,:,:,:)
+        character(LEN=name_len) :: fname
+
+        fac = lso_down_sample_factor
+        nloc = (/m, n, p/)
+        nglb = (/m_glb, n_glb, p_glb/)
+        do i = 1, num_dims
+            @:PROHIBIT(mod(nloc(i) + 1, fac) /= 0 .or. mod(start_idx(i), fac) /= 0, &
+                       & "lso_pp_pyramid_wrt: every rank's block must be divisible by lso_down_sample_factor (change the rank count)")
+        end do
+        sc = 0
+        do i = 1, num_dims
+            sc(i) = start_idx(i)/fac
+            nloc(i) = (nloc(i) + 1)/fac - 1
+            nglb(i) = (nglb(i) + 1)/fac - 1
+        end do
+        mc = nloc(1); nc = nloc(2); pc = nloc(3)
+
+        allocate (buf(0:mc,0:nc,0:pc,1:max(sys_size, n_lso_stat, 1)))
+
+        do i = 1, sys_size
+            call s_lso_pp_decimate(q_cons_vf(i), buf(:,:,:,i), mc, nc, pc)
+        end do
+        write (fname, '(A,I0,A)') 'lso_', t_step, '.dat'
+        call s_write_lso_pp_coarse_file(buf, sys_size, fname, nloc, nglb, sc)
+
+        call s_lso_pp_decimate(q_lso_pp_w_vf(1), buf(:,:,:,1), mc, nc, pc)
+        write (fname, '(A,I0,A)') 'lso_mask_', t_step, '.dat'
+        call s_write_lso_pp_coarse_file(buf, 1, fname, nloc, nglb, sc)
+
+        if (lso_stat_wrt .and. n_lso_stat > 0) then
+            do i = 1, n_lso_stat
+                call s_lso_pp_decimate(q_lso_pp_stat_vf(i), buf(:,:,:,i), mc, nc, pc)
+            end do
+            write (fname, '(A,I0,A)') 'lso_stat_', t_step, '.dat'
+            call s_write_lso_pp_coarse_file(buf, n_lso_stat, fname, nloc, nglb, sc)
+        end if
+
+        deallocate (buf)
+
+        call s_write_lso_pp_coarse_grid(x_cb(-1:m), 1, 'lso_x_cb.dat', nloc, sc)
+        if (n > 0) call s_write_lso_pp_coarse_grid(y_cb(-1:n), 2, 'lso_y_cb.dat', nloc, sc)
+        if (p > 0) call s_write_lso_pp_coarse_grid(z_cb(-1:p), 3, 'lso_z_cb.dat', nloc, sc)
+
+        if (proc_rank == 0) print '(A,I0,A,3(I0,1X),A)', 'LSO pyramid stage 1: wrote step ', t_step, ' on the coarse grid ', &
+            & nglb(1) + 1, nglb(2) + 1, nglb(3) + 1, '(lso_ restart files)'
+#else
+        call s_mpi_abort('lso_pp_pyramid_wrt requires an MPI-enabled build.')
+#endif
+
+    end subroutine s_write_lso_pp_pyramid_files
+
+    !> Trilinear sample of the interior of src at the coarse-cell centres (j_c + 1/2) F - 1/2 of the local block (F =
+    !! lso_down_sample_factor, local blocks divisible by F); only interior cells are read.
+    subroutine s_lso_pp_decimate(src, dst, mc, nc, pc)
+
+        type(scalar_field), intent(in) :: src
+        integer, intent(in)            :: mc, nc, pc
+        real(stp), intent(out)         :: dst(0:mc,0:nc,0:pc)
+        integer                        :: j, k, l, j0, j1, k0, k1, l0, l1
+        real(wp)                       :: wj, wk, wl
+
+        do l = 0, pc
+            call s_lso_pp_sample_pos(l, p, l0, l1, wl)
+            do k = 0, nc
+                call s_lso_pp_sample_pos(k, n, k0, k1, wk)
+                do j = 0, mc
+                    call s_lso_pp_sample_pos(j, m, j0, j1, wj)
+                    dst(j, k, l) = real((1._wp - wj)*(1._wp - wk)*(1._wp - wl)*real(src%sf(j0, k0, l0), &
+                        & wp) + wj*(1._wp - wk)*(1._wp - wl)*real(src%sf(j1, k0, l0), &
+                        & wp) + (1._wp - wj)*wk*(1._wp - wl)*real(src%sf(j0, k1, l0), wp) + wj*wk*(1._wp - wl)*real(src%sf(j1, &
+                        & k1, l0), wp) + (1._wp - wj)*(1._wp - wk)*wl*real(src%sf(j0, k0, l1), &
+                        & wp) + wj*(1._wp - wk)*wl*real(src%sf(j1, k0, l1), wp) + (1._wp - wj)*wk*wl*real(src%sf(j0, k1, l1), &
+                        & wp) + wj*wk*wl*real(src%sf(j1, k1, l1), wp), stp)
+                end do
+            end do
+        end do
+
+    end subroutine s_lso_pp_decimate
+
+    !> Fine-grid bracket (i0, i1) and weight of coarse index ic along a direction with nfine + 1 local cells (0 = absent).
+    subroutine s_lso_pp_sample_pos(ic, nfine, i0, i1, wt)
+
+        integer, intent(in)   :: ic, nfine
+        integer, intent(out)  :: i0, i1
+        real(wp), intent(out) :: wt
+        real(wp)              :: pos
+
+        if (nfine == 0) then
+            i0 = 0; i1 = 0; wt = 0._wp
+            return
+        end if
+        pos = (real(ic, wp) + 0.5_wp)*real(lso_down_sample_factor, wp) - 0.5_wp
+        i0 = floor(pos)
+        i1 = min(i0 + 1, nfine)
+        wt = pos - real(i0, wp)
+
+    end subroutine s_lso_pp_sample_pos
+
+#ifdef MFC_MPI
+    !> Write nv coarse fields buf(:,:,:,1:nv) back to back to restart_data/<fname> in the global MPI-IO layout of the simulation's
+    !! lso_ files (one Fortran-ordered global block per field).
+    impure subroutine s_write_lso_pp_coarse_file(buf, nv, fname, nloc, nglb, sc)
+
+        real(stp), intent(in)                :: buf(0:,0:,0:,1:)
+        integer, intent(in)                  :: nv
+        character(LEN=*), intent(in)         :: fname
+        integer, intent(in)                  :: nloc(3), nglb(3), sc(3)
+        integer                              :: ifile, ierr, i, mpi_view, data_size
+        integer, dimension(MPI_STATUS_SIZE)  :: status
+        integer, dimension(num_dims)         :: sizes_glb, sizes_loc, start_loc
+        integer(kind=MPI_OFFSET_KIND)        :: disp, blk
+        character(LEN=path_len + 2*name_len) :: file_loc
+        logical                              :: file_exist
+
+        sizes_glb = nglb(1:num_dims) + 1
+        sizes_loc = nloc(1:num_dims) + 1
+        start_loc = sc(1:num_dims)
+        data_size = product(nloc + 1)
+        blk = int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
+        do i = 1, 3
+            blk = blk*int(nglb(i) + 1, MPI_OFFSET_KIND)
+        end do
+
+        file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(fname)
+        inquire (FILE=trim(file_loc), EXIST=file_exist)
+        if (file_exist .and. proc_rank == 0) call MPI_FILE_DELETE(file_loc, mpi_info_int, ierr)
+        call s_mpi_barrier()
+        call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+        call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_loc, MPI_ORDER_FORTRAN, mpi_p, mpi_view, ierr)
+        call MPI_TYPE_COMMIT(mpi_view, ierr)
+        do i = 1, nv
+            disp = blk*int(i - 1, MPI_OFFSET_KIND)
+            call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, mpi_view, 'native', mpi_info_int, ierr)
+            call MPI_FILE_WRITE_ALL(ifile, buf(:,:,:,i), data_size*mpi_io_type, mpi_io_p, status, ierr)
+        end do
+        call MPI_TYPE_FREE(mpi_view, ierr)
+        call MPI_FILE_CLOSE(ifile, ierr)
+
+    end subroutine s_write_lso_pp_coarse_file
+
+    !> Write the coarse cell boundaries cb_c(-1:Nc) of direction dir to restart_data/<fname>: with blocks divisible by F, coarse
+    !! boundary J is fine boundary F (J + 1) - 1, so each rank on the first row of the other directions writes its own segment.
+    impure subroutine s_write_lso_pp_coarse_grid(cb, dir, fname, nloc, sc)
+
+        real(wp), intent(in)                 :: cb(-1:)
+        integer, intent(in)                  :: dir
+        character(LEN=*), intent(in)         :: fname
+        integer, intent(in)                  :: nloc(3), sc(3)
+        integer                              :: ifile, ierr, jc, i0, nw
+        integer, dimension(MPI_STATUS_SIZE)  :: status
+        integer(kind=MPI_OFFSET_KIND)        :: disp
+        real(wp), allocatable                :: seg(:)
+        character(LEN=path_len + 2*name_len) :: file_loc
+        logical                              :: file_exist, writer
+
+        writer = .true.
+        do jc = 1, num_dims
+            if (jc /= dir .and. sc(jc) /= 0) writer = .false.
+        end do
+
+        file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(fname)
+        inquire (FILE=trim(file_loc), EXIST=file_exist)
+        if (file_exist .and. proc_rank == 0) call MPI_FILE_DELETE(file_loc, mpi_info_int, ierr)
+        call s_mpi_barrier()
+        call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+        if (writer) then
+            ! entries cb_c(-1:Nc) sit at file positions 0:Nc+1; the rank at the domain start also writes cb_c(-1)
+            i0 = merge(-1, 0, sc(dir) == 0)
+            nw = nloc(dir) - i0 + 1
+            allocate (seg(nw))
+            do jc = i0, nloc(dir)
+                seg(jc - i0 + 1) = cb(lso_down_sample_factor*(jc + 1) - 1)
+            end do
+            disp = int(sc(dir) + i0 + 1, MPI_OFFSET_KIND)*int(storage_size(0._wp)/8, MPI_OFFSET_KIND)
+            call MPI_FILE_WRITE_AT(ifile, disp, seg, nw, mpi_p, status, ierr)
+            deallocate (seg)
+        end if
+        call MPI_FILE_CLOSE(ifile, ierr)
+
+    end subroutine s_write_lso_pp_coarse_grid
+#endif
+
     !> Number of closure output fields for the current dimensionality: R_sg (nt) | Q_T (nd) | E_ku (nd) | W_tau_u (nd) | R_mu_sg
     !! (nt) | R_lam_sg (nd) | T_tilde (1) | u_favre (nd), with nt = 1/3/6 symmetric tensor components.
     pure integer function f_lso_n_closure() result(n_cls)
@@ -318,13 +533,13 @@ contains
 
         type(scalar_field), intent(in)    :: q_stat_vf(:), q_cons_vf(:), w_vf(1:1)
         type(scalar_field), intent(inout) :: q_cls_vf(:)
-        type(scalar_field)                :: uT_vf(1:4)
+        type(scalar_field)                :: uT_vf(1:7)
         integer                           :: nd, nt, i, c, j, k, l, a, b, work_buff_size
         integer                           :: ti(6), tj(6)
         integer                           :: i_rsg, i_qt, i_eku, i_wtu, i_rmu, i_rlam, i_tt, i_uf
-        real(wp)                          :: Cv, gcv, rho_b, F_E, wloc, dsp(3), stiffness, dx2
+        real(wp)                          :: Cv, gcv, rho_b, F_E, wloc, dsp(3), stiffness, dx2, fprop
         logical                           :: x_nonuni
-        real(wp)                          :: rhou(3), tdotru(3), dudx(3, 3), dT(3), div_u, tau_res, tb(3, 3)
+        real(wp)                          :: rhou(3), tdotru(3), dudx(3, 3), dumdx(3, 3), dT(3), div_m, tau_res, tb(3, 3)
 
         nd = num_dims
         nt = nd*(nd + 1)/2
@@ -340,9 +555,9 @@ contains
         gcv = (1._wp + 1._wp/gammas(1))*Cv
         stiffness = f_isentrope_pressure(pi_infs(1), gammas(1))
 
-        ! Favre velocity and temperature with ghost extents for MPI exchange and gradient stencils.
+        ! Favre velocity, temperature, and mixture velocity with ghost extents for MPI exchange and gradient stencils.
         work_buff_size = max(buff_size, lso_pp_filter_radius)
-        do i = 1, nd + 1
+        do i = 1, 2*nd + 1
             allocate (uT_vf(i)%sf(-work_buff_size:m + work_buff_size,-work_buff_size:n + work_buff_size, &
                       & -work_buff_size:p + work_buff_size))
         end do
@@ -357,12 +572,19 @@ contains
                     F_E = real(q_cons_vf(eqn_idx%E)%sf(j, k, l), wp)*wloc
                     uT_vf(nd + 1)%sf(j, k, l) = real((F_E - 0.5_wp*real(q_stat_vf(lso_stat_rhoke_beg)%sf(j, k, l), &
                           & wp) - stiffness*wloc - qvs(1)*rho_b)/(Cv*rho_b), stp)
+                    do a = 1, nd
+                        uT_vf(nd + 1 + a)%sf(j, k, l) = real(real(q_stat_vf(lso_stat_gu_beg + a - 1)%sf(j, k, l), &
+                              & wp) + real(q_stat_vf(lso_stat_up_beg + a - 1)%sf(j, k, l), wp), stp)
+                    end do
                 end do
             end do
         end do
-        call s_lso_pp_filter_ghost_refresh(uT_vf(1:nd + 1), 1)
-        if (n > 0) call s_lso_pp_filter_ghost_refresh(uT_vf(1:nd + 1), 2)
-        if (p > 0) call s_lso_pp_filter_ghost_refresh(uT_vf(1:nd + 1), 3)
+        do c = 1, 2*nd + 1, sys_size
+            b = min(2*nd + 1, c + sys_size - 1)
+            call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 1)
+            if (n > 0) call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 2)
+            if (p > 0) call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 3)
+        end do
 
         ! Quasi-uniform output-grid spacing (mean; exact for integer decimation).
         dsp = 1._wp
@@ -389,7 +611,7 @@ contains
                     end do
 
                     ! gradients of the Favre fields (centred; ghosts filled above)
-                    dudx = 0._wp; dT = 0._wp
+                    dudx = 0._wp; dumdx = 0._wp; dT = 0._wp
                     dx2 = 2._wp*dsp(1)
                     if (x_nonuni) dx2 = x_cc(j + 1) - x_cc(j - 1)
                     do a = 1, nd
@@ -398,16 +620,25 @@ contains
                             & wp))/(2._wp*dsp(2))
                         if (p > 0) dudx(a, 3) = (real(uT_vf(a)%sf(j, k, l + 1), wp) - real(uT_vf(a)%sf(j, k, l - 1), &
                             & wp))/(2._wp*dsp(3))
+                        i = nd + 1 + a
+                        dumdx(a, 1) = (real(uT_vf(i)%sf(j + 1, k, l), wp) - real(uT_vf(i)%sf(j - 1, k, l), wp))/dx2
+                        if (n > 0) dumdx(a, 2) = (real(uT_vf(i)%sf(j, k + 1, l), wp) - real(uT_vf(i)%sf(j, k - 1, l), &
+                            & wp))/(2._wp*dsp(2))
+                        if (p > 0) dumdx(a, 3) = (real(uT_vf(i)%sf(j, k, l + 1), wp) - real(uT_vf(i)%sf(j, k, l - 1), &
+                            & wp))/(2._wp*dsp(3))
                     end do
                     dT(1) = (real(uT_vf(nd + 1)%sf(j + 1, k, l), wp) - real(uT_vf(nd + 1)%sf(j - 1, k, l), wp))/dx2
                     if (n > 0) dT(2) = (real(uT_vf(nd + 1)%sf(j, k + 1, l), wp) - real(uT_vf(nd + 1)%sf(j, k - 1, l), &
                         & wp))/(2._wp*dsp(2))
                     if (p > 0) dT(3) = (real(uT_vf(nd + 1)%sf(j, k, l + 1), wp) - real(uT_vf(nd + 1)%sf(j, k, l - 1), &
                         & wp))/(2._wp*dsp(3))
-                    div_u = 0._wp
+                    div_m = 0._wp
                     do a = 1, nd
-                        div_u = div_u + dudx(a, a)
+                        div_m = div_m + dumdx(a, a)
                     end do
+                    ! mu(T~), lambda(T~): power law at the Favre temperature (1 when lso_mu_T_exp = 0)
+                    fprop = 1._wp
+                    if (lso_mu_T_exp > 0._wp) fprop = (max(real(uT_vf(nd + 1)%sf(j, k, l), wp), sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
 
                     ! R_sg
                     do c = 1, nt
@@ -432,14 +663,15 @@ contains
                     end do
                     ! R_mu_sg (filtered minus resolved, same tau convention as the solver)
                     do c = 1, nt
-                        tau_res = lso_mu*(dudx(ti(c), tj(c)) + dudx(tj(c), ti(c)))
-                        if (ti(c) == tj(c)) tau_res = tau_res - (2._wp/3._wp)*lso_mu*div_u
+                        tau_res = fprop*lso_mu*(dumdx(ti(c), tj(c)) + dumdx(tj(c), ti(c)))
+                        if (ti(c) == tj(c)) tau_res = tau_res - (2._wp/3._wp)*fprop*lso_mu*div_m
                         q_cls_vf(i_rmu + c)%sf(j, k, l) = real(tb(ti(c), tj(c)) - tau_res, stp)
                     end do
                     ! R_lam_sg (stored q = -lambda grad T; resolved uses the same sign)
                     do a = 1, nd
                         q_cls_vf(i_rlam + a)%sf(j, k, l) = real(real(q_stat_vf(lso_stat_q_beg + a - 1)%sf(j, k, l), &
-                                 & wp)/wloc - (-fluid_k_therm(1)*dT(a)), stp)
+                                 & wp)/wloc - (-fprop*merge(lso_conductivity, fluid_k_therm(1), lso_conductivity > 0._wp)*dT(a)), &
+                                 & stp)
                     end do
                     ! T_tilde, u_favre
                     q_cls_vf(i_tt + 1)%sf(j, k, l) = uT_vf(nd + 1)%sf(j, k, l)
@@ -450,7 +682,7 @@ contains
             end do
         end do
 
-        do i = 1, nd + 1
+        do i = 1, 2*nd + 1
             deallocate (uT_vf(i)%sf)
         end do
         do c = 1, size(q_cls_vf), sys_size
@@ -577,6 +809,7 @@ contains
         real(wp) :: div_u
         real(wp) :: tau11, tau12, tau13, tau22, tau23, tau33
         real(wp) :: q1, q2, q3
+        real(wp) :: fprop, mu_loc, k_loc
 
         ! Pass 1: algebraic products. gas_mask = 1 everywhere (no IB).
 
@@ -641,6 +874,10 @@ contains
                     if (n > 0) q_lso_pp_stat_vf(lso_stat_rhouT_beg + 1)%sf(j, k, l) = real(mom2*T_loc, stp)
                     if (p > 0) q_lso_pp_stat_vf(lso_stat_rhouT_beg + 2)%sf(j, k, l) = real(mom3*T_loc, stp)
 
+                    q_lso_pp_stat_vf(lso_stat_gu_beg)%sf(j, k, l) = real(u1, stp)
+                    if (n > 0) q_lso_pp_stat_vf(lso_stat_gu_beg + 1)%sf(j, k, l) = real(u2, stp)
+                    if (p > 0) q_lso_pp_stat_vf(lso_stat_gu_beg + 2)%sf(j, k, l) = real(u3, stp)
+
                     ! Zero the viscous-pass slots.
                     do i = lso_stat_tau_beg, lso_stat_tau_end
                         q_lso_pp_stat_vf(i)%sf(j, k, l) = 0._stp
@@ -656,7 +893,7 @@ contains
         end do
 
         ! Pass 2: viscous stress, heat flux, viscous power flux from centred diffs.
-        if (lso_mu > 0._wp .or. fluid_k_therm(1) > 0._wp) then
+        if (lso_mu > 0._wp .or. fluid_k_therm(1) > 0._wp .or. lso_conductivity > 0._wp) then
             if (n == 0) then
                 ! 1D: x-gradients only.
                 do j = 0, m
@@ -674,8 +911,14 @@ contains
                     du1dx = (u1_jp - u1_jm)/ddx
                     dTdx = (T_jp - T_jm)/ddx
 
-                    tau11 = lso_mu*(4._wp/3._wp)*du1dx
-                    q1 = -fluid_k_therm(1)*dTdx
+                    u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, 0, 0), wp)/rho_loc
+                    T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, 0, 0), wp) - 0.5_wp*u1**2*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
+                    fprop = 1._wp
+                    if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
+                    mu_loc = fprop*lso_mu
+                    k_loc = fprop*merge(lso_conductivity, fluid_k_therm(1), lso_conductivity > 0._wp)
+                    tau11 = mu_loc*(4._wp/3._wp)*du1dx
+                    q1 = -k_loc*dTdx
 
                     u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, 0, 0), wp)/rho_loc
 
@@ -724,11 +967,11 @@ contains
                         dTdy = (T_kp - T_km)/ddy
 
                         div_u = du1dx + du2dy
-                        tau11 = lso_mu*(2._wp*du1dx - (2._wp/3._wp)*div_u)
-                        tau12 = lso_mu*(du1dy + du2dx)
-                        tau22 = lso_mu*(2._wp*du2dy - (2._wp/3._wp)*div_u)
-                        q1 = -fluid_k_therm(1)*dTdx
-                        q2 = -fluid_k_therm(1)*dTdy
+                        tau11 = mu_loc*(2._wp*du1dx - (2._wp/3._wp)*div_u)
+                        tau12 = mu_loc*(du1dy + du2dx)
+                        tau22 = mu_loc*(2._wp*du2dy - (2._wp/3._wp)*div_u)
+                        q1 = -k_loc*dTdx
+                        q2 = -k_loc*dTdy
 
                         u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, 0), wp)/rho_loc
                         u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, 0), wp)/rho_loc
@@ -809,15 +1052,15 @@ contains
                             dTdz = (T_lp - T_lm)/ddz
 
                             div_u = du1dx + du2dy + du3dz
-                            tau11 = lso_mu*(2._wp*du1dx - (2._wp/3._wp)*div_u)
-                            tau12 = lso_mu*(du1dy + du2dx)
-                            tau13 = lso_mu*(du1dz + du3dx)
-                            tau22 = lso_mu*(2._wp*du2dy - (2._wp/3._wp)*div_u)
-                            tau23 = lso_mu*(du2dz + du3dy)
-                            tau33 = lso_mu*(2._wp*du3dz - (2._wp/3._wp)*div_u)
-                            q1 = -fluid_k_therm(1)*dTdx
-                            q2 = -fluid_k_therm(1)*dTdy
-                            q3 = -fluid_k_therm(1)*dTdz
+                            tau11 = mu_loc*(2._wp*du1dx - (2._wp/3._wp)*div_u)
+                            tau12 = mu_loc*(du1dy + du2dx)
+                            tau13 = mu_loc*(du1dz + du3dx)
+                            tau22 = mu_loc*(2._wp*du2dy - (2._wp/3._wp)*div_u)
+                            tau23 = mu_loc*(du2dz + du3dy)
+                            tau33 = mu_loc*(2._wp*du3dz - (2._wp/3._wp)*div_u)
+                            q1 = -k_loc*dTdx
+                            q2 = -k_loc*dTdy
+                            q3 = -k_loc*dTdz
 
                             u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l), wp)/rho_loc
                             u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l), wp)/rho_loc

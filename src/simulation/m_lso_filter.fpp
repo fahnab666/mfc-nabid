@@ -343,7 +343,7 @@ contains
                 end do
                 $:END_GPU_PARALLEL_LOOP()
             end if
-            if ((viscous .and. lso_mu > 0._wp) .or. fluid_k_therm(1) > 0._wp) then
+            if ((viscous .and. lso_mu > 0._wp) .or. fluid_k_therm(1) > 0._wp .or. lso_conductivity > 0._wp) then
                 do i = 1, num_dims
                     call s_lso_filter_ghost_refresh(q_cons_vf, i)
                     call s_lso_filter_ghost_refresh(q_lso_T_vf, i)
@@ -1231,6 +1231,7 @@ contains
         real(wp) :: div_u
         real(wp) :: tau11, tau12, tau13, tau22, tau23, tau33
         real(wp) :: q1, q2, q3
+        real(wp) :: fprop, mu_loc, k_loc
 
         ! Pass 1: algebraic products.
 
@@ -1316,6 +1317,10 @@ contains
                     if (n > 0) q_lso_stat_vf(lso_stat_rhouT_beg + 1)%sf(j, k, l) = real(gas_mask*mom2*T_loc, stp)
                     if (p > 0) q_lso_stat_vf(lso_stat_rhouT_beg + 2)%sf(j, k, l) = real(gas_mask*mom3*T_loc, stp)
 
+                    q_lso_stat_vf(lso_stat_gu_beg)%sf(j, k, l) = real(gas_mask*u1, stp)
+                    if (n > 0) q_lso_stat_vf(lso_stat_gu_beg + 1)%sf(j, k, l) = real(gas_mask*u2, stp)
+                    if (p > 0) q_lso_stat_vf(lso_stat_gu_beg + 2)%sf(j, k, l) = real(gas_mask*u3, stp)
+
                     ! Zero the viscous-pass slots.
                     do i = lso_stat_tau_beg, lso_stat_tau_end
                         q_lso_stat_vf(i)%sf(j, k, l) = 0._stp
@@ -1348,11 +1353,11 @@ contains
         if (bc_z%beg < 0 .and. bc_z%beg /= BC_PERIODIC) l_beg_z = buff_size
         if (bc_z%end < 0 .and. bc_z%end /= BC_PERIODIC) l_end_z = p - buff_size
 
-        if ((viscous .and. lso_mu > 0._wp) .or. fluid_k_therm(1) > 0._wp) then
+        if ((viscous .and. lso_mu > 0._wp) .or. fluid_k_therm(1) > 0._wp .or. lso_conductivity > 0._wp) then
             if (n == 0) then
                 ! 1D: x-gradients only.
                 $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, rho_loc, gas_mask, rho_jm, rho_jp, u1_jm, u1_jp, T_jm, T_jp, &
-                                    & dx, du1dx, dTdx, tau11, q1, u1]')
+                                    & dx, du1dx, dTdx, tau11, q1, u1, fprop, mu_loc, k_loc]')
                 do l = 0, p
                     do k = 0, n
                         do j = j_beg_x, j_end_x
@@ -1371,8 +1376,13 @@ contains
                             du1dx = (u1_jp - u1_jm)/dx
                             dTdx = (T_jp - T_jm)/dx
 
-                            tau11 = lso_mu*(4._wp/3._wp)*du1dx
-                            q1 = -fluid_k_therm(1)*dTdx
+                            fprop = 1._wp
+                            if (lso_mu_T_exp > 0._wp) fprop = (max(real(q_T_sf%sf(j, k, l), wp), &
+                                & sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
+                            mu_loc = fprop*lso_mu
+                            k_loc = fprop*merge(lso_conductivity, fluid_k_therm(1), lso_conductivity > 0._wp)
+                            tau11 = mu_loc*(4._wp/3._wp)*du1dx
+                            q1 = -k_loc*dTdx
 
                             u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, 0, 0), wp)/rho_loc
 
@@ -1387,7 +1397,7 @@ contains
                 ! 2D: x- and y-gradients.
                 $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, rho_loc, gas_mask, rho_jm, rho_jp, rho_km, rho_kp, u1_jm, &
                                     & u1_jp, u1_km, u1_kp, u2_jm, u2_jp, u2_km, u2_kp, T_jm, T_jp, T_km, T_kp, dx, dy, du1dx, &
-                                    & du1dy, du2dx, du2dy, dTdx, dTdy, div_u, tau11, tau12, tau22, q1, q2, u1, u2]')
+                                    & du1dy, du2dx, du2dy, dTdx, dTdy, div_u, tau11, tau12, tau22, q1, q2, u1, u2, fprop, mu_loc, k_loc]')
                 do l = 0, p
                     do k = k_beg_y, k_end_y
                         do j = j_beg_x, j_end_x
@@ -1425,11 +1435,16 @@ contains
                             dTdy = (T_kp - T_km)/dy
 
                             div_u = du1dx + du2dy
-                            tau11 = lso_mu*(2._wp*du1dx - (2._wp/3._wp)*div_u)
-                            tau12 = lso_mu*(du1dy + du2dx)
-                            tau22 = lso_mu*(2._wp*du2dy - (2._wp/3._wp)*div_u)
-                            q1 = -fluid_k_therm(1)*dTdx
-                            q2 = -fluid_k_therm(1)*dTdy
+                            fprop = 1._wp
+                            if (lso_mu_T_exp > 0._wp) fprop = (max(real(q_T_sf%sf(j, k, l), wp), &
+                                & sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
+                            mu_loc = fprop*lso_mu
+                            k_loc = fprop*merge(lso_conductivity, fluid_k_therm(1), lso_conductivity > 0._wp)
+                            tau11 = mu_loc*(2._wp*du1dx - (2._wp/3._wp)*div_u)
+                            tau12 = mu_loc*(du1dy + du2dx)
+                            tau22 = mu_loc*(2._wp*du2dy - (2._wp/3._wp)*div_u)
+                            q1 = -k_loc*dTdx
+                            q2 = -k_loc*dTdy
 
                             u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, 0), wp)/rho_loc
                             u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, 0), wp)/rho_loc
@@ -1451,7 +1466,7 @@ contains
                                     & rho_lp, u1_jm, u1_jp, u1_km, u1_kp, u1_lm, u1_lp, u2_jm, u2_jp, u2_km, u2_kp, u2_lm, u2_lp, &
                                     & u3_jm, u3_jp, u3_km, u3_kp, u3_lm, u3_lp, T_jm, T_jp, T_km, T_kp, T_lm, T_lp, dx, dy, dz, &
                                     & du1dx, du1dy, du1dz, du2dx, du2dy, du2dz, du3dx, du3dy, du3dz, dTdx, dTdy, dTdz, div_u, &
-                                    & tau11, tau12, tau13, tau22, tau23, tau33, q1, q2, q3, u1, u2, u3]')
+                                    & tau11, tau12, tau13, tau22, tau23, tau33, q1, q2, q3, u1, u2, u3, fprop, mu_loc, k_loc]')
                 do l = l_beg_z, l_end_z
                     do k = k_beg_y, k_end_y
                         do j = j_beg_x, j_end_x
@@ -1512,15 +1527,20 @@ contains
                             dTdz = (T_lp - T_lm)/dz
 
                             div_u = du1dx + du2dy + du3dz
-                            tau11 = lso_mu*(2._wp*du1dx - (2._wp/3._wp)*div_u)
-                            tau12 = lso_mu*(du1dy + du2dx)
-                            tau13 = lso_mu*(du1dz + du3dx)
-                            tau22 = lso_mu*(2._wp*du2dy - (2._wp/3._wp)*div_u)
-                            tau23 = lso_mu*(du2dz + du3dy)
-                            tau33 = lso_mu*(2._wp*du3dz - (2._wp/3._wp)*div_u)
-                            q1 = -fluid_k_therm(1)*dTdx
-                            q2 = -fluid_k_therm(1)*dTdy
-                            q3 = -fluid_k_therm(1)*dTdz
+                            fprop = 1._wp
+                            if (lso_mu_T_exp > 0._wp) fprop = (max(real(q_T_sf%sf(j, k, l), wp), &
+                                & sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
+                            mu_loc = fprop*lso_mu
+                            k_loc = fprop*merge(lso_conductivity, fluid_k_therm(1), lso_conductivity > 0._wp)
+                            tau11 = mu_loc*(2._wp*du1dx - (2._wp/3._wp)*div_u)
+                            tau12 = mu_loc*(du1dy + du2dx)
+                            tau13 = mu_loc*(du1dz + du3dx)
+                            tau22 = mu_loc*(2._wp*du2dy - (2._wp/3._wp)*div_u)
+                            tau23 = mu_loc*(du2dz + du3dy)
+                            tau33 = mu_loc*(2._wp*du3dz - (2._wp/3._wp)*div_u)
+                            q1 = -k_loc*dTdx
+                            q2 = -k_loc*dTdy
+                            q3 = -k_loc*dTdz
 
                             u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l), wp)/rho_loc
                             u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l), wp)/rho_loc

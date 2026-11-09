@@ -167,13 +167,17 @@ contains
             end if
         end if
 
+        lso_step_found = .true.
         call s_read_data_files(t_step)
+        if (lso_filter_wrt .and. .not. lso_step_found) return
 
         if (t_step > t_step_start .and. lso_stat_wrt .and. n_lso_stat > 0 .and. (lso_filter_wrt .or. .not. lso_pp_filter)) then
             call s_read_lso_fields(q_lso_pp_stat_vf, n_lso_stat, t_step, 'lso_stat_')
         end if
-        if (t_step > t_step_start .and. ib .and. (lso_pp_filter .or. lso_closure_wrt)) then
+        if (t_step > t_step_start .and. ib .and. lso_filter_wrt .and. (lso_pp_filter .or. lso_closure_wrt)) then
             call s_read_lso_fields(q_lso_pp_w_vf, 1, t_step, 'lso_mask_')
+        else if (t_step > t_step_start .and. ib .and. lso_pp_filter .and. .not. lso_filter_wrt) then
+            call s_lso_pp_mask_from_ib(q_lso_pp_w_vf)
         end if
 
         if (t_step > t_step_start .and. lso_pp_filter) then
@@ -227,7 +231,7 @@ contains
 #ifdef MFC_MPI
         integer                              :: ifile, i, mpi_view, data_size
         integer, dimension(MPI_STATUS_SIZE)  :: status
-        integer(kind=MPI_OFFSET_KIND)        :: disp, field_size
+        integer(kind=MPI_OFFSET_KIND)        :: disp, field_size, file_size
         integer, dimension(num_dims)         :: sizes_glb, sizes_loc, starts
         real(stp), allocatable               :: field_io_buf(:,:,:)
         character(LEN=path_len + 2*name_len) :: file_loc
@@ -248,6 +252,9 @@ contains
         if (.not. file_exist) call s_mpi_abort('Required LSO file ' // trim(file_loc) // ' is missing.')
 
         call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, MPI_MODE_RDONLY, mpi_info_int, ifile, ierr)
+        call MPI_FILE_GET_SIZE(ifile, file_size, ierr)
+        @:PROHIBIT(file_size < field_size*int(nv, MPI_OFFSET_KIND), &
+                   & "LSO field file contains fewer fields than expected; regenerate it with the matching simulation build")
         allocate (field_io_buf(0:m,0:n,0:p))
         do i = 1, nv
             call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, starts, MPI_ORDER_FORTRAN, mpi_p, mpi_view, ierr)
@@ -347,6 +354,19 @@ contains
                 write (varname, '(A,I3.3)') 'lso_stat_', i
                 call s_write_variable_to_formatted_database_file(varname, t_step)
             end do
+            out%q_sf = q_lso_pp_stat_vf(lso_stat_gu_beg)%sf(x_beg:x_end,y_beg:y_end,z_beg:z_end)
+            varname = 'g_u_x'
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+            if (num_dims >= 2) then
+                out%q_sf = q_lso_pp_stat_vf(lso_stat_gu_beg + 1)%sf(x_beg:x_end,y_beg:y_end,z_beg:z_end)
+                varname = 'g_u_y'
+                call s_write_variable_to_formatted_database_file(varname, t_step)
+            end if
+            if (num_dims == 3) then
+                out%q_sf = q_lso_pp_stat_vf(lso_stat_gu_beg + 2)%sf(x_beg:x_end,y_beg:y_end,z_beg:z_end)
+                varname = 'g_u_z'
+                call s_write_variable_to_formatted_database_file(varname, t_step)
+            end if
         end if
 
         if (t_step > t_step_start .and. lso_closure_wrt .and. lso_stat_wrt .and. n_lso_stat > 0) then
@@ -1118,7 +1138,9 @@ contains
                 lso_stat_q_beg = lso_stat_tau_end + 1; lso_stat_q_end = lso_stat_q_beg + num_dims - 1
                 lso_stat_rhotau_u_beg = lso_stat_q_end + 1
                 lso_stat_rhotau_u_end = lso_stat_rhotau_u_beg + num_dims - 1
-                n_lso_stat = lso_stat_rhotau_u_end
+                lso_stat_gu_beg = lso_stat_rhotau_u_end + 1
+                lso_stat_gu_end = lso_stat_gu_beg + num_dims - 1
+                n_lso_stat = lso_stat_gu_end
             end block
         end if
         call s_initialize_parallel_io()

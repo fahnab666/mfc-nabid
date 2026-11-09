@@ -42,6 +42,7 @@ module m_data_input
     type(integer_field), allocatable, dimension(:,:), public :: bc_type    !< Boundary condition identifiers
     type(scalar_field), public                               :: q_T_sf     !< Temperature field
     type(integer_field), public                              :: ib_markers
+    logical, public                                          :: lso_step_found = .true.
 
     procedure(s_read_abstract_data_files), pointer :: s_read_data_files => null()
 
@@ -315,6 +316,15 @@ contains
             call s_assign_default_bc_type(bc_type)
         end if
 
+        if (lso_filter_wrt) then
+            file_loc = trim(t_step_dir) // '/lso_q_cons_vf1.dat'
+            inquire (FILE=trim(file_loc), EXIST=file_check)
+            if (.not. file_check) then
+                lso_step_found = .false.
+                return
+            end if
+        end if
+
         ! Pass explicit slices so the dummy `dimension(-1:)` / `dimension(0:)` arguments map to the correct interior indices of the
         ! actual arrays. Without slicing, when offset_x%beg or buff_size > 0 (i.e. format=1 parallel 3D ranks), Fortran's
         ! assumed-shape re-mapping shifts the read by that many slots and leaves the last interior cells uninitialized - corrupting
@@ -332,7 +342,7 @@ contains
         do i = 1, sys_size
             write (file_num, '(I0)') i
             file_loc = trim(t_step_dir) // '/q_cons_vf' // trim(file_num) // '.dat'
-            if (lso_filter_wrt .and. t_step > t_step_start) then
+            if (lso_filter_wrt) then
                 file_loc = trim(t_step_dir) // '/lso_q_cons_vf' // trim(file_num) // '.dat'
             end if
             inquire (FILE=trim(file_loc), EXIST=file_check)
@@ -367,11 +377,29 @@ contains
         integer(KIND=MPI_OFFSET_KIND)        :: MOK
         integer(kind=MPI_OFFSET_KIND)        :: offset
         character(LEN=path_len + 2*name_len) :: file_loc
+        character(LEN=name_len)              :: file_loc_base
         logical                              :: file_exist
         integer(kind=8)                      :: file_bytes, bytes_needed
         character(len=10)                    :: case_m_str, file_m_str
         character(len=10)                    :: t_step_string
         integer                              :: i
+
+        if (lso_filter_wrt) then
+            if (file_per_process) then
+                call s_int_to_str(t_step, t_step_string)
+                write (file_loc_base, '(I0,A1,I7.7,A)') t_step, '_', proc_rank, '.dat'
+                file_loc_base = 'lso_' // trim(file_loc_base)
+                file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc_base)
+            else
+                write (file_loc_base, '(I0,A)') t_step, '.dat'
+                file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // 'lso_' // trim(file_loc_base)
+            end if
+            inquire (FILE=trim(file_loc), EXIST=file_exist)
+            if (.not. file_exist) then
+                lso_step_found = .false.
+                return
+            end if
+        end if
 
         allocate (x_cb_glb(-1:m_glb))
         allocate (y_cb_glb(-1:n_glb))
@@ -501,10 +529,27 @@ contains
         character(len=10)                            :: t_step_string
         integer                                      :: i
 
+        if (lso_filter_wrt) then
+            if (file_per_process) then
+                call s_int_to_str(t_step, t_step_string)
+                write (file_loc_base, '(I0,A1,I7.7,A)') t_step, '_', proc_rank, '.dat'
+                file_loc_base = 'lso_' // trim(file_loc_base)
+                file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc_base)
+            else
+                write (file_loc_base, '(I0,A)') t_step, '.dat'
+                file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // 'lso_' // trim(file_loc_base)
+            end if
+            inquire (FILE=trim(file_loc), EXIST=file_exist)
+            if (.not. file_exist) then
+                lso_step_found = .false.
+                return
+            end if
+        end if
+
         if (file_per_process) then
             call s_int_to_str(t_step, t_step_string)
             write (file_loc_base, '(I0,A1,I7.7,A)') t_step, '_', proc_rank, '.dat'
-            if (lso_filter_wrt .and. t_step > t_step_start) then
+            if (lso_filter_wrt) then
                 file_loc_base = 'lso_' // trim(file_loc_base)
             end if
             file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc_base)
@@ -565,7 +610,7 @@ contains
             end if
         else
             write (file_loc_base, '(I0,A)') t_step, '.dat'
-            if (lso_filter_wrt .and. t_step > t_step_start) then
+            if (lso_filter_wrt) then
                 file_loc_base = 'lso_' // trim(file_loc_base)
             end if
             file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc_base)

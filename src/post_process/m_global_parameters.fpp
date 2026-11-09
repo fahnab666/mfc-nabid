@@ -65,6 +65,7 @@ module m_global_parameters
     integer :: lso_stat_tau_beg, lso_stat_tau_end
     integer :: lso_stat_q_beg, lso_stat_q_end
     integer :: lso_stat_rhotau_u_beg, lso_stat_rhotau_u_end
+    integer :: lso_stat_gu_beg, lso_stat_gu_end
 
     ! num_dims, num_vels: in m_global_parameters_common
     !> @name Cell-boundary locations in the x-, y- and z-coordinate directions
@@ -217,6 +218,13 @@ contains
 
         bc_io = .false.
         num_bc_patches = dflt_int
+
+        lso_R_gas = 287.0_wp
+        lso_mu = 0.0_wp
+        lso_conductivity = 0.0_wp
+        lso_mu_T_exp = 0.0_wp
+        lso_mu_T_ref = 0.0_wp
+        lso_pp_pyramid_wrt = .false.
 
         chem_params%gamma_method = 1
         chem_params%transport_model = 1

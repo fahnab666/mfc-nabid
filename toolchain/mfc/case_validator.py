@@ -2494,7 +2494,7 @@ class CaseValidator:
 
     def check_lso_filter(self, stage):
         """Reject LSO configurations that otherwise produce missing or invalid output."""
-        enabled = any(self.get(key, "F") == "T" for key in ("lso_filter", "lso_filter_wrt", "lso_stat_wrt", "lso_pp_filter", "lso_closure_wrt"))
+        enabled = any(self.get(key, "F") == "T" for key in ("lso_filter", "lso_filter_wrt", "lso_stat_wrt", "lso_pp_filter", "lso_closure_wrt", "lso_pp_pyramid_wrt"))
         if not enabled:
             return
 
@@ -2503,6 +2503,7 @@ class CaseValidator:
         stat_wrt = self.get("lso_stat_wrt", "F") == "T"
         pp_filter = self.get("lso_pp_filter", "F") == "T"
         closure_wrt = self.get("lso_closure_wrt", "F") == "T"
+        pyramid_wrt = self.get("lso_pp_pyramid_wrt", "F") == "T"
         parallel_io = self.get("parallel_io", "F") == "T"
         sigma = self.get("filter_sigma")
         factor = self.get("lso_down_sample_factor", 1) or 1
@@ -2521,7 +2522,10 @@ class CaseValidator:
                 if cells and (cells + 1) % factor != 0:
                     self.prohibit(True, f"lso_down_sample_factor must divide {direction} cells + 1")
         self.prohibit(filter_wrt and not lso_filter, "lso_filter_wrt = T requires lso_filter = T")
-        self.prohibit(stat_wrt and not filter_wrt, "lso_stat_wrt = T requires lso_filter_wrt = T")
+        self.prohibit(
+            stat_wrt and not filter_wrt and not (stage == "post_process" and pyramid_wrt),
+            "lso_stat_wrt = T requires lso_filter_wrt = T unless writing an LSO pyramid",
+        )
         self.prohibit(stat_wrt and not parallel_io, "LSO statistical output requires parallel_io = T")
         self.prohibit(stat_wrt and self.get("num_fluids") != 1, "LSO statistics currently require num_fluids = 1")
         self.prohibit(stat_wrt and self.get("particles_lagrange", "F") == "T", "LSO particle statistics support IBM markers, not particles_lagrange")
@@ -2529,6 +2533,9 @@ class CaseValidator:
         eos = self.get("fluid_pp(1)%eos", eos_names["stiffened_gas"])
         cv = self.get("fluid_pp(1)%cv")
         self.prohibit(stat_wrt and lso_R_gas <= 0, "LSO statistics require lso_R_gas > 0")
+        mu_t_exp = self.get("lso_mu_T_exp", 0.0) or 0.0
+        mu_t_ref = self.get("lso_mu_T_ref", 0.0) or 0.0
+        self.prohibit(mu_t_exp > 0.0 and mu_t_ref <= 0.0, "lso_mu_T_exp > 0 requires lso_mu_T_ref > 0")
         self.prohibit(
             stat_wrt and self.get("chemistry", "F") != "T" and eos not in (eos_names["stiffened_gas"], eos_names["ideal_gas"]) and (cv is None or cv <= 0),
             "LSO statistics with a state-dependent EOS require fluid_pp(1)%cv > 0",
@@ -2548,8 +2555,12 @@ class CaseValidator:
                 cells = self.get(key, 0) or 0
                 self.prohibit(cells > 0 and (cells + 1) // factor < 2, "Downsampled LSO post-processing needs at least two cells per active direction")
 
-        self.prohibit(pp_filter and not filter_wrt, "lso_pp_filter = T requires lso_filter_wrt = T")
+        self.prohibit(pp_filter and not filter_wrt and not pyramid_wrt, "lso_pp_filter = T requires filtered input or pyramid output")
         self.prohibit(pp_filter and self.get("ib", "F") == "T" and not parallel_io, "IBM LSO post-process filtering requires parallel_io = T")
+        if pyramid_wrt:
+            self.prohibit(not pp_filter or filter_wrt, "lso_pp_pyramid_wrt needs lso_pp_filter = T on the original data")
+            self.prohibit(factor < 2, "lso_pp_pyramid_wrt needs lso_down_sample_factor >= 2")
+            self.prohibit(not parallel_io or self.get("file_per_process", "F") == "T", "lso_pp_pyramid_wrt needs shared parallel_io files")
         self.prohibit(closure_wrt and not stat_wrt, "lso_closure_wrt = T requires lso_stat_wrt = T")
         if closure_wrt:
             self.prohibit(self.get("num_fluids") != 1, "LSO closures currently require num_fluids = 1")

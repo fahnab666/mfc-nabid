@@ -7,6 +7,8 @@ program p_main
 
     use m_global_parameters
     use m_start_up
+    use m_data_input, only: lso_step_found, q_cons_vf
+    use m_lso_pp_filter, only: s_write_lso_pp_pyramid_files
 
     implicit none
 
@@ -40,7 +42,27 @@ program p_main
 
         call s_perform_time_step(t_step)
 
-        call s_save_data(t_step, varname, pres, c)
+        if (lso_filter_wrt .and. .not. lso_step_found) then
+            if (proc_rank == 0) print '(A,I0,A)', 'Warning: skipping step ', t_step, ' because its LSO filtered data is missing.'
+            if (cfl_dt) then
+                if (t_step == n_save - 1) exit
+                t_step = t_step + 1
+            else
+                if ((t_step_stop - t_step) < t_step_save .and. t_step_stop /= t_step) then
+                    t_step = t_step_stop - t_step_save
+                else if (t_step == t_step_stop) then
+                    exit
+                end if
+                t_step = t_step + t_step_save
+            end if
+            cycle
+        end if
+
+        if (lso_pp_pyramid_wrt) then
+            call s_write_lso_pp_pyramid_files(q_cons_vf, t_step)
+        else
+            call s_save_data(t_step, varname, pres, c)
+        end if
 
         call cpu_time(finish)
 

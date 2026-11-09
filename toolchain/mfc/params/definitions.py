@@ -757,6 +757,9 @@ def _load():
     _r("lso_stat_wrt", LOG, {"filter"})
     _r("lso_R_gas", REAL, {"filter"})
     _r("lso_mu", REAL, {"filter"})
+    _r("lso_conductivity", REAL, {"filter"})
+    _r("lso_mu_T_exp", REAL, {"filter"})
+    _r("lso_mu_T_ref", REAL, {"filter"})
     for n in ["lso_n_passes_x", "lso_n_passes_y", "lso_n_passes_z"]:
         _r(n, INT, {"filter"})
     for n in ["lso_a_x", "lso_a_y", "lso_a_z"]:
@@ -767,6 +770,7 @@ def _load():
         _r(f"{n}(1)", REAL, {"filter"})
     _r("lso_pp_filter", LOG, {"filter"})
     _r("lso_closure_wrt", LOG, {"filter"})
+    _r("lso_pp_pyramid_wrt", LOG, {"filter"})
     for n in ["lso_pp_n_passes_x", "lso_pp_n_passes_y", "lso_pp_n_passes_z"]:
         _r(n, INT, {"filter"})
     for n in ["lso_pp_a_x", "lso_pp_a_y", "lso_pp_a_z"]:
@@ -1516,6 +1520,9 @@ _nv(
     "lso_stat_wrt",
     "lso_R_gas",
     "lso_mu",
+    "lso_conductivity",
+    "lso_mu_T_exp",
+    "lso_mu_T_ref",
     "lso_pp_filter",
     "lso_closure_wrt",
     "lso_n_passes_x",
@@ -1552,8 +1559,12 @@ _decl(
     "lso_stat_wrt",
     "lso_R_gas",
     "lso_mu",
+    "lso_conductivity",
+    "lso_mu_T_exp",
+    "lso_mu_T_ref",
     "lso_pp_filter",
     "lso_closure_wrt",
+    "lso_pp_pyramid_wrt",
     "lso_n_passes_x",
     "lso_n_passes_y",
     "lso_n_passes_z",
