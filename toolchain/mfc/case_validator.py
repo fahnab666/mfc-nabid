@@ -2523,7 +2523,7 @@ class CaseValidator:
                     self.prohibit(True, f"lso_down_sample_factor must divide {direction} cells + 1")
         self.prohibit(filter_wrt and not lso_filter, "lso_filter_wrt = T requires lso_filter = T")
         self.prohibit(
-            stat_wrt and not filter_wrt and not (stage == "post_process" and pyramid_wrt),
+            stat_wrt and not filter_wrt and not pyramid_wrt,
             "lso_stat_wrt = T requires lso_filter_wrt = T unless writing an LSO pyramid",
         )
         self.prohibit(stat_wrt and not parallel_io, "LSO statistical output requires parallel_io = T")
