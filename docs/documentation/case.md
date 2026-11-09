@@ -1341,8 +1341,9 @@ step keeps the existing mixture EOS and sound-speed choice. This option is a
 relaxation model, not an always-on equilibrium EOS at reconstructed cell faces.
 
 Both phases require positive `cv`. JWL requires nonnegative `jwl_b` and
-`jwl_t0`, and the ambient stiffness must be nonnegative. The JWL reference
-temperature follows the exact isentrope in this mode; other modes keep their
+`jwl_t0`, and the ambient stiffness must be nonnegative. Temperature output
+(`T_wrt = T`) also requires positive `jwl_t0`. In this mode the JWL reference
+temperature follows the exact isentrope; other modes keep their
 existing temperature evaluation. The scalar solver uses precision-dependent
 residual bounds, rather than the stiffened-gas `palpha_eps` iteration tolerance.
 It reports failure when a positive, hyperbolic equilibrium cannot be resolved.

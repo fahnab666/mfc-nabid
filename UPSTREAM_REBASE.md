@@ -49,6 +49,9 @@ CPU validation with GNU Fortran 15:
   cases and the two JWL mixture cases pass. The pre-existing moving JWL circle,
   `B43894C4`, still fails with the same candidate values and `9.75e-4` maximum
   absolute discrepancy as before this integration.
+- The new example reference `F919050E` is generated from clean source commit
+  `c3ab7fbe`. Its canonical golden comparison and two existing native regressions
+  pass together. No existing golden files are regenerated or changed.
 
 Logs use `build/validation/fast-pt-20261108/`. GPU execution and chemistry are not
 tested locally. The previous branch tip is retained on
