@@ -1831,6 +1831,7 @@ _nv(
 )
 _nv(
     _POST,
+    "lso_pp_pyramid_wrt",
     "x_output",
     "y_output",
     "z_output",
