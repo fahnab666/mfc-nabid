@@ -471,7 +471,7 @@ contains
         integer, intent(in)   :: i
         real(wp), intent(out) :: T_ref
 
-        if (relax .and. relax_model == 5 .and. eoss(i) == eos_jwl) then
+        if (relax .and. (relax_model == 5 .or. relax_model == 7) .and. eoss(i) == eos_jwl) then
             T_ref = T0*(rho/eos_coeffs(i)%rho0)**eos_coeffs(i)%gruneisen0
         else
             call s_rk4(ode_reference_temperature, i, 1._wp/eos_coeffs(i)%rho0, T0, 1._wp/rho, T_ref)
