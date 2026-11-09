@@ -34,10 +34,12 @@ CPU validation with GNU Fortran 15:
 
 - All seven precheck gates pass. Seven native EOS routines and four native PT/PTg
   routines are byte-identical to the pre-integration tip `31a7808f`.
-- The scalar and input-validation checks pass 28 tests, with one precision-specific
+- The scalar, input-validation and case-inheritance checks pass 30 tests, with one precision-specific
   check skipped in the double-precision variant. They include 640 manufactured
   equilibria, both precisions, endpoint continuity, pressure-unit scaling, formation
   energy, poor starting volumes and explicit rejection of invalid states.
+  The regression harness drops only inherited inactive EOS defaults; explicit
+  invalid inputs remain visible to the validator.
 - Three nonuniform full-stage checks pass: one rank, two ranks with reversed fluid
   order, and two ranks in single precision. They verify evolving flow, mass and
   total-energy conservation, equal constituent temperatures, and Silo output.

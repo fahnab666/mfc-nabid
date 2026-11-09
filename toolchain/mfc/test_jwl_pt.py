@@ -10,6 +10,7 @@ import pytest
 
 from .case_validator import CaseValidator
 from .params.definitions import CONSTRAINTS
+from .test.case import TestCase as RegressionCase
 
 ROOT = Path(__file__).resolve().parents[2]
 # Synthetic coefficients, with no calibrated material data.
@@ -199,3 +200,18 @@ def test_validator_accepts_jwl_pt():
     validator = CaseValidator(pt_case())
     validator.check_eos_selector()
     assert validator.errors == []
+
+
+def test_regression_case_does_not_inherit_an_inactive_gamma():
+    params = RegressionCase("JWL PT fixture", pt_case()).params
+    validator = CaseValidator(params)
+    validator.check_eos_selector()
+    assert validator.errors == []
+    assert "fluid_pp(1)%gamma" not in params
+
+
+def test_regression_case_keeps_explicit_invalid_eos_inputs():
+    params = RegressionCase("JWL PT fixture", pt_case() | {"fluid_pp(1)%gamma": 2.5}).params
+    validator = CaseValidator(params)
+    validator.check_eos_selector()
+    assert any("gamma is not read" in error for error in validator.errors)
