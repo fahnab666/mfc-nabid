@@ -43,6 +43,23 @@ def _filter_tf(coeffs: np.ndarray, xi: np.ndarray) -> np.ndarray:
     return a0 + 2.0 * a1 * np.cos(xi) + 2.0 * a2 * np.cos(2.0 * xi) + 2.0 * a3 * np.cos(3.0 * xi) + 2.0 * a4 * np.cos(4.0 * xi)
 
 
+def order_periodic_passes(coeffs: List[Tuple[float, ...]]) -> List[Tuple[float, ...]]:
+    """Reduce sampled intermediate gain without changing the periodic convolution product."""
+    if len(coeffs) < 2:
+        return coeffs
+    xi = np.linspace(0.0, np.pi, _N_XI)
+    responses = [_filter_tf(np.asarray(c), xi) for c in coeffs]
+    remaining = list(range(len(coeffs)))
+    ordered = []
+    cumulative = np.ones_like(xi)
+    while remaining:
+        chosen = min(remaining, key=lambda i: np.max(np.abs(cumulative * responses[i])))
+        cumulative *= responses[chosen]
+        ordered.append(coeffs[chosen])
+        remaining.remove(chosen)
+    return ordered
+
+
 def _taylor_init(sigma_per_pass: float) -> np.ndarray:
     """
     Compute Taylor-matched initial coefficients for a single pass.

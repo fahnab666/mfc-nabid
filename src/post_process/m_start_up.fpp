@@ -171,17 +171,30 @@ contains
         call s_read_data_files(t_step)
         if (lso_filter_wrt .and. .not. lso_step_found) return
 
-        if (t_step > t_step_start .and. lso_stat_wrt .and. n_lso_stat > 0 .and. (lso_filter_wrt .or. .not. lso_pp_filter)) then
+        if (buff_size > 0) then
+            if (n == 0) then
+                call s_populate_grid_variables_buffers(x_cb, x_cc, dx, offset_x, offset_y, offset_z)
+            else if (p == 0) then
+                call s_populate_grid_variables_buffers(x_cb, x_cc, dx, offset_x, offset_y, offset_z, y_cb, y_cc, dy)
+            else
+                call s_populate_grid_variables_buffers(x_cb, x_cc, dx, offset_x, offset_y, offset_z, y_cb, y_cc, dy, z_cb, z_cc, dz)
+            end if
+        end if
+
+        if (lso_stat_wrt .and. n_lso_stat > 0 .and. (lso_filter_wrt .or. .not. lso_pp_filter)) then
             call s_read_lso_fields(q_lso_pp_stat_vf, n_lso_stat, t_step, 'lso_stat_')
         end if
-        if (t_step > t_step_start .and. ib .and. lso_filter_wrt .and. (lso_pp_filter .or. lso_closure_wrt)) then
+        if (ib .and. lso_filter_wrt .and. (lso_pp_filter .or. lso_closure_wrt)) then
             call s_read_lso_fields(q_lso_pp_w_vf, 1, t_step, 'lso_mask_')
-        else if (t_step > t_step_start .and. ib .and. lso_pp_filter .and. .not. lso_filter_wrt) then
+        else if (ib .and. lso_pp_filter .and. .not. lso_filter_wrt) then
             call s_lso_pp_mask_from_ib(q_lso_pp_w_vf)
         end if
 
-        if (t_step > t_step_start .and. lso_pp_filter) then
+        if (lso_pp_filter) then
             if (lso_stat_wrt .and. .not. lso_filter_wrt) then
+                ! Raw-product derivatives need the original state's physical and MPI halos.
+                if (chemistry) call s_compute_q_T_sf(q_T_sf, q_cons_vf, idwint)
+                call s_populate_variables_buffers(bc_type, q_cons_vf, q_T_sf=q_T_sf)
                 if (ib) then
                     call s_compute_lso_pp_stat_fields(q_cons_vf, q_lso_pp_w_vf)
                 else
@@ -207,13 +220,6 @@ contains
         if (chemistry) call s_compute_q_T_sf(q_T_sf, q_cons_vf, idwint)
 
         if (buff_size > 0) then
-            if (n == 0) then
-                call s_populate_grid_variables_buffers(x_cb, x_cc, dx, offset_x, offset_y, offset_z)
-            else if (p == 0) then
-                call s_populate_grid_variables_buffers(x_cb, x_cc, dx, offset_x, offset_y, offset_z, y_cb, y_cc, dy)
-            else
-                call s_populate_grid_variables_buffers(x_cb, x_cc, dx, offset_x, offset_y, offset_z, y_cb, y_cc, dy, z_cb, z_cc, dz)
-            end if
             call s_populate_variables_buffers(bc_type, q_cons_vf, q_T_sf=q_T_sf)
         end if
 
@@ -267,6 +273,7 @@ contains
         end do
         deallocate (field_io_buf)
         call MPI_FILE_CLOSE(ifile, ierr)
+        call s_refresh_lso_pp_fields(q_vf)
 #else
         call s_mpi_abort('LSO statistical output requires an MPI build.')
 #endif
@@ -348,7 +355,7 @@ contains
 
         call s_write_grid_to_formatted_database_file(t_step)
 
-        if (t_step > t_step_start .and. lso_stat_wrt .and. n_lso_stat > 0) then
+        if (lso_stat_wrt .and. n_lso_stat > 0) then
             do i = 1, n_lso_stat
                 out%q_sf = q_lso_pp_stat_vf(i)%sf(x_beg:x_end,y_beg:y_end,z_beg:z_end)
                 write (varname, '(A,I3.3)') 'lso_stat_', i
@@ -369,7 +376,7 @@ contains
             end if
         end if
 
-        if (t_step > t_step_start .and. lso_closure_wrt .and. lso_stat_wrt .and. n_lso_stat > 0) then
+        if (lso_closure_wrt .and. lso_stat_wrt .and. n_lso_stat > 0) then
             lso_n_cls = f_lso_n_closure()
             allocate (q_lso_cls_vf(1:lso_n_cls))
             do i = 1, lso_n_cls

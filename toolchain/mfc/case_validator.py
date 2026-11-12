@@ -263,7 +263,8 @@ PHYSICS_DOCS = {
         "title": "LSO Filtering",
         "category": "Numerical Schemes",
         "explanation": (
-            "LSO statistical products require one fluid and are written by simulation MPI I/O and consumed by post-process. "
+            "LSO statistical products require one fluid and either simulation MPI output or post-process filtering of original data. "
+            "Original-data IBM statistics require stationary bodies; moving-body products need the in-situ solid velocity. "
             "State-dependent EOS statistics require positive cv and reference temperature. "
             "Particle products support IBM markers, not particles_lagrange. "
             "Closure reconstruction currently supports one calorically perfect ideal or stiffened gas."
@@ -2523,8 +2524,8 @@ class CaseValidator:
                     self.prohibit(True, f"lso_down_sample_factor must divide {direction} cells + 1")
         self.prohibit(filter_wrt and not lso_filter, "lso_filter_wrt = T requires lso_filter = T")
         self.prohibit(
-            stat_wrt and not filter_wrt and not pyramid_wrt,
-            "lso_stat_wrt = T requires lso_filter_wrt = T unless writing an LSO pyramid",
+            stat_wrt and not filter_wrt and not pyramid_wrt and not (stage == "post_process" and pp_filter),
+            "lso_stat_wrt = T requires filtered output or post-process filtering of original data",
         )
         self.prohibit(stat_wrt and not parallel_io, "LSO statistical output requires parallel_io = T")
         self.prohibit(stat_wrt and self.get("num_fluids") != 1, "LSO statistics currently require num_fluids = 1")
@@ -2544,6 +2545,10 @@ class CaseValidator:
         if stage != "post_process":
             return
 
+        if pp_filter and not filter_wrt and stat_wrt and self.get("ib", "F") == "T":
+            moving = any(value for key, value in self.params.items() if re.fullmatch(r"patch_ib\(\d+\)%(moving_ibm|kin_model|vel\(\d+\)|angular_vel\(\d+\))|particle_cloud\(\d+\)%moving_ibm", key))
+            self.prohibit(bool(moving), "Original-data IBM statistics require stationary bodies; use in-situ statistics to retain particle velocities")
+
         if filter_wrt and factor > 1:
             self.prohibit(not parallel_io or self.get("file_per_process", "F") == "T", "Downsampled LSO post-processing requires shared parallel_io files")
             self.prohibit(self.get("down_sample", "F") == "T", "LSO downsampling cannot be combined with legacy down_sample")
@@ -2555,7 +2560,6 @@ class CaseValidator:
                 cells = self.get(key, 0) or 0
                 self.prohibit(cells > 0 and (cells + 1) // factor < 2, "Downsampled LSO post-processing needs at least two cells per active direction")
 
-        self.prohibit(pp_filter and not filter_wrt and not pyramid_wrt, "lso_pp_filter = T requires filtered input or pyramid output")
         self.prohibit(pp_filter and self.get("ib", "F") == "T" and not parallel_io, "IBM LSO post-process filtering requires parallel_io = T")
         if pyramid_wrt:
             self.prohibit(not pp_filter or filter_wrt, "lso_pp_pyramid_wrt needs lso_pp_filter = T on the original data")

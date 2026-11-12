@@ -77,7 +77,7 @@ contains
     end subroutine s_read_grid_data_direction
 
 #ifdef MFC_MPI
-    !> Sparse fine-grid samples at coarse-cell centres; shared by initial fields and categorical IB markers.
+    !> Sparse fine-grid samples at coarse-cell centres for categorical IB markers.
     impure subroutine s_lso_fine_view(element_type, corner, disp, view)
 
         integer, intent(in)                          :: element_type, corner(3)
@@ -106,47 +106,6 @@ contains
         call MPI_TYPE_FREE(y_view, ierr)
 
     end subroutine s_lso_fine_view
-
-    !> The initial snapshot is unfiltered and full resolution; interpolate without allocating a fine-grid field.
-    impure subroutine s_read_lso_initial_fields(ifile)
-
-        integer, intent(in)           :: ifile
-        integer                       :: i, j, k, l, upper(3), element_type, view, ierr, count
-        integer                       :: status(MPI_STATUS_SIZE)
-        integer(kind=MPI_OFFSET_KIND) :: disp, field_bytes
-        real(stp), allocatable        :: samples(:,:,:)
-        real(wp), allocatable         :: interpolated(:,:,:)
-
-        upper = 0
-        if (mod(lso_down_sample_factor, 2) == 0) upper(1:num_dims) = 1
-        field_bytes = int(m_glb + 1, MPI_OFFSET_KIND)*int(n_glb + 1, MPI_OFFSET_KIND)*int(p_glb + 1, &
-                          & MPI_OFFSET_KIND)*int(lso_down_sample_factor, MPI_OFFSET_KIND)**num_dims*int(storage_size(0._stp)/8, &
-                          & MPI_OFFSET_KIND)
-        allocate (samples(0:m,0:n,0:p), interpolated(0:m,0:n,0:p))
-        call MPI_TYPE_CONTIGUOUS(mpi_io_type, mpi_io_p, element_type, ierr)
-        call MPI_TYPE_COMMIT(element_type, ierr)
-        do i = 1, sys_size
-            interpolated = 0._wp
-            do l = 0, upper(3)
-                do k = 0, upper(2)
-                    do j = 0, upper(1)
-                        disp = field_bytes*int(i - 1, MPI_OFFSET_KIND)
-                        call s_lso_fine_view(element_type, [j, k, l], disp, view)
-                        call MPI_FILE_SET_VIEW(ifile, disp, mpi_io_p, view, 'native', mpi_info_int, ierr)
-                        call MPI_FILE_READ_ALL(ifile, samples, size(samples)*mpi_io_type, mpi_io_p, status, ierr)
-                        call MPI_GET_COUNT(status, mpi_io_p, count, ierr)
-                        if (count /= size(samples)*mpi_io_type) call s_mpi_abort('Incomplete LSO initial field.')
-                        interpolated = interpolated + real(samples, wp)/real(product(upper + 1), wp)
-                        call MPI_TYPE_FREE(view, ierr)
-                    end do
-                end do
-            end do
-            q_cons_vf(i)%sf(0:m,0:n,0:p) = real(interpolated, stp)
-        end do
-        call MPI_TYPE_FREE(element_type, ierr)
-        deallocate (samples, interpolated)
-
-    end subroutine s_read_lso_initial_fields
 
     !> Helper subroutine to setup MPI data I/O parameters
     impure subroutine s_setup_mpi_io_params(data_size, m_MOK, n_MOK, p_MOK, WP_MOK, MOK, str_MOK, NVARS_MOK)
@@ -622,18 +581,14 @@ contains
 
                 call s_setup_mpi_io_params(data_size, m_MOK, n_MOK, p_MOK, WP_MOK, MOK, str_MOK, NVARS_MOK)
 
-                if (lso_filter_wrt .and. lso_down_sample_factor > 1 .and. t_step == t_step_start) then
-                    call s_read_lso_initial_fields(ifile)
-                else
-                    do i = 1, sys_size
-                        var_MOK = int(i, MPI_OFFSET_KIND)
+                do i = 1, sys_size
+                    var_MOK = int(i, MPI_OFFSET_KIND)
 
-                        disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1)
+                    disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1)
 
-                        call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, MPI_IO_DATA%view(i), 'native', mpi_info_int, ierr)
-                        call MPI_FILE_READ_ALL(ifile, MPI_IO_DATA%var(i)%sf(:,:,:), data_size*mpi_io_type, mpi_io_p, status, ierr)
-                    end do
-                end if
+                    call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, MPI_IO_DATA%view(i), 'native', mpi_info_int, ierr)
+                    call MPI_FILE_READ_ALL(ifile, MPI_IO_DATA%var(i)%sf(:,:,:), data_size*mpi_io_type, mpi_io_p, status, ierr)
+                end do
 
                 call s_mpi_barrier()
                 call MPI_FILE_CLOSE(ifile, ierr)
