@@ -478,9 +478,8 @@ contains
                                 & G_K, Gs, gp, norm, buf, radial_vector, j, k, l, q, qv_K, c_IP, nbub, patch_id, Ys_IP, &
                                 & W_species, T_IP, mw_IP, e_IP, Ys_g, Ys_s, T_s, T_g, mw_s, mw_g, rho_s, rho_g, mdot_s, v_stefan, &
                                 & d, surface_converged, vel_sum_g, E_ghost, alpha_q, alpha_rho_q, e_q, rho_IP_q, rho_GP_q, &
-                                & mdot_k, h_w, e_s, nrm_l, &
-                                & wf]', reduction='[[n_not_converged, n_ill_posed, nf1, nf2, nf3]]', reductionOp='[+]', &
-                                & present='[ghost_points]', firstprivate='[Re_size_loc1, Re_size_loc2]')
+                                & mdot_k, h_w, e_s, nrm_l, wf]', reduction='[[n_not_converged, n_ill_posed, nf1, nf2, nf3]]', &
+                                & reductionOp='[+]', present='[ghost_points]', firstprivate='[Re_size_loc1, Re_size_loc2]')
             do i = 1, num_gps
                 if (record_surface) then
                     $:GPU_LOOP(parallelism='[seq]')

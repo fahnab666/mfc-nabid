@@ -222,9 +222,19 @@ class Case:
 
     def __get_lso_pp_lines(self) -> str:
         """Compute the post-process pass from input and target Gaussian widths."""
-        from .lso_filter import PP_SPLIT_CELLS, PP_STAGE_MAX_CELLS, compute_lso_params, lso_namelist_lines
+        from .lso_filter import PP_SPLIT_CELLS, PP_STAGE_MAX_CELLS, compute_lso_params, lso_namelist_lines, order_periodic_passes
 
         p = self.params
+
+        def designed(sigma):
+            params = compute_lso_params(d_p, dx, dy, dz, sigma)
+            for axis in "xyz":
+                # Constant-extrapolation boundary operators do not generally commute.
+                if p.get(f"bc_{axis}%beg") == -1 and p.get(f"bc_{axis}%end") == -1:
+                    key = f"lso_a_{axis}"
+                    params[key] = order_periodic_passes(params[key])
+            return params
+
         lso_filter_wrt = str(p.get("lso_filter_wrt", "F")).upper() == "T"
         factor = int(p.get("lso_down_sample_factor", 1))
         d_p, dx, dy, dz = self.__get_grid_spacing(down_sample_factor=factor if lso_filter_wrt and factor > 1 else 1)
@@ -254,10 +264,10 @@ class Case:
                 f"sigma_target={sigma_target:.4g}, sigma2={sigma2:.4g} as two cascades of "
                 f"{sigma_stage:.4g} ({sigma_stage / d_min:.1f} cells each), computing weights..."
             )
-            stage = compute_lso_params(d_p, dx, dy, dz, sigma_stage)
+            stage = designed(sigma_stage)
             return lso_namelist_lines(stage, prefix="lso_pp") + lso_namelist_lines(stage, prefix="lso_pp2")
         self.__warn_lso_width(sigma2, dx, dy, dz)
-        return lso_namelist_lines(compute_lso_params(d_p, dx, dy, dz, sigma2), prefix="lso_pp")
+        return lso_namelist_lines(designed(sigma2), prefix="lso_pp")
 
     def __get_ndims(self) -> int:
         return 1 + min(int(self.params.get("n", 0)), 1) + min(int(self.params.get("p", 0)), 1)

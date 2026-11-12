@@ -5,6 +5,56 @@ as origin. Keep upstream changes in the branch's ancestry and feature changes
 in commits above that base. Rebase onto `upstream/master` rather than merging
 master repeatedly. Upstream master itself does not receive these fork features.
 
+## November 12, 2026 master and LSO update
+
+The branch is rebased onto upstream master
+`9649d501ed15962e4b1e549680a276f51ed0a418`. The previous remote tip,
+`04e4b546805d1b9d2fbd9b165e82a9c468f55117`, is retained locally as
+`backup/el-jwl-iso-before-upbase-20261112`.
+
+All 17 feature commits were replayed. The IBM conflict retains upstream's new
+wall-flux locals, reductions and host-captured Reynolds counts together with the
+JWL density-reconstruction locals. Time stepping retains both upstream's species
+cleanup and the fork's burn paths. The parameter and documentation conflicts keep
+the new IB heat output alongside visualization and LSO inputs.
+
+Immediately after the rebase, all 62 feature-only files matched the previous
+remote tip, and all 101 upstream-only files matched master. The subsequent LSO
+corrections implement the original-data workflow described in
+`docs/documentation/lso-filter-testing.md`. They restore per-cell 2D/3D transport
+coefficients, recover temperature from the saved EOS state, refresh raw and
+statistical halos, and handle initial pyramid snapshots as filtered coarse data.
+Periodic post-process passes are reordered to reduce intermediate amplification
+without changing their convolution product. Original-data IBM statistics reject
+moving bodies because those files do not supply the solid-velocity product.
+
+Validation with GNU Fortran 15.2, double precision and CPU MPI on macOS:
+
+- All seven precheck gates passed. All required pre-process, simulation and
+  post-process variants built, including the hydrogen and reacting-wall chemistry
+  mechanisms.
+- All 202 selected validator and filter-conditioning unit tests passed.
+- All 29 executable LSO checks passed, including the 3D bounds-checked reader,
+  EL gas-volume output, 2D/3D original-data mask products, variable transport,
+  mixture-velocity stress, a wide split cascade and the two-run pyramid. An
+  additional pyramid check verified the initial snapshot's particle and gas
+  fractions against the independent convolution.
+- The complete release suite without examples passed 695 of 696 cases across
+  all three targets, including chemistry, in 23m 36.9s. The sole failure is the
+  existing moving JWL circle, `B43894C4`. Its reported candidate values and the
+  maximum absolute discrepancy, `9.75e-4`, match the November 8 run exactly.
+- Fresh two-rank EL/LSO runs completed all three stages. Primary and filtered
+  fields are finite, the fixed-particle gas-volume field is preserved, and Silo
+  output is present. Fresh three-rank visualization produced four frames over
+  30 cells with bit-identical float32 restart-derived primitives.
+- The common EOS and simulation LSO source files match the previous feature tip
+  byte for byte, preserving the JWL temperature and stretched-x implementations.
+  The shared EL particle sources match master. No golden files were regenerated.
+
+Build and full-suite artifacts use the `build/validation/upbase-20261112-`
+prefix. LSO audit, unit, executable and final precheck logs use
+`build/validation/lso-bc-20261112-`. GPU execution was not tested locally.
+
 ## Fast PT integration after the November 8 rebase
 
 The scalar PT method reviewed on `origin/jwl-uf-students` (restored by `40c4f051`)

@@ -242,6 +242,7 @@ class TestLsoFilterConstraints(unittest.TestCase):
     def test_stat_output_requires_filtered_mpi_output(self):
         params = {**self.BASE, "lso_filter_wrt": "F"}
         self.assertTrue(any("lso_stat_wrt" in error for error in self.errors(params, "simulation")))
+
         params = {**self.BASE, "parallel_io": "F"}
         self.assertTrue(any("parallel_io" in error for error in self.errors(params, "simulation")))
         params = {**self.BASE, "lso_R_gas": 0.0}
@@ -261,6 +262,17 @@ class TestLsoFilterConstraints(unittest.TestCase):
 
     def test_supported_closure_is_accepted(self):
         self.assertEqual(self.errors({**self.BASE, "lso_closure_wrt": "T"}, "post_process"), [])
+
+    def test_original_lso_post_filter_is_accepted(self):
+        params = {**self.BASE, "lso_filter": "F", "lso_filter_wrt": "F", "lso_pp_filter": "T", "ib": "T", "lso_closure_wrt": "T"}
+        self.assertEqual(self.errors(params, "post_process"), [])
+        self.assertTrue(any("lso_stat_wrt" in error for error in self.errors(params, "simulation")))
+
+    def test_original_lso_statistics_require_saved_solid_velocity_for_moving_bodies(self):
+        params = {**self.BASE, "lso_filter_wrt": "F", "lso_pp_filter": "T", "ib": "T"}
+        for motion in ({"patch_ib(1)%moving_ibm": 2}, {"patch_ib(1)%vel(1)": 0.1}, {"patch_ib(1)%angular_vel(3)": 1.0}, {"particle_cloud(1)%moving_ibm": 1}):
+            self.assertTrue(any("stationary bodies" in e for e in self.errors({**params, **motion}, "post_process")))
+            self.assertEqual(self.errors({**params, **motion, "lso_filter_wrt": "T"}, "post_process"), [])
 
     def test_statistics_reject_unsupported_el_particle_products(self):
         params = {**self.BASE, "particles_lagrange": "T"}
