@@ -9,10 +9,10 @@ correctness test. Production use requires the numerical, MPI, GPU, and physics c
 ## Supported scope
 
 The simulation forms each nonlinear statistical product from the unfiltered state and then
-filters the product. Post-process reads those simulation products. An optional post-process
-pass can widen the filter by filtering the products and the gas mask again.
+filters the product. Post-process can read those products, form them from original data,
+or widen an existing filter by filtering the products and gas mask again.
 
-The 11 product blocks currently require one fluid. They use `lso_R_gas` for ideal and stiffened gases and the common EOS
+The 12 product blocks (12/23/36 scalar components in 1D/2D/3D) currently require one fluid. They use `lso_R_gas` for ideal and stiffened gases and the common EOS
 temperature interface for state-dependent families. Closure reconstruction is currently
 limited to one calorically perfect ideal or stiffened gas. Chemistry, state-dependent
 EOS closures, and stretched y or z grids remain outside the closure acceptance scope. A stretched x grid
@@ -25,6 +25,69 @@ filter still requires per-rank divisibility. Reduced-grid post-processing requir
 and a valid MPI decomposition of the coarse grid. It rejects legacy `down_sample=T`
 and spatial boundary-condition files. Other layouts remain outside this reader's scope.
 The simulation's coarse-cell-center interpolation is unchanged.
+
+## Original-data post-filtering and BC integration, 2026-11-12
+
+The reference is [BC Kim's cleanup/lso-polish branch](https://github.com/BCKim55/MFC_BCKim/tree/213fa4145190370e3f528fbf75b79df37904ad9e),
+which contains all seven recommended commits.
+The mask builder, raw-product path, gas-velocity block, transport power law,
+two-cascade filter and pyramid were already ported into this fork. This audit
+removes the validator restriction that prevented direct original-data processing
+and fixes its temperature, transport and MPI-halo handling.
+
+For the binary gas indicator `g`, the filtered gas fraction is `alpha_g = F[g]`
+and the particle fraction is `phi_p = F[1-g]`. Conserved output uses the normalized
+convolution `F[g q]/max(F[g], 1e-3)`. Nonlinear products use the original state,
+then the same filter, for example `F[g rho u_i u_j]`. Forming those products after
+filtering would erase the correlations needed by the closures. The denominator
+floor limits the normalized interpretation in regions with very little filtered gas.
+
+The residual viscous stress uses `u_m = F[g u] + F[phi_p u_p]`, rather than Favre
+velocity. The `g*u` block supplies the gas contribution. Direct original-data
+statistics support stationary immersed bodies; use saved in-situ statistics for
+moving bodies so the solid-velocity contribution is retained. Temperature is
+recovered from the saved EOS state before applying `mu(T)` and the corresponding
+conductivity. This retains stiffening and formation-energy offsets and the JWL
+phase-temperature interface. The stretched-x in-situ filter and EL gas-volume
+output retain their implementations.
+
+Run post-process on an existing stationary IBM case with these overrides:
+
+```python
+"lso_filter_wrt": "F",
+"lso_pp_filter": "T",
+"lso_stat_wrt": "T",
+"lso_closure_wrt": "T",
+"parallel_io": "T",
+"lso_down_sample_factor": 1,
+"filter_sigma": sigma,
+"lso_filter_sigma_target": sigma,
+```
+
+Use `./mfc.sh run case.py -t post_process`. Original snapshots, including the
+initial state, use masks built from their IB markers and need no saved `lso_mask`
+files. Filtered-input runs require the corresponding filtered mask and skip
+missing filtered snapshots. Pyramid output includes a filtered initial snapshot
+on the coarse grid; it is read as coarse data in the second run.
+
+Periodic post-process passes are ordered to reduce intermediate spectral
+amplification. Their convolution product is unchanged. The 32-cell-width test
+exposed an intermediate gain above `1e11` with the original order; the ordered
+19-pass stage stays below `1.01` on the 4097-point test grid. Nonperiodic pass
+order is preserved because extrapolated-boundary operators need not commute.
+
+The executable regression `test_original_ib_post_filter_matches_masked_products`
+starts without any in-situ LSO files, inserts a manufactured variable-density,
+variable-temperature state, and gives solid cells deliberately different momenta.
+It independently convolves every statistical product and conserved field with
+NumPy, and checks `R_sg`, `Q_T`, `E_ku`, `R_mu_sg` and Favre temperature in Silo,
+including MPI interface cells. Cases cover 2D/3D, one/two ranks, constant/power-law
+transport, a 32-cell-wide split cascade and a filter-decimate-widen pyramid.
+This is CPU verification of these cases, not a GPU or general moving-body proof.
+
+```shell
+MFC_TEST_LSO_OUTPUT=1 PYTEST_ADDOPTS='-k test_lso_closure_output' ./mfc.sh lint
+```
 
 ## Audit against upstream, 2026-09-20
 

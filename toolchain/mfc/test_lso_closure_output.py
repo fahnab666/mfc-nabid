@@ -13,6 +13,213 @@ import pytest
 
 
 @pytest.mark.skipif(os.environ.get("MFC_TEST_LSO_OUTPUT") != "1", reason="requires prebuilt MFC executables")
+@pytest.mark.parametrize("ndim,ranks,exponent,target,pyramid", [(2, 1, 0.0, 0.06, False), (2, 2, 0.7, 0.06, False), (3, 2, 0.7, 0.06, False), (2, 2, 0.7, 1.0, False), (2, 2, 0.7, 0.12, True)])
+def test_original_ib_post_filter_matches_masked_products(tmp_path, ndim, ranks, exponent, target, pyramid):
+    from .viz.silo_reader import read_silo_file
+
+    root = Path(__file__).resolve().parents[2]
+    cells = 64 if pyramid else 32
+    case = {
+        "m": cells - 1,
+        "n": cells - 1,
+        "p": cells - 1 if ndim == 3 else 0,
+        "model_eqns": "5eq",
+        "num_fluids": 1,
+        "num_patches": 1,
+        "dt": 1e-8,
+        "t_step_start": 0,
+        "t_step_stop": 1,
+        "t_step_save": 1,
+        "time_stepper": "rk3",
+        "weno_order": 3,
+        "weno_eps": 1e-16,
+        "mapped_weno": "T",
+        "riemann_solver": "hllc",
+        "wave_speeds": "direct",
+        "avg_state": "arithmetic",
+        "parallel_io": "T",
+        "format": "silo",
+        "precision": "double",
+        "cons_vars_wrt": "T",
+        "fluid_pp(1)%eos": "stiffened_gas",
+        "fluid_pp(1)%gamma": 2.5,
+        "fluid_pp(1)%pi_inf": 1.4,
+        "fluid_pp(1)%qv": 0.3,
+        "fluid_pp(1)%cv": 2.5,
+        "patch_icpp(1)%geometry": 9 if ndim == 3 else 3,
+        "patch_icpp(1)%pres": 1.0,
+        "patch_icpp(1)%alpha_rho(1)": 1.0,
+        "patch_icpp(1)%alpha(1)": 1.0,
+        "ib": "T",
+        "num_ibs": 1,
+        "fd_order": 2,
+        "patch_ib(1)%geometry": 8 if ndim == 3 else 2,
+        "patch_ib(1)%radius": 0.18,
+        "patch_ib(1)%slip": "F",
+    }
+    for a, axis in enumerate("xyz"[:ndim], 1):
+        case.update(
+            {
+                f"{axis}_domain%beg": 0.0,
+                f"{axis}_domain%end": 1.0,
+                f"bc_{axis}%beg": -1,
+                f"bc_{axis}%end": -1,
+                f"patch_icpp(1)%{axis}_centroid": 0.5,
+                f"patch_icpp(1)%length_{axis}": 1.0,
+                f"patch_icpp(1)%vel({a})": 0.0,
+                f"patch_ib(1)%{axis}_centroid": 0.5,
+            }
+        )
+    path = tmp_path / "case.json"
+    path.write_text(json.dumps(case))
+    command = [str(root / "mfc.sh"), "run", str(path), "--no-build", "--no-debug", "--no-reldebug", "--no-gpu", "-n", str(ranks)]
+    result = subprocess.run([*command, "-t", "pre_process", "simulation"], cwd=root, capture_output=True, text=True, timeout=180, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not list((tmp_path / "restart_data").glob("*lso*")), "the test must start with original data only"
+
+    shape = (cells,) * ndim
+    x = np.meshgrid(*[(np.arange(cells) + 0.5) / cells] * ndim, indexing="ij")
+    gas = (np.fromfile(tmp_path / "restart_data/lustre_ib.dat", dtype=np.int32, count=cells**ndim).reshape(shape, order="F") == 0).astype(float)
+    assert 0 < gas.mean() < 1
+    rho = 1.0 + 0.2 * np.cos(2 * np.pi * x[0])
+    velocity = [0.2 + 0.1 * np.sin(2 * np.pi * (x[a] + x[(a + 1) % ndim])) + 2.0 * (1 - gas) for a in range(ndim)]
+    temperature = 2.0 + 0.3 * np.cos(2 * np.pi * x[-1])
+    speed2 = sum(u * u for u in velocity)
+    energy = 2.5 * rho * temperature + 0.4 + 0.3 * rho + 0.5 * rho * speed2
+    conserved = [rho, *[rho * u for u in velocity], energy, np.ones(shape)]
+    np.stack(conserved, axis=-1).ravel(order="F").tofile(tmp_path / "restart_data/lustre_1.dat")
+    case.update(
+        {
+            "lso_pp_filter": "T",
+            "lso_filter_wrt": "F",
+            "lso_stat_wrt": "T",
+            "lso_closure_wrt": "T",
+            "filter_sigma": target,
+            "lso_filter_sigma_target": target,
+            "lso_R_gas": 1.0,
+            "lso_mu": 0.02,
+            "lso_conductivity": 0.03,
+            "lso_mu_T_exp": exponent,
+            "lso_mu_T_ref": 2.0,
+        }
+    )
+    if pyramid:
+        case.update({"lso_pp_pyramid_wrt": "T", "lso_down_sample_factor": 2})
+    path.write_text(json.dumps(case))
+    result = subprocess.run([*command, "-t", "post_process"], cwd=root, capture_output=True, text=True, timeout=180, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    inp = dict(line.split(" = ", 1) for line in (tmp_path / "post_process.inp").read_text().splitlines() if " = " in line)
+
+    def filtered(value):
+        value = value.copy()
+        for prefix in ("lso_pp", "lso_pp2"):
+            for a, axis in enumerate("xyz"[:ndim]):
+                passes = int(inp.get(f"{prefix}_n_passes_{axis}", "0"))
+                if not passes:
+                    continue
+                weights = np.array([float(v.replace("d", "e")) for v in inp[f"{prefix}_a_{axis}"].split()[: 5 * passes]]).reshape(-1, 5)
+                for w in weights:
+                    previous = value
+                    value = w[0] * previous
+                    for shift in range(1, 5):
+                        value = value + w[shift] * (np.roll(previous, shift, axis=a) + np.roll(previous, -shift, axis=a))
+        return value
+
+    def gradient(value, axis):
+        return (np.roll(value, -1, axis=axis) - np.roll(value, 1, axis=axis)) * cells / 2
+
+    pairs = [(a, b) for a in range(ndim) for b in range(a, ndim)]
+    mu = 0.02 * (temperature / 2.0) ** exponent
+    div = sum(gradient(velocity[a], a) for a in range(ndim))
+    stress = {(a, b): mu * (gradient(velocity[a], b) + gradient(velocity[b], a) - (2 / 3 * div if a == b else 0)) for a, b in pairs}
+    products = [
+        1 - gas,
+        gas * rho,
+        gas * rho * speed2,
+        *[np.zeros(shape) for _ in range(ndim)],
+        *[gas * rho * u for u in velocity],
+        *[gas * rho * velocity[a] * velocity[b] for a, b in pairs],
+        *[gas * rho * u * speed2 for u in velocity],
+        *[gas * rho * u * temperature for u in velocity],
+        *[gas * stress[pair] for pair in pairs],
+        *[-gas * 0.03 * (temperature / 2.0) ** exponent * gradient(temperature, a) for a in range(ndim)],
+        *[gas * rho * sum(stress[tuple(sorted((a, b)))] * velocity[b] for b in range(ndim)) for a in range(ndim)],
+        *[gas * u for u in velocity],
+    ]
+    expected = [filtered(product) for product in products]
+    weight = filtered(gas)
+    normalized = [filtered(gas * q) / np.maximum(weight, 1e-3) for q in conserved]
+    assert np.max(np.abs(filtered(conserved[1]) - filtered(gas * conserved[1]))) > 0.01, "solid values must expose missing masking"
+    if pyramid:
+        assert (tmp_path / "restart_data/lustre_lso_0.dat").exists(), "original input also needs a valid initial pyramid snapshot"
+
+        def coarsened(value):
+            for axis in range(ndim):
+                value = 0.5 * (np.take(value, range(0, cells, 2), axis=axis) + np.take(value, range(1, cells, 2), axis=axis))
+            return value
+
+        expected = [coarsened(q) for q in expected]
+        normalized = [coarsened(q) for q in normalized]
+        weight = coarsened(weight)
+        initial_stats = np.fromfile(tmp_path / "restart_data/lustre_lso_stat_0.dat").reshape((cells // 2,) * ndim + (len(expected),), order="F")
+        assert np.isfinite(initial_stats).all()
+        np.testing.assert_allclose(initial_stats[..., 0], expected[0], rtol=2e-9, atol=1e-10)
+        np.testing.assert_allclose(initial_stats[..., 1], weight, rtol=2e-9, atol=1e-10)
+        for prefix, fields in (("lso_", normalized), ("lso_stat_", expected), ("lso_mask_", [weight])):
+            saved = np.fromfile(tmp_path / f"restart_data/lustre_{prefix}1.dat").reshape((cells // 2,) * ndim + (len(fields),), order="F")
+            np.testing.assert_allclose(saved, np.stack(fields, axis=-1), rtol=2e-9, atol=1e-10)
+        case.update({"lso_pp_pyramid_wrt": "F", "lso_filter_wrt": "T", "lso_filter": "T", "lso_filter_sigma_in": target, "lso_filter_sigma_target": 2 * target})
+        path.write_text(json.dumps(case))
+        result = subprocess.run([*command, "-t", "post_process"], cwd=root, capture_output=True, text=True, timeout=180, check=False)
+        assert result.returncode == 0, result.stdout + result.stderr
+        inp = dict(line.split(" = ", 1) for line in (tmp_path / "post_process.inp").read_text().splitlines() if " = " in line)
+        numerator = [filtered(weight * q) for q in normalized]
+        weight = filtered(weight)
+        normalized = [q / np.maximum(weight, 1e-3) for q in numerator]
+        expected = [filtered(q) for q in expected]
+        cells //= 2
+    nt = len(pairs)
+    momentum = expected[3 + ndim : 3 + 2 * ndim]
+    rsg = [expected[3 + 2 * ndim + i] - momentum[a] * momentum[b] / expected[1] for i, (a, b) in enumerate(pairs)]
+    favre_temperature = (normalized[-2] * weight - 0.5 * expected[2] - 0.4 * weight - 0.3 * expected[1]) / (2.5 * expected[1])
+    qt = [3.5 * (expected[3 + 3 * ndim + nt + a] - favre_temperature * momentum[a]) for a in range(ndim)]
+    eku = [0.5 * (expected[3 + 2 * ndim + nt + a] - momentum[a] * expected[2] / expected[1]) for a in range(ndim)]
+    mixture_velocity = expected[-ndim:]
+    mixture_divergence = sum(gradient(mixture_velocity[a], a) for a in range(ndim))
+    resolved_mu = 0.02 * (favre_temperature / 2.0) ** exponent
+    rmu = [
+        expected[3 + 4 * ndim + nt + i] / weight - resolved_mu * (gradient(mixture_velocity[a], b) + gradient(mixture_velocity[b], a) - (2 / 3 * mixture_divergence if a == b else 0))
+        for i, (a, b) in enumerate(pairs)
+    ]
+    assert np.max(np.abs(rsg[0])) > 1e-5, "a constant field cannot detect products formed after filtering"
+    for rank in range(ranks):
+        data = read_silo_file(str(tmp_path / f"silo_hdf5/p{rank}/1.silo"))
+        coords = [data.x_cb, data.y_cb, data.z_cb][:ndim]
+        indices, valid = [], []
+        for cb in coords:
+            idx = np.rint((cb[:-1] + cb[1:]) * 0.5 * cells - 0.5).astype(int)
+            inside = (idx >= 0) & (idx < cells)
+            indices.append(idx[inside])
+            valid.append(np.flatnonzero(inside))
+
+        def check(name, want):
+            actual = data.variables[name].reshape(tuple(len(cb) - 1 for cb in coords), order="F")
+            np.testing.assert_allclose(actual[np.ix_(*valid)], want[np.ix_(*indices)], rtol=2e-9, atol=1e-10, err_msg=name)
+
+        for i, product in enumerate(expected, 1):
+            check(f"lso_stat_{i:03}", product)
+        for name, q in zip(["alpha_rho1", *[f"mom{a + 1}" for a in range(ndim)], "E", "alpha1"], normalized):
+            check(name, q)
+        for i, q in enumerate(rsg, 1):
+            check(f"lso_closure_{i:03}", q)
+        for i, q in enumerate(qt + eku, nt + 1):
+            check(f"lso_closure_{i:03}", q)
+        for i, q in enumerate(rmu, nt + 3 * ndim + 1):
+            check(f"lso_closure_{i:03}", q)
+        check(f"lso_closure_{2 * nt + 4 * ndim + 1:03}", favre_temperature)
+
+
+@pytest.mark.skipif(os.environ.get("MFC_TEST_LSO_OUTPUT") != "1", reason="requires prebuilt MFC executables")
 @pytest.mark.parametrize(
     "stiffening,boundary,factor,mode",
     [(s, b, f, "fixed") for s in (0.0, 1.0) for b in (-1, -3) for f in (1, 2)] + [(0.0, -1, 2, mode) for mode in ("cfl_adap_dt", "cfl_const_dt")],
@@ -169,9 +376,10 @@ def test_lso_reader_preserves_fields_and_cell_centres(tmp_path, ndim, factor, ra
     assert result.returncode == 0, result.stdout + result.stderr
     names = ["alpha_rho1", *[f"mom{i}" for i in range(1, ndim + 1)], "E", "alpha1"]
     coarse = cells // factor
-    for step in (0, 2):
-        count = cells if step == 0 else coarse
-        prefix = "" if step == 0 else "lso_"
+    assert not (tmp_path / "silo_hdf5/p0/0.silo").exists(), "missing filtered snapshots must be skipped"
+    for step in (2,):
+        count = coarse
+        prefix = "lso_"
         if mode == "serial":
             raw = np.stack([np.fromfile(tmp_path / f"p_all/p0/{step}/{prefix}q_cons_vf{i}.dat", offset=4, count=cells) for i in range(1, 5)], axis=-1)
             if step > 0:
@@ -179,15 +387,10 @@ def test_lso_reader_preserves_fields_and_cell_centres(tmp_path, ndim, factor, ra
                 assert np.max(np.abs(unfiltered - raw[:, 0])) > 1e-3
         else:
             raw = np.fromfile(tmp_path / f"restart_data/lustre_{prefix}{step}.dat").reshape((count,) * ndim + (len(names),), order="F")
-        if mode == "wide" and step > 0:
+        if mode == "wide":
             stats = np.fromfile(tmp_path / f"restart_data/lustre_lso_stat_{step}.dat")
-            assert stats.size == coarse * 11
+            assert stats.size == coarse * 12
             assert np.isfinite(stats).all()
-        if step == 0:
-            for axis in range(ndim):
-                positions = (np.arange(coarse) + 0.5) * factor - 0.5
-                lower = np.floor(positions).astype(int)
-                raw = 0.5 * (np.take(raw, lower, axis=axis) + np.take(raw, np.ceil(positions).astype(int), axis=axis))
         for rank in range(ranks):
             data = read_silo_file(str(tmp_path / f"silo_hdf5/p{rank}/{step}.silo"))
             coords = [data.x_cb, data.y_cb, data.z_cb][:ndim]
