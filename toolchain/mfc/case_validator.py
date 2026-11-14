@@ -1387,7 +1387,7 @@ class CaseValidator:
                         "JWL PT relaxation requires an ideal or stiffened ambient",
                     )
                     self.prohibit((self.get(f"fluid_pp({i})%pi_inf") or 0) < 0, "JWL PT relaxation requires nonnegative ambient stiffness")
-            for flag in ("ib", "bubbles_lagrange", "hypoelasticity", "heat_conduction"):
+            for flag in ("bubbles_lagrange", "hypoelasticity", "heat_conduction"):
                 self.prohibit(self.get(flag, "F") == "T", f"JWL PT relaxation is not supported with {flag} = T")
         for flag in unsupported:
             self.prohibit(self.get(flag, "F") == "T", f"a state-dependent eos ({state_dependent_names}) is not supported with {flag} = T")

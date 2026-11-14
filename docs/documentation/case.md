@@ -1350,12 +1350,21 @@ Both phases require positive `cv`. JWL requires nonnegative `jwl_b` and
 `jwl_t0`, and the ambient stiffness must be nonnegative. Temperature output
 (`T_wrt = T`) also requires positive `jwl_t0`. In this mode the JWL reference
 temperature follows the exact isentrope; other modes keep their
-existing temperature evaluation. The scalar solver uses precision-dependent
-residual bounds; the matrix solver uses a scaled analytic 4x4 Newton system.
+existing temperature evaluation. The scalar solver checks the existing phase
+volumes first, then initializes from a composition-weighted pressure and
+temperature predictor if necessary. It uses precision-dependent residual
+bounds; the matrix solver uses a scaled analytic 4x4 Newton system.
 Neither uses the stiffened-gas `palpha_eps` iteration tolerance.
 It reports failure when a positive, hyperbolic equilibrium cannot be resolved.
-It does not substitute another mixture closure. Immersed bodies, Euler-Lagrange
-coupling, elasticity and heat conduction are unsupported with this option.
+It does not substitute another mixture closure. Euler-Lagrange coupling,
+elasticity and heat conduction are unsupported with this option.
+
+Immersed boundaries (`ib = T`, stationary or moving) are supported: the
+projection skips every cell inside a body or on its ghost layer
+(`ib_markers /= 0`), whose state is set by the immersed-boundary correction
+rather than by the flow solution, and relaxes only fluid cells. A moving JWL
+body additionally needs positive `cv` and `jwl_t0` for the ghost-state
+reconstruction (`examples/2D_jwl_pt_ibm_cylinder`).
 
 Set `MFC_JWL_PT_SOLVER=fast` or `MFC_JWL_PT_SOLVER=matrix` when running
 `examples/1D_jwl_pt_relaxation/case.py` to compare both solvers on the same
