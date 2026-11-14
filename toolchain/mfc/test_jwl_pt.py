@@ -46,6 +46,18 @@ else
 end if
 y(6)=merge(1.,0.,ok)
 end subroutine
+subroutine cw_eval(x,y) bind(C)
+use iso_c_binding
+use m_jwl_pt
+implicit none
+real(c_{'float' if bits == 32 else 'double'}),intent(in)::x(18)
+real(c_{'float' if bits == 32 else 'double'}),intent(out)::y(2)
+type(jwl_pt_parameters)::mat
+logical::ok
+mat=jwl_pt_parameters(x(5),x(6),x(7),x(8),x(9),x(10),x(11),x(12),x(13),x(14),x(15),x(16),x(17))
+call s_pt_cw_guess(x(1),x(2),x(3),mat,y(1),ok)
+y(2)=merge(1.,0.,ok)
+end subroutine
 """
     )
     library = folder / "pt.so"
@@ -60,6 +72,8 @@ end subroutine
     func = lib.pt_eval
     pointer = ctypes.POINTER(ctypes.c_float if bits == 32 else ctypes.c_double)
     func.argtypes = [pointer, pointer]
+    cw_func = lib.cw_eval
+    cw_func.argtypes = [pointer, pointer]
     dtype = np.float32 if bits == 32 else np.float64
 
     def call(mj, ma, energy, mat=MAT, guess=0.5, solver="fast"):
@@ -70,6 +84,14 @@ end subroutine
 
     call.bits = bits
     call.rtol = 5e-4 if bits == 32 else 2e-8
+
+    def cw_guess(mj, ma, energy, mat=MAT):
+        args = np.array([mj, ma, energy, 0.5, *mat, 5], dtype=dtype)
+        result = np.empty(2, dtype=dtype)
+        cw_func(args.ctypes.data_as(pointer), result.ctypes.data_as(pointer))
+        return result.astype(float)
+
+    call.cw_guess = cw_guess
     return call
 
 
@@ -132,6 +154,40 @@ def test_fast_and_matrix_solvers_agree(solve):
         assert fast[5] == matrix[5] == 1, (rj, temp, yj, fast, matrix)
         errors = np.maximum(errors, np.abs(fast[:4] - matrix[:4]) / np.maximum(np.abs(fast[:4]), 1.0))
     assert np.max(errors) <= solve.rtol, errors
+
+
+def test_composition_weighted_guess_matches_ideal_limit(solve):
+    mat = MAT.copy()
+    mat[[0, 1, 6, 10]] = 0.0
+    for yj in (0.01, 0.2, 0.8, 0.99):
+        mj, ma, energy, _, alpha = manufactured(800, 1800, yj, mat)
+        guess, valid = solve.cw_guess(mj, ma, energy, mat)
+        assert valid == 1
+        assert guess == pytest.approx(alpha, rel=solve.rtol)
+
+
+def test_composition_weighted_guess_rejects_unphysical_state(solve):
+    assert solve.cw_guess(1, 1, -1e6)[1] == 0
+
+
+def test_composition_weighted_guess_with_offsets_and_stiffened_gas(solve):
+    mat = MAT.copy()
+    mat[6], mat[10], mat[11], mat[12] = 300.0, 1e7, 2e5, -1e5
+    mj, ma, energy, _, _ = manufactured(800, 1800, 0.4, mat)
+    rho, e = mj + ma, energy / (mj + ma)
+    weight = mj * mat[7] / (mj * mat[7] + ma * mat[8])
+    ea = mat[0] * np.exp(-mat[2] * mat[5] / rho)
+    eb = mat[1] * np.exp(-mat[3] * mat[5] / rho)
+    ec = (ea / mat[2] + eb / mat[3]) / mat[5]
+    tj = mat[6] * (rho / mat[5]) ** mat[4] + (e - ec - mat[11]) / mat[7]
+    ta = (e - mat[10] / rho - mat[12]) / mat[8]
+    pj = ea + eb + mat[4] * rho * (e - ec - mat[11])
+    pa = mat[9] * rho * mat[8] * ta - mat[10]
+    pcw, tcw = pa + weight * (pj - pa), ta + weight * (tj - ta)
+    expected = 1 - ma * mat[9] * mat[8] * tcw / (pcw + mat[10])
+    guess, valid = solve.cw_guess(mj, ma, energy, mat)
+    assert valid == 1
+    assert guess == pytest.approx(expected, rel=solve.rtol)
 
 
 def test_precision_and_pressure_unit_regressions(solve):
@@ -224,7 +280,18 @@ def pt_case():
     }
 
 
-@pytest.mark.parametrize("change", [{"relax_model": 6}, {"model_eqns": 3}, {"num_fluids": 3}, {"fluid_pp(1)%cv": 0}, {"fluid_pp(1)%jwl_b": -1}, {"ib": "T"}])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"relax_model": 6},
+        {"model_eqns": 3},
+        {"num_fluids": 3},
+        {"fluid_pp(1)%cv": 0},
+        {"fluid_pp(1)%jwl_b": -1},
+        {"particles_lagrange": "T"},
+        {"ib": "T", "num_ibs": 1, "patch_ib(1)%moving_ibm": 2},
+    ],
+)
 def test_validator_rejects_unsupported_pt_inputs(change):
     validator = CaseValidator(pt_case() | change)
     validator.check_eos_selector()
@@ -236,6 +303,17 @@ def test_validator_accepts_jwl_pt():
         validator = CaseValidator(pt_case() | {"relax_model": mode})
         validator.check_eos_selector()
         assert validator.errors == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"ib": "T"}, {"ib": "T", "num_ibs": 1, "patch_ib(1)%moving_ibm": 1}, {"ib": "T", "num_ibs": 1, "patch_ib(1)%moving_ibm": 2, "fluid_pp(1)%jwl_t0": 300.0}],
+)
+def test_validator_accepts_jwl_pt_with_immersed_bodies(change):
+    """Stationary, prescribed and free-flight bodies are allowed; a free-flight body also needs the JWL reference temperature."""
+    validator = CaseValidator(pt_case() | change)
+    validator.check_eos_selector()
+    assert validator.errors == []
 
 
 @pytest.mark.parametrize("change", [{"relax": "F"}, {"fluid_pp(1)%eos": CONSTRAINTS["fluid_pp(1)%eos"]["names"]["ideal_gas"]}])

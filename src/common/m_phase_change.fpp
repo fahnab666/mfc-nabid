@@ -70,8 +70,8 @@ contains
         @:PROHIBIT(any(cvs <= 0._wp), 'JWL PT relaxation requires positive phase heat capacities.')
         @:PROHIBIT(eos_coeffs(pt_jwl)%t0 < 0._wp .or. eos_coeffs(pt_jwl)%b < 0._wp, &
                    & 'JWL PT relaxation requires nonnegative jwl_t0 and jwl_b.')
-        @:PROHIBIT(ib .or. euler_lagrange .or. hypoelasticity .or. heat_conduction, &
-                   & 'JWL PT relaxation does not support immersed bodies, EL coupling, elasticity or heat conduction.')
+        @:PROHIBIT(euler_lagrange .or. hypoelasticity .or. heat_conduction, &
+                   & 'JWL PT relaxation does not support EL coupling, elasticity or heat conduction.')
         pt_material%a = eos_coeffs(pt_jwl)%a; pt_material%b = eos_coeffs(pt_jwl)%b
         pt_material%r1 = eos_coeffs(pt_jwl)%r1; pt_material%r2 = eos_coeffs(pt_jwl)%r2
         pt_material%omega = eos_coeffs(pt_jwl)%gruneisen0; pt_material%rho0 = eos_coeffs(pt_jwl)%rho0
@@ -85,41 +85,48 @@ contains
 
     end subroutine s_initialize_phasechange_module
 
-    !> Project the volume fractions onto PT equilibrium, leaving both masses, momenta and total energy unchanged.
-    subroutine s_relax_jwl_pt(q_cons_vf)
+    !> Project the volume fractions onto PT equilibrium, leaving both masses, momenta and total energy unchanged. With ib_markers,
+    !! cells inside an immersed body (solid interior and ghost points) hold ghost-derived state and are left to the IBM correction.
+    subroutine s_relax_jwl_pt(q_cons_vf, ib_markers)
 
         type(scalar_field), dimension(sys_size), intent(inout) :: q_cons_vf
+        type(integer_field), optional, intent(in)              :: ib_markers
         real(wp)                                               :: mj, ma, rho, rhoe, aj, aa, pres, temp, c2, guess
         integer                                                :: j, k, l, i, failures
-        logical                                                :: converged
+        logical                                                :: converged, mask_ib, solid_cell
 
         failures = 0
-        $:GPU_PARALLEL_LOOP(collapse=3, private='[mj, ma, rho, rhoe, aj, aa, pres, temp, c2, guess, i, converged]', &
-                            & reduction='[[failures]]', reductionOp='[+]')
+        mask_ib = present(ib_markers)
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[mj, ma, rho, rhoe, aj, aa, pres, temp, c2, guess, i, converged, solid_cell]', &
+                            & firstprivate='[mask_ib]', reduction='[[failures]]', reductionOp='[+]')
         do l = 0, p
             do k = 0, n
                 do j = 0, m
-                    mj = q_cons_vf(eqn_idx%cont%beg + pt_jwl - 1)%sf(j, k, l)
-                    ma = q_cons_vf(eqn_idx%cont%beg + pt_ambient - 1)%sf(j, k, l)
-                    rho = mj + ma
-                    rhoe = q_cons_vf(eqn_idx%E)%sf(j, k, l)
-                    if (rho > 0._wp) then
-                        $:GPU_LOOP(parallelism='[seq]')
-                        do i = eqn_idx%mom%beg, eqn_idx%mom%end
-                            rhoe = rhoe - 0.5_wp*q_cons_vf(i)%sf(j, k, l)**2/rho
-                        end do
-                    end if
-                    guess = q_cons_vf(eqn_idx%adv%beg + pt_jwl - 1)%sf(j, k, l)
-                    if (relax_model == 7) then
-                        call s_jwl_pt_equilibrium_matrix(mj, ma, rhoe, guess, pt_material, pres, temp, aj, aa, c2, converged)
-                    else
-                        call s_jwl_pt_equilibrium(mj, ma, rhoe, guess, pt_material, pres, temp, aj, aa, c2, converged)
-                    end if
-                    if (converged) then
-                        q_cons_vf(eqn_idx%adv%beg + pt_jwl - 1)%sf(j, k, l) = aj
-                        q_cons_vf(eqn_idx%adv%beg + pt_ambient - 1)%sf(j, k, l) = aa
-                    else
-                        failures = failures + 1
+                    solid_cell = .false.
+                    if (mask_ib) solid_cell = (ib_markers%sf(j, k, l) /= 0)
+                    if (.not. solid_cell) then
+                        mj = q_cons_vf(eqn_idx%cont%beg + pt_jwl - 1)%sf(j, k, l)
+                        ma = q_cons_vf(eqn_idx%cont%beg + pt_ambient - 1)%sf(j, k, l)
+                        rho = mj + ma
+                        rhoe = q_cons_vf(eqn_idx%E)%sf(j, k, l)
+                        if (rho > 0._wp) then
+                            $:GPU_LOOP(parallelism='[seq]')
+                            do i = eqn_idx%mom%beg, eqn_idx%mom%end
+                                rhoe = rhoe - 0.5_wp*q_cons_vf(i)%sf(j, k, l)**2/rho
+                            end do
+                        end if
+                        guess = q_cons_vf(eqn_idx%adv%beg + pt_jwl - 1)%sf(j, k, l)
+                        if (relax_model == 7) then
+                            call s_jwl_pt_equilibrium_matrix(mj, ma, rhoe, guess, pt_material, pres, temp, aj, aa, c2, converged)
+                        else
+                            call s_jwl_pt_equilibrium(mj, ma, rhoe, guess, pt_material, pres, temp, aj, aa, c2, converged)
+                        end if
+                        if (converged) then
+                            q_cons_vf(eqn_idx%adv%beg + pt_jwl - 1)%sf(j, k, l) = aj
+                            q_cons_vf(eqn_idx%adv%beg + pt_ambient - 1)%sf(j, k, l) = aa
+                        else
+                            failures = failures + 1
+                        end if
                     end if
                 end do
             end do
@@ -130,9 +137,10 @@ contains
     end subroutine s_relax_jwl_pt
 
     !> Apply pT- or pTg-equilibrium relaxation with mass depletion based on the incoming state conditions.
-    subroutine s_infinite_relaxation_k(q_cons_vf)
+    subroutine s_infinite_relaxation_k(q_cons_vf, ib_markers)
 
         type(scalar_field), dimension(sys_size), intent(inout) :: q_cons_vf
+        type(integer_field), optional, intent(in) :: ib_markers
         real(wp) :: pS                    !< equilibrium pressure
         real(wp) :: TS                    !< equilibrium temperature
         real(wp) :: rhoe, dynE, rhos      !< total internal energy, kinetic energy, and total entropy
@@ -150,7 +158,7 @@ contains
         integer :: i, j, k, l
 
         if (pt_jwl > 0) then
-            call s_relax_jwl_pt(q_cons_vf)
+            call s_relax_jwl_pt(q_cons_vf, ib_markers)
             return
         end if
 

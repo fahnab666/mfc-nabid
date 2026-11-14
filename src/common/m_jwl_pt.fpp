@@ -13,7 +13,7 @@ module m_jwl_pt
     implicit none
 
     private
-    public :: jwl_pt_parameters, s_jwl_pt_equilibrium, s_jwl_pt_equilibrium_matrix
+    public :: jwl_pt_parameters, s_jwl_pt_equilibrium, s_jwl_pt_equilibrium_matrix, s_pt_cw_guess
 
     !> Constituent data in the same energy and temperature convention as m_eos.
     type jwl_pt_parameters
@@ -42,6 +42,39 @@ contains
         dpc = ((ea*mat%r1 + eb*mat%r2)*mat%rho0/rho)/rho - mat%omega*mat%cv_j*(1._wp + mat%omega)*tref
 
     end subroutine s_pt_curve
+
+    !> Map the composition-weighted pressure and temperature to a product volume fraction.
+    subroutine s_pt_cw_guess(mj, ma, rhoe, mat, alpha, ok)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        real(wp), intent(in)                :: mj, ma, rhoe
+        type(jwl_pt_parameters), intent(in) :: mat
+        real(wp), intent(out)               :: alpha
+        logical, intent(out)                :: ok
+        real(wp)                            :: rho, e, weight, ec, pc, dpc, pj, pa, tj, ta, pres, temp, rhoa
+
+        alpha = 0._wp; ok = .false.
+        rho = mj + ma
+        if (.not. (mj > 0._wp .and. ma > 0._wp .and. rho > 0._wp)) return
+        if (.not. (mat%cv_j > 0._wp .and. mat%cv_a > 0._wp .and. mat%gamma_a > 0._wp)) return
+        e = rhoe/rho
+        weight = mj*mat%cv_j/(mj*mat%cv_j + ma*mat%cv_a)
+        call s_pt_curve(rho, mat, ec, pc, dpc)
+        tj = (e - ec - mat%qv_j)/mat%cv_j
+        ta = (e - mat%pi_a/rho - mat%qv_a)/mat%cv_a
+        pj = pc + mat%omega*rho*mat%cv_j*tj
+        pa = mat%gamma_a*rho*mat%cv_a*ta - mat%pi_a
+        pres = pa + weight*(pj - pa)
+        temp = ta + weight*(tj - ta)
+        if (.not. (ieee_is_finite(pres) .and. ieee_is_finite(temp))) return
+        if (.not. (temp > 0._wp .and. pres + mat%pi_a > 0._wp)) return
+        rhoa = (pres + mat%pi_a)/(mat%gamma_a*mat%cv_a*temp)
+        if (.not. (ieee_is_finite(rhoa) .and. rhoa > 0._wp)) return
+        alpha = 1._wp - ma/rhoa
+        ok = ieee_is_finite(alpha) .and. alpha > epsilon(1._wp) .and. alpha < 1._wp - epsilon(1._wp)
+
+    end subroutine s_pt_cw_guess
 
     !> Residual in log(alpha_j/alpha_a). Compute both volumes independently, including near a pure phase.
     subroutine s_pt_trial(x, mj, ma, rhoe, mat, aj, aa, temp, pj, pa, residual, derivative)
@@ -142,9 +175,9 @@ contains
         real(wp), intent(out) :: pres, temp, aj, aa, c2
         logical, intent(out) :: ok
         real(wp) :: ec, pc, dpc, tref, pref, dpref, limit, x0, x, candidate, dx, pj, pa, residual, derivative
-        real(wp) :: left, right, fl, fprev, previous, trial, fc, dc, pbest, tbest, abest, bbest, cbest, distance
+        real(wp) :: left, right, fl, fprev, previous, trial, fc, dc, pbest, tbest, abest, bbest, cbest, distance, alpha_cw
         integer :: it, scan, inner
-        logical :: accepted
+        logical :: accepted, cw_ok
 
         pres = 0._wp; temp = 0._wp; aj = 0._wp; aa = 0._wp; c2 = 0._wp; ok = .false.
         if (.not. (mj >= 0._wp .and. ma >= 0._wp .and. mj + ma > 0._wp .and. ieee_is_finite(rhoe))) return
@@ -172,8 +205,13 @@ contains
         ! The volume coordinate has no subtraction of nearly equal densities and no dimensional floor.
         limit = -2.5_wp*log(epsilon(1._wp))
         x0 = log(mj) - log(ma)
-        if (alpha_guess > epsilon(1._wp) .and. alpha_guess < 1._wp - epsilon(1._wp)) x0 = log(alpha_guess) - log(1._wp &
-            & - alpha_guess)
+        if (alpha_guess > epsilon(1._wp) .and. alpha_guess < 1._wp - epsilon(1._wp)) then
+            x0 = log(alpha_guess) - log(1._wp - alpha_guess)
+            call s_pt_accept(x0, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
+            if (ok) return
+        end if
+        call s_pt_cw_guess(mj, ma, rhoe, mat, alpha_cw, cw_ok)
+        if (cw_ok) x0 = log(alpha_cw) - log(1._wp - alpha_cw)
         x0 = max(-limit, min(limit, x0))
         x = x0
         ! Fast safeguarded Newton path. Every proposed result passes the same acceptance test as the bracketed path.

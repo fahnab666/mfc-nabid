@@ -693,7 +693,13 @@ contains
             mytime = (t_step + 1)*dt
         end if
 
-        if (relax) call s_infinite_relaxation_k(q_cons_ts(1)%vf)
+        if (relax) then
+            if (ib) then
+                call s_infinite_relaxation_k(q_cons_ts(1)%vf, ib_markers)
+            else
+                call s_infinite_relaxation_k(q_cons_ts(1)%vf)
+            end if
+        end if
 
         ! Time-stepping loop controls
         t_step = t_step + 1

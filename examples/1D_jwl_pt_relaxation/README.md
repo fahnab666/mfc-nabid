@@ -18,7 +18,12 @@ sound speed; the scalar equilibrium sound speed is used to reject unstable PT
 roots. This is a relaxation model, rather than an always-on equilibrium EOS in
 the Riemann solver.
 
-Fast PT solves one scalar pressure residual in the log phase-volume ratio. Matrix
+Fast PT first accepts the current phase volumes if they already satisfy PT
+equilibrium. Otherwise it maps the heat-capacity-weighted composition predictor
+to a phase-volume guess and solves one scalar pressure residual in the log
+phase-volume ratio. An admissible predictor that meets the equilibrium
+tolerance requires no Newton update. If the predictor is inadmissible, the
+solver starts from the current volume fraction. Matrix
 PT solves the four pressure, temperature, volume and energy equations in scaled
 `(rho_j, rho_a, T, p)` variables with an analytic Jacobian and pivoted 4x4
 Gaussian elimination. Both use the same JWL caloric reference temperature. A
