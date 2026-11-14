@@ -401,6 +401,7 @@ CONSTRAINTS = {
     "num_patches": {"min": 0, "max": NUM_PATCHES_MAX},
     "num_ibs": {"min": 0},
     "ib_neighborhood_radius": {"min": 0},
+    "face_bound": {"choices": [0, 1], "value_labels": {0: "off", 1: "positivity bound on face states"}},
     "ib_wall_order": {"choices": [1, 2], "value_labels": {1: "default ghost treatment", 2: "two-probe quadratic wall-normal ghost velocity at no-slip walls"}},
     "ib_ip_interp": {"choices": [1, 2], "value_labels": {1: "inverse-distance weights, 2x2(x2) cells", 2: "triangular-shaped-cloud weights, 3x3(x3) cells"}},
     "num_source": {"min": 1},
@@ -732,6 +733,8 @@ def _load():
     _r("ib_flux_wall", LOG, {"ib"})
     _r("ib_ip_interp", INT, {"ib"})
     _r("ib_wall_order", INT, {"ib"})
+    _r("ib_smooth_contact", LOG, {"ib", "viscosity"})
+    _r("ib_visc_compact", LOG, {"ib", "viscosity"})
 
     # Probes
     _r("num_probes", INT, {"probes"})
@@ -779,6 +782,30 @@ def _load():
         _r(n, INT, {"filter"})
     for n in ["lso_pp2_a_x", "lso_pp2_a_y", "lso_pp2_a_z"]:
         _r(f"{n}(1)", REAL, {"filter"})
+    # AMR (rank_time_wrt is a diagnostic)
+    for n in [
+        "rank_time_wrt",
+        "amr",
+    ]:
+        _r(n, LOG, {"output"})
+    for j in range(1, 4):
+        for a in ["amr_block_beg", "amr_block_end"]:
+            _r(f"{a}({j})", INT)
+    _r("amr_regrid_int", INT)
+    _r("amr_tag_eps", REAL)
+    _r("amr_tag_abs", LOG)
+    _r("amr_place_owner", LOG)
+    _r("amr_buf", INT)
+    _r("amr_snap", INT)
+    _r("amr_device_pack", LOG)
+    _r("amr_subcycle", LOG)
+    _r("amr_prolong", INT)
+    _r("amr_max_blocks", INT)
+    _r("amr_max_grid_size", INT)
+    _r("amr_max_level", INT)
+    _r("amr_cluster_eff", REAL)
+    _r("amr_blocking_factor", INT)
+    _r("amr_ref_ratio", INT)
     for n in [
         "schlieren_wrt",
         "alpha_wrt",
@@ -900,6 +927,7 @@ def _load():
     ]:
         _r(n, LOG)
     _r("int_comp", INT)
+    _r("face_bound", INT)
     _r("case_dir", STR, str_len="path_len")
     _r("file_extension", STR, str_len="path_len")
     _r("files_dir", STR, str_len="path_len")
@@ -921,6 +949,7 @@ def _load():
     _r("mean_qdot", REAL, math=r"\f$\dot q\f$")
     _r("mean_temp", REAL, math=r"\f$T_b^\ast\f$")
     _r("mean_temp_gain", REAL)
+    _r("mean_temp_wall", REAL, math=r"\f$T_s\f$")
 
     # Interfacial flow inputs
     _r("normMag", REAL)
@@ -1367,6 +1396,8 @@ FORTRAN_ARRAY_DIMS: dict[str, str] = {
     "lso_pp2_a_x": "5, 60",
     "lso_pp2_a_y": "5, 60",
     "lso_pp2_a_z": "5, 60",
+    "amr_block_beg": "3",
+    "amr_block_end": "3",
 }
 
 # Derived-type namelist variables whose Fortran declarations come from generated_decls.fpp.
@@ -1496,6 +1527,7 @@ _nv(
     "t_save",
     "cfl_target",
     "prim_vars_wrt",
+    "rank_time_wrt",
     "fd_order",
     "ib_state_wrt",
     "ib_force_wrt",
@@ -1629,6 +1661,7 @@ _nv(
     "null_weights",
     "muscl_eps",
     "int_comp",
+    "face_bound",
     "ic_eps",
     "ic_beta",
     "riemann_hypo_ADC",
@@ -1675,6 +1708,7 @@ _nv(
     "mean_qdot",
     "mean_temp",
     "mean_temp_gain",
+    "mean_temp_wall",
     "k_x",
     "k_y",
     "k_z",
@@ -1710,10 +1744,30 @@ _nv(
     "ib_flux_wall",
     "ib_ip_interp",
     "ib_wall_order",
+    "ib_smooth_contact",
+    "ib_visc_compact",
     "tau_star",
     "cont_damage_s",
     "alpha_bar",
     "rdma_mpi",
+    "amr",
+    "amr_block_beg",
+    "amr_block_end",
+    "amr_regrid_int",
+    "amr_tag_eps",
+    "amr_tag_abs",
+    "amr_place_owner",
+    "amr_buf",
+    "amr_snap",
+    "amr_device_pack",
+    "amr_subcycle",
+    "amr_prolong",
+    "amr_max_blocks",
+    "amr_max_grid_size",
+    "amr_max_level",
+    "amr_cluster_eff",
+    "amr_blocking_factor",
+    "amr_ref_ratio",
     "alf_factor",
     "num_igr_iters",
     "num_igr_warm_start_iters",
@@ -1724,6 +1778,9 @@ _nv(
     "nv_uvm_pref_gpu",
     "riemann_solver",
 )
+# post_process reads the `amr` flag (only) to overlay the refined fine blocks on the coarse
+# mesh; the fine-block geometry is recovered from the AMR restart file, not from these params.
+_nv(_SIM_POST, "amr")
 _nv(
     _PRE,
     "x_domain",
