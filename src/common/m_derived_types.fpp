@@ -422,6 +422,8 @@ module m_derived_types
         real(wp), dimension(1:3) :: step_vel          !< velocity array used to store intermediate steps in the time_stepper module
         real(wp), dimension(1:3) :: angular_vel
         real(wp), dimension(1:3) :: step_angular_vel  !< velocity array used to store intermediate steps in the time_stepper module
+        !> (vel - step_vel)/dt and its angular counterpart over the first stage; feed the ghost pressure
+        real(wp), dimension(1:3) :: accel, angular_accel
         !> Prescribed kinematics (moving_ibm = 1 only): 0 = off; 1 = hinged flapping, roll about the lab x axis through the hinge
         !! and pitch about the body spanwise (y) axis through the hinge, R = Rx(phi) Ry(theta)
         integer :: kin_model
@@ -712,4 +714,11 @@ module m_derived_types
         real(wp), dimension(1:num_fluids_max)   :: perturb_dens_scale
         real(wp), dimension(1:num_fluids_max,3) :: perturb_dens_offset
     end type simplex_noise_params
+
+    !> An index-space rectangle in global cell indices. In v1, one t_box = one rank's subdomain. Flat leaf: no allocatable/pointer
+    !! components, host-only, never namelist/broadcast.
+    type t_box
+        integer :: lo(3)  !< global low cell index per axis (x,y,z)
+        integer :: hi(3)  !< global high cell index per axis
+    end type t_box
 end module m_derived_types
