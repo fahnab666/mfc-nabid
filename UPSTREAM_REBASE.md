@@ -471,13 +471,16 @@ The full non-chemistry suite exercises pre_process, simulation and post_process.
 The initial run passed 740 of 744 cases; the three generated-input AMR failures
 then passed on retry, leaving only `B43894C4`, the moving JWL circle. That case
 already had a mismatch before this rebase; its current maximum failing absolute
-energy difference is `9.60e-4`. Its discrepancy is unresolved. No golden files
-were regenerated.
+energy difference is `9.60e-4`. Its discrepancy is unresolved. This case is absent from upstream master and
+is explicitly deferred from the rebase acceptance checks at the project owner's
+request; the test remains available for a later fix. No golden files were
+regenerated.
 
 The captured-output run passed 742 cases initially. Its acoustic-source case
 `7E15602E` read a parameter file while the final rebase was rewriting it; the
 isolated retry passed and its captured output matches master. Together with the
-unresolved JWL case, the final result is 743 passing cases out of 744.
+unresolved JWL case, the final acceptance result is 743 passing cases and the one feature-only
+moving-JWL-circle case deferred, out of 744 cases.
 
 Clean master passed all 731 non-chemistry cases. The captured comparison covers
 all 731 shared cases: 729 nonempty regression packs match bit for bit across
