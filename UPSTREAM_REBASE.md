@@ -439,3 +439,64 @@ Logs and smoke artifacts use the `build/validation/upbase-20261101-` prefix.
 The completed suite log is `upbase-20261101-regressions-unrestricted.log`; MPI
 requires local communication sockets that the sandbox blocks. GPU execution and
 chemistry were not tested locally.
+
+
+## November 15 upstream rebase
+
+Rebased the November 12 feature tip `de42e021` onto upstream master
+`f7d69c0f`. The previous remote tip is retained locally as
+`backup/el-jwl-iso-before-upbase-20261114`. Work was done in a separate
+worktree so the existing checkout's uncommitted JWL PT changes remain intact.
+
+Conflict resolution retains upstream AMR read and advance hooks alongside the
+LSO and programmed-burn hooks, both sets of parameter declarations, and the
+upstream checker constants. The generated test case applies the LSO IO override
+inside its simulation branch before applying the upstream AMR IO-preservation
+snippet. The three affected parallel AMR regressions pass after this correction.
+
+File audit against the final master: 2,712 of its 2,750 files match byte for
+byte; the feature modifies 38 files, adds 44, and removes none. All 289 files
+changed only upstream and all 1,789 upstream golden/reference files match
+master. All 58 files changed only by the feature match the previous feature tip.
+
+Validation used macOS, GNU Fortran 15, double precision, CPU MPI, and no fast
+math. All three release targets built, all seven precheck gates passed, and
+460 parameter, validator, JWL PT, and LSO unit tests passed, with one skipped
+and 33 passing subtests. Fresh EL/LSO pre-processing, simulation and
+post-processing completed on two ranks. Fresh visualization on three ranks
+produced four frames over 30 cells matching restart-derived float32 primitives
+exactly.
+
+The full non-chemistry suite exercises pre_process, simulation and post_process.
+The initial run passed 740 of 744 cases; the three generated-input AMR failures
+then passed on retry, leaving only `B43894C4`, the moving JWL circle. That case
+already had a mismatch before this rebase; its current maximum failing absolute
+energy difference is `9.60e-4`. Its discrepancy is unresolved. No golden files
+were regenerated.
+
+The captured-output run passed 742 cases initially. Its acoustic-source case
+`7E15602E` read a parameter file while the final rebase was rewriting it; the
+isolated retry passed and its captured output matches master. Together with the
+unresolved JWL case, the final result is 743 passing cases out of 744.
+
+Clean master passed all 731 non-chemistry cases. The captured comparison covers
+all 731 shared cases: 729 nonempty regression packs match bit for bit across
+13,690 output files and 83,962,752 saved values. The other two cases,
+`5EFB3277` and `78314D65`, have empty packs and pass their run-only checks.
+There are zero differing shared packs and no missing shared captures. The
+feature has 13 additional regression cases.
+
+The clean-master comparison build uses `2c317f61`. The two subsequent master
+commits, through `f7d69c0f`, change only the chemistry hot-rod example, its test
+registration and its reference files; no solver or build source changes. The
+comparison therefore covers the final master's non-chemistry solver sources.
+The external capture hook hashes the IEEE-754 binary64 representation of every
+value in the regression packs before the harness deletes them. Coordinates
+omitted by the standard packer are outside this comparison; run-only cases with
+empty packs are recorded separately. GPU execution and chemistry execution were
+not tested locally.
+
+Artifacts are under `build/validation/`: `build.log`, `precheck-final.log`,
+`unit-tests.log`, `regressions.log`, `amr-retry.log`, `bitwise-run.log`,
+`bitwise-comparison.json`, `integrity.json`, `master-file-manifest.json`,
+`range-diff-final.txt`, `bitwise-retry.log`, `precheck-report.log`, and fresh `smoke-el` and `smoke-viz` output.
