@@ -175,15 +175,14 @@ def test_composition_weighted_guess_with_offsets_and_stiffened_gas(solve):
     mat[6], mat[10], mat[11], mat[12] = 300.0, 1e7, 2e5, -1e5
     mj, ma, energy, _, _ = manufactured(800, 1800, 0.4, mat)
     rho, e = mj + ma, energy / (mj + ma)
+    # Coefficients blended by the heat-capacity share w; the JWL reference temperature enters through the cold curve.
     weight = mj * mat[7] / (mj * mat[7] + ma * mat[8])
-    ea = mat[0] * np.exp(-mat[2] * mat[5] / rho)
-    eb = mat[1] * np.exp(-mat[3] * mat[5] / rho)
-    ec = (ea / mat[2] + eb / mat[3]) / mat[5]
-    tj = mat[6] * (rho / mat[5]) ** mat[4] + (e - ec - mat[11]) / mat[7]
-    ta = (e - mat[10] / rho - mat[12]) / mat[8]
-    pj = ea + eb + mat[4] * rho * (e - ec - mat[11])
-    pa = mat[9] * rho * mat[8] * ta - mat[10]
-    pcw, tcw = pa + weight * (pj - pa), ta + weight * (tj - ta)
+    omega, pihat = mat[9] + weight * (mat[4] - mat[9]), (1 - weight) * mat[10]
+    e -= (mj * mat[11] + ma * mat[12]) / rho
+    v, tref = mat[5] / rho, mat[6] * (rho / mat[5]) ** mat[4]
+    ea, eb = mat[0] * np.exp(-mat[2] * v), mat[1] * np.exp(-mat[3] * v)
+    pcw = weight * (ea * (1 - omega / (mat[2] * v)) + eb * (1 - omega / (mat[3] * v)) + (omega - mat[4]) * rho * mat[7] * tref) + omega * rho * e - (mat[9] + 1) * pihat
+    tcw = (e - weight * ((ea / mat[2] + eb / mat[3]) / mat[5] - mat[7] * tref) - pihat / rho) * rho / (mj * mat[7] + ma * mat[8])
     expected = 1 - ma * mat[9] * mat[8] * tcw / (pcw + mat[10])
     guess, valid = solve.cw_guess(mj, ma, energy, mat)
     assert valid == 1
