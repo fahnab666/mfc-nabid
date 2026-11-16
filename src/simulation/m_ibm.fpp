@@ -535,7 +535,8 @@ contains
         real(wp) :: T_s, T_g, mw_s, mw_g, rho_s, rho_g, mdot_s, v_stefan, d
         real(wp), dimension(${NUM_SPECIES}$) :: mdot_k, h_w  !< ib_flux_wall: species mass fluxes into the gas; species enthalpies
         real(wp) :: e_s, nrm_l  !< ib_flux_wall: energy flux into the gas; length of the ghost's normal
-        logical :: surface_converged
+        logical :: surface_converged, density_converged
+        integer :: n_density_failed
         integer :: n_not_converged, n_ill_posed  !< Per-call reacting-surface failure tallies (see the module-level counters)
         !> Host copies; amdflang reads Re_size stale cross-TU
         integer                :: Re_size_loc1, Re_size_loc2
@@ -583,6 +584,7 @@ contains
 
         n_not_converged = 0
         n_ill_posed = 0
+        n_density_failed = 0
         nf1 = 0; nf2 = 0; nf3 = 0
         Re_size_loc1 = Re_size(1); Re_size_loc2 = Re_size(2)
 
@@ -601,9 +603,10 @@ contains
                                 & vel_IP, vel_g, r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, &
                                 & G_K, Gs, gp, norm, buf, radial_vector, j, k, l, q, qv_K, c_IP, nbub, patch_id, Ys_IP, &
                                 & W_species, T_IP, mw_IP, e_IP, Ys_g, Ys_s, T_s, T_g, mw_s, mw_g, rho_s, rho_g, mdot_s, v_stefan, &
-                                & d, surface_converged, vel_sum_g, E_ghost, alpha_q, alpha_rho_q, e_q, rho_IP_q, rho_GP_q, &
-                                & mdot_k, h_w, e_s, nrm_l, wf]', reduction='[[n_not_converged, n_ill_posed, nf1, nf2, nf3]]', &
-                                & reductionOp='[+]', present='[ghost_points]', firstprivate='[Re_size_loc1, Re_size_loc2]')
+                                & d, surface_converged, density_converged, vel_sum_g, E_ghost, alpha_q, alpha_rho_q, e_q, &
+                                & rho_IP_q, rho_GP_q, mdot_k, h_w, e_s, nrm_l, wf]', reduction='[[n_not_converged, n_ill_posed, &
+                                & n_density_failed, nf1, nf2, nf3]]', reductionOp='[+]', present='[ghost_points]', &
+                                & firstprivate='[Re_size_loc1, Re_size_loc2]')
             do i = 1, num_gps
                 if (record_surface) then
                     $:GPU_LOOP(parallelism='[seq]')
@@ -772,15 +775,14 @@ contains
                 else
                     call s_compute_ghost_point_pressure(gp, patch_id, radial_vector, vel_IP, rho, pres_IP, pres_GP)
 
-                    ! The adiabatic wall condition T_GP = T_IP the correction is derived from also
-                    ! fixes the ghost density: p + B = (n - 1)*cv*rho*T at both points under the one
-                    ! temperature leaves each partial density carrying the pressure ratio. The volume
-                    ! fractions are untouched, so only rho and qv move with it.
+                    ! Preserve each phase's image-point temperature at the corrected pressure. JWL uses its caloric EOS;
+                    ! constant-coefficient phases keep the pressure ratio. Volume fractions are unchanged.
                     $:GPU_LOOP(parallelism='[seq]')
                     do q = 1, num_fluids
                         if (fluid_pp(q)%eos == eos_jwl) then
                             rho_IP_q = max(alpha_rho_IP(q), sgm_eps)/max(alpha_IP(q), sgm_eps)
-                            call s_phase_density_at_temperature(q, rho_IP_q, pres_IP, pres_GP, rho_GP_q)
+                            call s_phase_density_at_temperature(q, rho_IP_q, pres_IP, pres_GP, rho_GP_q, density_converged)
+                            if (.not. density_converged) n_density_failed = n_density_failed + 1
                             alpha_rho_GP(q) = alpha_rho_IP(q)*rho_GP_q/rho_IP_q
                         else
                             alpha_rho_GP(q) = alpha_rho_IP(q)*(pres_GP + isentrope_B(q))/(pres_IP + isentrope_B(q))
@@ -916,6 +918,7 @@ contains
             end do
             $:END_GPU_PARALLEL_LOOP()
 
+            if (n_density_failed > 0) call s_mpi_abort('JWL IBM ghost density did not converge to an admissible wall state.')
             ! Publish the staged state now that every stencil has been read, so the buried-point average below sees it.
             $:GPU_PARALLEL_LOOP(private='[i, q, j, k, l, gp]', present='[ghost_points, gp_prim_new]')
             do i = 1, num_gps

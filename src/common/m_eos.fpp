@@ -30,6 +30,7 @@ module m_eos
     use m_derived_types
     use m_global_parameters_common
     use m_mpi_common, only: s_prohibit_abort
+    use m_jwl_pt, only: jwl_pt_parameters, s_jwl_wall_density
     use m_constants, only: eos_ideal_gas, eos_mie_gruneisen, eos_jwl, eos_vinet, eos_rk4_steps, ode_isentrope, &
         & ode_reference_temperature, sgm_eps, verysmall, dflt_real
 
@@ -462,7 +463,7 @@ contains
 
     end subroutine s_phase_temperature
 
-    !> Fast PT uses the exact JWL reference isentrope, including at large density ratios.
+    !> JWL walls and PT use the exact reference isentrope, including at large density ratios.
     subroutine s_reference_temperature(rho, i, T0, T_ref)
 
         $:GPU_ROUTINE(parallelism='[seq]')
@@ -471,7 +472,7 @@ contains
         integer, intent(in)   :: i
         real(wp), intent(out) :: T_ref
 
-        if (relax .and. (relax_model == 5 .or. relax_model == 7) .and. eoss(i) == eos_jwl) then
+        if (eoss(i) == eos_jwl .and. (ib .or. (relax .and. (relax_model == 5 .or. relax_model == 7)))) then
             T_ref = T0*(rho/eos_coeffs(i)%rho0)**eos_coeffs(i)%gruneisen0
         else
             call s_rk4(ode_reference_temperature, i, 1._wp/eos_coeffs(i)%rho0, T0, 1._wp/rho, T_ref)
@@ -494,16 +495,27 @@ contains
 
     !> Density of phase i at pressure p_to and the temperature of (rho_from, p_from). This reconstructs an adiabatic immersed-wall
     !! state. State-dependent EOS families use their complete temperature relation rather than a stiffened-gas surrogate.
-    subroutine s_phase_density_at_temperature(i, rho_from, p_from, p_to, rho_to)
+    subroutine s_phase_density_at_temperature(i, rho_from, p_from, p_to, rho_to, ok)
 
         $:GPU_ROUTINE(function_name='s_phase_density_at_temperature', parallelism='[seq]')
 
-        integer, intent(in)   :: i
-        real(wp), intent(in)  :: rho_from, p_from, p_to
-        real(wp), intent(out) :: rho_to
-        real(wp)              :: T_target, T_ref, T0, p_ref, p_at, e_ref, dp_drho, de_drho, G0, dG0, dTref_drho, dp_at_drho
-        integer               :: iter
+        integer, intent(in)     :: i
+        real(wp), intent(in)    :: rho_from, p_from, p_to
+        real(wp), intent(out)   :: rho_to
+        logical, intent(out)    :: ok
+        real(wp)                :: T_target, T_ref, T0, p_ref, p_at, e_ref, dp_drho, de_drho, G0, dG0, dTref_drho, dp_at_drho
+        integer                 :: iter
+        type(jwl_pt_parameters) :: mat
 
+        ok = .true.
+        if (ib .and. eoss(i) == eos_jwl) then
+            mat%a = eos_coeffs(i)%a; mat%b = eos_coeffs(i)%b
+            mat%r1 = eos_coeffs(i)%r1; mat%r2 = eos_coeffs(i)%r2
+            mat%omega = eos_coeffs(i)%gruneisen0; mat%rho0 = eos_coeffs(i)%rho0
+            mat%t0 = eos_coeffs(i)%t0; mat%cv_j = cvs(i)
+            call s_jwl_wall_density(rho_from, p_from, p_to, mat, rho_to, ok)
+            return
+        end if
         if (.not. f_is_state_dependent(i)) then
             rho_to = rho_from*(p_to + isentrope_B(i))/(p_from + isentrope_B(i))
             return

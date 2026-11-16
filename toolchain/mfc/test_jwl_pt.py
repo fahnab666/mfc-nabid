@@ -58,6 +58,19 @@ mat=jwl_pt_parameters(x(5),x(6),x(7),x(8),x(9),x(10),x(11),x(12),x(13),x(14),x(1
 call s_pt_cw_guess(x(1),x(2),x(3),mat,y(1),ok)
 y(2)=merge(1.,0.,ok)
 end subroutine
+
+subroutine wall_eval(x,y) bind(C)
+use iso_c_binding
+use m_jwl_pt
+implicit none
+real(c_{'float' if bits == 32 else 'double'}),intent(in)::x(16)
+real(c_{'float' if bits == 32 else 'double'}),intent(out)::y(2)
+type(jwl_pt_parameters)::mat
+logical::ok
+mat=jwl_pt_parameters(x(4),x(5),x(6),x(7),x(8),x(9),x(10),x(11),x(12),x(13),x(14),x(15),x(16))
+call s_jwl_wall_density(x(1),x(2),x(3),mat,y(1),ok)
+y(2)=merge(1.,0.,ok)
+end subroutine
 """
     )
     library = folder / "pt.so"
@@ -92,6 +105,17 @@ end subroutine
         return result.astype(float)
 
     call.cw_guess = cw_guess
+
+    wall_func = lib.wall_eval
+    wall_func.argtypes = [pointer, pointer]
+
+    def wall(rho, p_from, p_to, mat=MAT):
+        args = np.array([rho, p_from, p_to, *mat], dtype=dtype)
+        result = np.empty(2, dtype=dtype)
+        wall_func(args.ctypes.data_as(pointer), result.ctypes.data_as(pointer))
+        return result.astype(float)
+
+    call.wall = wall
     return call
 
 
@@ -106,6 +130,86 @@ def manufactured(rj, temp, yj, mat):
     ec = (ea / r1 + eb / r2) / rho0
     energy = mj * (ec + cj * (temp - tref) + qj) + ma * (ca * temp + pi / ra + qa)
     return mj, ma, energy, pressure, mj / rj
+
+
+def test_wall_density_manufactured_isotherms(solve):
+    """The production inverse recovers known densities without a pressure-ratio surrogate."""
+    rng = np.random.default_rng(20261116)
+    checked = 0
+    for t0 in (0.0, 300.0):
+        mat = MAT.copy()
+        mat[6] = t0
+        a, b, r1, r2, omega, rho0, _, cv = mat[:8]
+
+        def pressure(rho, temp):
+            return a * np.exp(-r1 * rho0 / rho) + b * np.exp(-r2 * rho0 / rho) + omega * rho * cv * (temp - t0 * (rho / rho0) ** omega)
+
+        for _ in range(200):
+            rho = rho0 * 10 ** rng.uniform(-1.3, 1)
+            target = rho * rng.uniform(0.5, 2)
+            temp = t0 * (max(rho, target) / rho0) ** omega + a / (omega * min(rho, target) * cv)
+            p_from, p_to = pressure(rho, temp), pressure(target, temp)
+            actual = solve.wall(rho, p_from, p_to, mat)
+            assert actual[1] == 1, (rho, target, temp, actual)
+            assert actual[0] == pytest.approx(target, rel=solve.rtol)
+            checked += 1
+    assert checked == 400
+
+
+@pytest.mark.parametrize("t0,rho,target,temp", [(666.6666666666666, 2000.0, 1000.0, 1213.005273848596), (0.0, 10000.0, 5000.0, 2 / 3)])
+def test_wall_density_stage_one_counterexamples(solve, t0, rho, target, temp):
+    mat = MAT.copy()
+    mat[:8] = [2e8, 4e6, 3.5, 0.8, 0.4, 1000, t0, 750]
+
+    def pressure(r):
+        return mat[0] * np.exp(-mat[2] * mat[5] / r) + mat[1] * np.exp(-mat[3] * mat[5] / r) + mat[4] * r * mat[7] * (temp - t0 * (r / mat[5]) ** mat[4])
+
+    actual = solve.wall(rho, pressure(rho), pressure(target), mat)
+    assert actual[1] == 1
+    assert actual[0] == pytest.approx(target, rel=solve.rtol)
+
+
+@pytest.mark.parametrize("rho,p_from,p_to", [(0.0, 1.0, 1.0), (1.0, -1.0, 1.0), (1.0, 1.0, 0.0), (1.0, float("nan"), 1.0)])
+def test_wall_density_rejects_invalid_states(solve, rho, p_from, p_to):
+    assert solve.wall(rho, p_from, p_to)[1] == 0
+
+
+def test_wall_density_rejects_unreachable_pressure(solve):
+    mat = MAT.copy()
+    mat[:8] = [2e8, 4e6, 3.5, 0.8, 0.4, 1000.0, 666.6666666666666, 750.0]
+    assert solve.wall(2000.0, 237436068.87423152, 2 * 237436068.87423152, mat)[1] == 0
+
+
+@pytest.mark.parametrize("stiffness,solver", [(0.0, "fast"), (1e7, "fast"), (0.0, "matrix"), (1e7, "matrix")])
+def test_reconstructed_wall_mixture_is_a_pt_fixed_point(solve, stiffness, solver):
+    """The two-phase ghost state must retain common pressure/temperature under the branch's PT rule."""
+    mat = MAT.copy()
+    mat[:8] = [2e8, 4e6, 3.5, 0.8, 0.4, 1000.0, 300.0, 750.0]
+    mat[10] = stiffness
+    a, b, r1, r2, omega, rho0, t0, cv = mat[:8]
+    for rho in (500.0, 1000.0, 2000.0):
+        for ratio in (0.5, 1.0, 1.5):
+            target = rho * ratio
+            temp = t0 * (max(rho, target) / rho0) ** omega + 2000.0
+
+            def pressure(r):
+                return a * np.exp(-r1 * rho0 / r) + b * np.exp(-r2 * rho0 / r) + omega * r * cv * (temp - t0 * (r / rho0) ** omega)
+
+            pres = pressure(target)
+            wall = solve.wall(rho, pressure(rho), pres, mat)
+            assert wall[1] == 1
+            for alpha in (0.05, 0.5, 0.95):
+                ra = (pres + stiffness) / (mat[9] * mat[8] * temp)
+                mj, ma = alpha * wall[0], (1 - alpha) * ra
+                ec = (a * np.exp(-r1 * rho0 / wall[0]) / r1 + b * np.exp(-r2 * rho0 / wall[0]) / r2) / rho0
+                energy = mj * (ec + cv * (temp - t0 * (wall[0] / rho0) ** omega)) + ma * (mat[8] * temp + stiffness / ra)
+                actual = solve(mj, ma, energy, mat, alpha, solver)
+                assert actual[5] == 1, (rho, ratio, alpha, stiffness, solver, actual)
+                np.testing.assert_allclose(actual[:3], [pres, temp, alpha], rtol=max(solve.rtol, 1e-4 if solver == "fast" else 0.0))
+                rj_eq, ra_eq = mj / actual[2], ma / actual[3]
+                ec_eq = (a * np.exp(-r1 * rho0 / rj_eq) / r1 + b * np.exp(-r2 * rho0 / rj_eq) / r2) / rho0
+                energy_eq = mj * (ec_eq + cv * (actual[1] - t0 * (rj_eq / rho0) ** omega)) + ma * (mat[8] * actual[1] + stiffness / ra_eq)
+                assert energy_eq == pytest.approx(energy, rel=solve.rtol)
 
 
 @pytest.mark.parametrize("stiffness,t0", [(0.0, 0.0), (1e7, 0.0), (0.0, 300.0), (1e7, 300.0)])

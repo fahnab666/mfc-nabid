@@ -13,7 +13,7 @@ module m_jwl_pt
     implicit none
 
     private
-    public :: jwl_pt_parameters, s_jwl_pt_equilibrium, s_jwl_pt_equilibrium_matrix, s_pt_cw_guess
+    public :: jwl_pt_parameters, s_jwl_pt_equilibrium, s_jwl_pt_equilibrium_matrix, s_pt_cw_guess, s_jwl_wall_density
 
     !> Constituent data in the same energy and temperature convention as m_eos.
     type jwl_pt_parameters
@@ -74,6 +74,60 @@ contains
         ok = ieee_is_finite(alpha) .and. alpha > epsilon(1._wp) .and. alpha < 1._wp - epsilon(1._wp)
 
     end subroutine s_pt_cw_guess
+
+    !> Damped isothermal wall-density inverse with a checked pressure residual.
+    subroutine s_jwl_wall_density(rho_from, p_from, p_to, mat, rho_to, ok)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        real(wp), intent(in)                :: rho_from, p_from, p_to
+        type(jwl_pt_parameters), intent(in) :: mat
+        real(wp), intent(out)               :: rho_to
+        logical, intent(out)                :: ok
+        real(wp)                            :: ec, pc, dpc, temp, thermal, residual, derivative, allowance, step, trial, fc, dc
+        integer                             :: it, inner
+        logical                             :: accepted
+
+        rho_to = rho_from
+        ok = .false.
+        if (.not. (rho_from > 0._wp .and. p_from > 0._wp .and. p_to > 0._wp)) return
+        if (.not. (mat%omega > 0._wp .and. mat%cv_j > 0._wp .and. mat%t0 >= 0._wp)) return
+        if (.not. (ieee_is_finite(rho_from) .and. ieee_is_finite(p_from) .and. ieee_is_finite(p_to))) return
+        call s_pt_curve(rho_from, mat, ec, pc, dpc)
+        temp = (p_from - pc)/(mat%omega*rho_from*mat%cv_j)
+        if (.not. (temp > 0._wp .and. ieee_is_finite(temp))) return
+
+        do it = 1, 80
+            call s_pt_curve(rho_to, mat, ec, pc, dpc)
+            thermal = mat%omega*rho_to*mat%cv_j*temp
+            residual = pc + thermal - p_to
+            derivative = dpc + mat%omega*mat%cv_j*temp
+            if (.not. (ieee_is_finite(residual) .and. ieee_is_finite(derivative))) return
+            if (derivative <= 0._wp) return
+            allowance = 16._wp*epsilon(1._wp)*(abs(pc) + abs(thermal) + abs(p_to))
+            if (abs(residual) <= allowance) then
+                ok = .true.
+                return
+            end if
+            ! Stay positive without flooring density; backtrack until the pressure residual decreases.
+            step = max(-0.5_wp*rho_to, min(0.5_wp*rho_to, residual/derivative))
+            accepted = .false.
+            do inner = 1, 24
+                trial = rho_to - step
+                call s_pt_curve(trial, mat, ec, pc, dpc)
+                fc = pc + mat%omega*trial*mat%cv_j*temp - p_to
+                dc = dpc + mat%omega*mat%cv_j*temp
+                if (ieee_is_finite(fc) .and. dc > 0._wp .and. abs(fc) < abs(residual)) then
+                    accepted = .true.
+                    exit
+                end if
+                step = 0.5_wp*step
+            end do
+            if (.not. accepted) return
+            rho_to = trial
+        end do
+
+    end subroutine s_jwl_wall_density
 
     !> Residual in log(alpha_j/alpha_a). Compute both volumes independently, including near a pure phase.
     subroutine s_pt_trial(x, mj, ma, rhoe, mat, aj, aa, temp, pj, pa, residual, derivative)
