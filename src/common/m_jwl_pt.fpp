@@ -43,7 +43,8 @@ contains
 
     end subroutine s_pt_curve
 
-    !> Map the composition-weighted pressure and temperature to a product volume fraction.
+    !> Composition-weighted (CW) law with coefficients blended by the products' heat-capacity share, mapped to a product volume
+    !! fraction through the ambient EOS. The ambient cold energy pihat/rho keeps T exact at Y = 0 for a stiffened gas.
     subroutine s_pt_cw_guess(mj, ma, rhoe, mat, alpha, ok)
 
         $:GPU_ROUTINE(parallelism='[seq]')
@@ -52,21 +53,19 @@ contains
         type(jwl_pt_parameters), intent(in) :: mat
         real(wp), intent(out)               :: alpha
         logical, intent(out)                :: ok
-        real(wp)                            :: rho, e, weight, ec, pc, dpc, pj, pa, tj, ta, pres, temp, rhoa
+        real(wp)                            :: rho, e, weight, ec, pc, dpc, omega, pihat, pres, temp, rhoa
 
         alpha = 0._wp; ok = .false.
         rho = mj + ma
         if (.not. (mj > 0._wp .and. ma > 0._wp .and. rho > 0._wp)) return
         if (.not. (mat%cv_j > 0._wp .and. mat%cv_a > 0._wp .and. mat%gamma_a > 0._wp)) return
-        e = rhoe/rho
+        e = (rhoe - mj*mat%qv_j - ma*mat%qv_a)/rho
         weight = mj*mat%cv_j/(mj*mat%cv_j + ma*mat%cv_a)
+        omega = mat%gamma_a + weight*(mat%omega - mat%gamma_a)
+        pihat = (1._wp - weight)*mat%pi_a
         call s_pt_curve(rho, mat, ec, pc, dpc)
-        tj = (e - ec - mat%qv_j)/mat%cv_j
-        ta = (e - mat%pi_a/rho - mat%qv_a)/mat%cv_a
-        pj = pc + mat%omega*rho*mat%cv_j*tj
-        pa = mat%gamma_a*rho*mat%cv_a*ta - mat%pi_a
-        pres = pa + weight*(pj - pa)
-        temp = ta + weight*(tj - ta)
+        pres = weight*(pc - omega*rho*ec) + omega*rho*e - (mat%gamma_a + 1._wp)*pihat
+        temp = (rho*(e - weight*ec) - pihat)/(mj*mat%cv_j + ma*mat%cv_a)
         if (.not. (ieee_is_finite(pres) .and. ieee_is_finite(temp))) return
         if (.not. (temp > 0._wp .and. pres + mat%pi_a > 0._wp)) return
         rhoa = (pres + mat%pi_a)/(mat%gamma_a*mat%cv_a*temp)
@@ -165,6 +164,31 @@ contains
 
     end subroutine s_pt_accept
 
+    !> CW residual gate: if |p_j - p_a| <= 1e-4 max(|p_j|, |p_a|) at the CW split, return the split refined by one Newton step in
+    !! rho_j, with p the mean of the constituent pressures. Since x = ln(m_j) - ln(rho_j - Y rho), that step is x - ln(1 + R/R_x).
+    subroutine s_pt_gate(x, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        real(wp), intent(in)                :: x, mj, ma, rhoe
+        type(jwl_pt_parameters), intent(in) :: mat
+        real(wp), intent(out)               :: pres, temp, aj, aa, c2
+        logical, intent(out)                :: ok
+        real(wp), parameter                 :: tau = 1.e-4_wp
+        real(wp)                            :: pj, pa, residual, derivative, ratio
+
+        pres = 0._wp; c2 = 0._wp; ok = .false.
+        call s_pt_trial(x, mj, ma, rhoe, mat, aj, aa, temp, pj, pa, residual, derivative)
+        if (.not. (abs(residual) <= tau*max(abs(pj), abs(pa)) .and. derivative /= 0._wp)) return
+        ratio = 1._wp + residual/derivative
+        if (.not. (ieee_is_finite(ratio) .and. ratio > 0._wp)) return
+        call s_pt_trial(x - log(ratio), mj, ma, rhoe, mat, aj, aa, temp, pj, pa, residual, derivative)
+        pres = 0.5_wp*(pj + pa)
+        ok = ieee_is_finite(pres) .and. ieee_is_finite(temp) .and. temp > 0._wp .and. pres > 0._wp
+        if (ok) call s_pt_sound(mj, ma, aj, aa, pres, temp, mat, c2, ok)
+
+    end subroutine s_pt_gate
+
     !> Mass and energy conserving Fast PT solve. Failure is explicit; no alternate EOS is substituted.
     subroutine s_jwl_pt_equilibrium(mj, ma, rhoe, alpha_guess, mat, pres, temp, aj, aa, c2, ok)
 
@@ -211,7 +235,11 @@ contains
             if (ok) return
         end if
         call s_pt_cw_guess(mj, ma, rhoe, mat, alpha_cw, cw_ok)
-        if (cw_ok) x0 = log(alpha_cw) - log(1._wp - alpha_cw)
+        if (cw_ok) then
+            x0 = log(alpha_cw) - log(1._wp - alpha_cw)
+            call s_pt_gate(x0, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
+            if (ok) return
+        end if
         x0 = max(-limit, min(limit, x0))
         x = x0
         ! Fast safeguarded Newton path. Every proposed result passes the same acceptance test as the bracketed path.
