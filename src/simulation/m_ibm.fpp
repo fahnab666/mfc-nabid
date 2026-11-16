@@ -2227,20 +2227,22 @@ contains
     !! moving with its wall (face momentum times the wall's normal velocity is removed). With ib_exchange: energy in and mass out of
     !! each lumped body (every body with ib_heat_wrt) into ib_heat(2:3), weighted so a step's stages sum to its exchange (SSP-RK: 1;
     !! 1/2, 1/2; 1/6, 1/6, 2/3).
-    subroutine s_accumulate_ib_face_fluxes(idir, stage, q_cons_vf)
+    subroutine s_accumulate_ib_face_fluxes(idir, stage, q_cons_vf, q_prim_vf)
 
         integer, intent(in) :: idir, stage
         type(scalar_field), dimension(sys_size), intent(in) :: q_cons_vf
+        type(scalar_field), dimension(sys_size), intent(in) :: q_prim_vf
         real(wp), dimension(3), parameter :: w_rk3 = [1._wp/6._wp, 1._wp/6._wp, 2._wp/3._wp]
         real(wp), dimension(3) :: f, r, tq, vb
-        real(wp) :: area, w, f_E, f_m
+        real(wp) :: area, w, f_E, f_m, rho_f, rho_c
         integer :: i, j, k, l, jn, kn, ln, ci, cj, ck, side, ib_id, ib_tmp, xp, yp, zp, g
         integer :: j0, k0, l0, fj, fk, fl
-        logical :: has_src, has_src_E, do_ft, all_ibs, dual_pass, hatR
+        logical :: has_src, has_src_E, do_ft, all_ibs, dual_pass, hatR, jwl_momentum
 
         do_ft = moving_immersed_boundary_flag .or. ib_state_wrt
         if (num_ibs == 0 .or. .not. (do_ft .or. ib_exchange)) return
         all_ibs = ib_heat_wrt
+        jwl_momentum = any(eoss == eos_jwl)
 
         if (do_ft .and. idir == 1) then
             $:GPU_PARALLEL_LOOP(private='[i, l]', collapse=2)
@@ -2266,7 +2268,7 @@ contains
 
         ! Face (j, k, l) lies between that cell and the next one along idir
         $:GPU_PARALLEL_LOOP(collapse=3, private='[i, j, k, l, jn, kn, ln, ci, cj, ck, side, ib_id, ib_tmp, xp, yp, zp, g, area, &
-                            & f, r, tq, vb, f_E, f_m, hatR, fj, fk, fl]')
+                            & f, r, tq, vb, f_E, f_m, rho_f, rho_c, hatR, fj, fk, fl]', firstprivate='[jwl_momentum]')
         do l = l0, p
             do k = k0, n
                 do j = j0, m
@@ -2313,6 +2315,13 @@ contains
                                 ! Wall velocity at the face, V_b = V + omega x r
                                 call s_cross_product(patch_ib(ib_id)%angular_vel, r, vb)
                                 vb = vb + patch_ib(ib_id)%vel
+                                rho_f = 0._wp; rho_c = 0._wp
+                                if (jwl_momentum .and. patch_ib(ib_id)%moving_ibm > 0) then
+                                    do i = eqn_idx%cont%beg, eqn_idx%cont%end
+                                        rho_f = rho_f + q_prim_vf(i)%sf(fj, fk, fl)
+                                        rho_c = rho_c + q_prim_vf(i)%sf(ci, cj, ck)
+                                    end do
+                                end if
                                 f = 0._wp
                                 do i = 1, num_dims
                                     f(i) = f_ib_face_flux(hatR, j, k, l, eqn_idx%mom%beg + i - 1)
@@ -2321,8 +2330,14 @@ contains
                                     ! + p n_i: the lab flux carries rho u_i u_n, so remove the face momentum (mean of the fluid
                                     ! and body cell) times the wall's normal velocity V_n
                                     if (patch_ib(ib_id)%moving_ibm > 0) then
-                                        f(i) = f(i) - 0.5_wp*vb(idir)*(q_cons_vf(eqn_idx%mom%beg + i - 1)%sf(fj, fk, &
-                                          & fl) + q_cons_vf(eqn_idx%mom%beg + i - 1)%sf(ci, cj, ck))
+                                        if (jwl_momentum) then
+                                            ! The RHS exchanges primitive halos; conservative momentum halos can be stale.
+                                            f(i) = f(i) - 0.5_wp*vb(idir)*(rho_f*q_prim_vf(eqn_idx%mom%beg + i - 1)%sf(fj, fk, &
+                                              & fl) + rho_c*q_prim_vf(eqn_idx%mom%beg + i - 1)%sf(ci, cj, ck))
+                                        else
+                                            f(i) = f(i) - 0.5_wp*vb(idir)*(q_cons_vf(eqn_idx%mom%beg + i - 1)%sf(fj, fk, &
+                                              & fl) + q_cons_vf(eqn_idx%mom%beg + i - 1)%sf(ci, cj, ck))
+                                        end if
                                     end if
                                     f(i) = real(side, wp)*area*f(i)
                                 end do
