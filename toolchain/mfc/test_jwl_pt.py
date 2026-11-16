@@ -260,6 +260,27 @@ def test_fast_and_matrix_solvers_agree(solve):
     assert np.max(errors) <= solve.rtol, errors
 
 
+def test_matrix_solver_resolves_pressure_in_water_like_ambient(solve):
+    if solve.bits == 32:
+        pytest.skip("p << pi_inf is below single-precision resolution")
+    # pi_inf >> p makes rho e mostly ambient cold energy; the tolerance must still be relative to p.
+    mat = MAT.copy()
+    mat[8], mat[9], mat[10] = 588.0, 3.4, 6e8
+    rng = np.random.default_rng(1116)
+    for _ in range(40):
+        rj, temp, yj = 10 ** rng.uniform(1, 3.2), 10 ** rng.uniform(2.5, 3.6), rng.uniform(0.05, 0.95)
+        mj, ma, energy, pressure, alpha = manufactured(rj, temp, yj, mat)
+        actual = solve(mj, ma, energy, mat, alpha * 0.8, solver="matrix")
+        assert actual[5] == 1, (rj, temp, yj, actual)
+        assert actual[0] == pytest.approx(pressure, rel=1e-9)
+        assert actual[2] + actual[3] == pytest.approx(1, abs=4 * np.finfo(float).eps)
+        # A common shift of the formation energies is the same physical state.
+        shifted = mat.copy()
+        shifted[11:] = 5e6
+        moved = solve(mj, ma, energy + (mj + ma) * 5e6, shifted, alpha * 0.8, solver="matrix")
+        assert moved[5] == 1 and moved[0] == pytest.approx(pressure, rel=1e-9)
+
+
 def test_composition_weighted_guess_matches_ideal_limit(solve):
     mat = MAT.copy()
     mat[[0, 1, 6, 10]] = 0.0

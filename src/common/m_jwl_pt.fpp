@@ -243,21 +243,18 @@ contains
 
     end subroutine s_pt_gate
 
-    !> Mass and energy conserving Fast PT solve. Failure is explicit; no alternate EOS is substituted.
-    subroutine s_jwl_pt_equilibrium(mj, ma, rhoe, alpha_guess, mat, pres, temp, aj, aa, c2, ok)
+    !> Input check and the closed forms for a cell holding one phase; done is false when both phases are present.
+    subroutine s_pt_single_phase(mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok, done)
 
         $:GPU_ROUTINE(parallelism='[seq]')
 
-        real(wp), intent(in) :: mj, ma, rhoe, alpha_guess
+        real(wp), intent(in)                :: mj, ma, rhoe
         type(jwl_pt_parameters), intent(in) :: mat
-        real(wp), intent(out) :: pres, temp, aj, aa, c2
-        logical, intent(out) :: ok
-        real(wp) :: ec, pc, dpc, tref, pref, dpref, limit, x0, x, candidate, dx, pj, pa, residual, derivative
-        real(wp) :: left, right, fl, fprev, previous, trial, fc, dc, pbest, tbest, abest, bbest, cbest, distance, alpha_cw
-        integer :: it, scan, inner
-        logical :: accepted, cw_ok
+        real(wp), intent(out)               :: pres, temp, aj, aa, c2
+        logical, intent(out)                :: ok, done
+        real(wp)                            :: ec, pc, dpc, tref, pref, dpref
 
-        pres = 0._wp; temp = 0._wp; aj = 0._wp; aa = 0._wp; c2 = 0._wp; ok = .false.
+        pres = 0._wp; temp = 0._wp; aj = 0._wp; aa = 0._wp; c2 = 0._wp; ok = .false.; done = .true.
         if (.not. (mj >= 0._wp .and. ma >= 0._wp .and. mj + ma > 0._wp .and. ieee_is_finite(rhoe))) return
         if (.not. (mat%cv_j > 0._wp .and. mat%cv_a > 0._wp .and. mat%gamma_a > 0._wp)) return
         if (mj == 0._wp) then
@@ -265,8 +262,6 @@ contains
             temp = (rhoe - ma*mat%qv_a - mat%pi_a)/(ma*mat%cv_a)
             pres = mat%gamma_a*ma*mat%cv_a*temp - mat%pi_a
             c2 = (1._wp + mat%gamma_a)*(pres + mat%pi_a)/ma
-            ok = temp > 0._wp .and. pres > 0._wp .and. c2 > 0._wp .and. ieee_is_finite(c2)
-            return
         else if (ma == 0._wp) then
             aj = 1._wp
             call s_pt_curve(mj, mat, ec, pc, dpc)
@@ -276,48 +271,94 @@ contains
             pref = pc + mat%omega*mj*mat%cv_j*tref
             dpref = dpc + mat%omega*mat%cv_j*(1._wp + mat%omega)*tref
             c2 = dpref + (1._wp + mat%omega)*(pres - pref)/mj
-            ok = temp > 0._wp .and. pres > 0._wp .and. c2 > 0._wp .and. ieee_is_finite(c2)
+        else
+            done = .false.
             return
         end if
+        ok = temp > 0._wp .and. pres > 0._wp .and. c2 > 0._wp .and. ieee_is_finite(c2)
 
-        ! The volume coordinate has no subtraction of nearly equal densities and no dimensional floor.
-        limit = -2.5_wp*log(epsilon(1._wp))
-        x0 = log(mj) - log(ma)
-        if (alpha_guess > epsilon(1._wp) .and. alpha_guess < 1._wp - epsilon(1._wp)) then
-            x0 = log(alpha_guess) - log(1._wp - alpha_guess)
-            call s_pt_accept(x0, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
-            if (ok) return
-        end if
-        call s_pt_cw_guess(mj, ma, rhoe, mat, alpha_cw, cw_ok)
-        if (cw_ok) then
-            x0 = log(alpha_cw) - log(1._wp - alpha_cw)
-            call s_pt_gate(x0, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
-            if (ok) return
-        end if
-        x0 = max(-limit, min(limit, x0))
+    end subroutine s_pt_single_phase
+
+    !> Safeguarded Newton in x from x0: steps limited to 4 and halved until |p_j - p_a| decreases.
+    subroutine s_pt_newton(x0, limit, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        real(wp), intent(in)                :: x0, limit, mj, ma, rhoe
+        type(jwl_pt_parameters), intent(in) :: mat
+        real(wp), intent(out)               :: pres, temp, aj, aa, c2
+        logical, intent(out)                :: ok
+        real(wp)                            :: x, candidate, dx, pj, pa, residual, derivative, fc, dc
+        integer                             :: it, inner
+
         x = x0
-        ! Fast safeguarded Newton path. Every proposed result passes the same acceptance test as the bracketed path.
         do it = 1, 24
             call s_pt_accept(x, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
             if (ok) return
             call s_pt_trial(x, mj, ma, rhoe, mat, aj, aa, temp, pj, pa, residual, derivative)
-            if (.not. ieee_is_finite(derivative) .or. derivative == 0._wp) exit
+            if (.not. ieee_is_finite(derivative) .or. derivative == 0._wp) return
             dx = max(-4._wp, min(4._wp, residual/derivative))
-            accepted = .false.
             do inner = 1, 12
                 candidate = max(-limit, min(limit, x - dx))
                 call s_pt_trial(candidate, mj, ma, rhoe, mat, aj, aa, temp, pj, pa, fc, dc)
-                if (ieee_is_finite(fc) .and. abs(fc) < abs(residual)) then
-                    accepted = .true.
-                    exit
-                end if
+                if (ieee_is_finite(fc) .and. abs(fc) < abs(residual)) exit
                 dx = 0.5_wp*dx
             end do
-            if (.not. accepted) exit
+            if (inner > 12) return
             x = candidate
         end do
 
-        ! Immutable scan limits; reject negative-temperature or unstable roots, then choose the nearest physical root.
+    end subroutine s_pt_newton
+
+    !> Root in the bracket [left, right] (fl = residual at left) by Newton steps kept inside it, else bisection.
+    subroutine s_pt_bracket(left, right, fl, mj, ma, rhoe, mat, x, pres, temp, aj, aa, c2, ok)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        real(wp), intent(inout)             :: left, right, fl
+        real(wp), intent(in)                :: mj, ma, rhoe
+        type(jwl_pt_parameters), intent(in) :: mat
+        real(wp), intent(out)               :: x, pres, temp, aj, aa, c2
+        logical, intent(out)                :: ok
+        real(wp)                            :: candidate, dx, pj, pa, fc, dc
+        integer                             :: it
+
+        x = 0.5_wp*(left + right)
+        do it = 1, 100
+            call s_pt_accept(x, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
+            if (ok) return
+            call s_pt_trial(x, mj, ma, rhoe, mat, aj, aa, temp, pj, pa, fc, dc)
+            if (.not. ieee_is_finite(fc)) return
+            if ((fl <= 0._wp .and. fc >= 0._wp) .or. (fl >= 0._wp .and. fc <= 0._wp)) then
+                right = x
+            else
+                left = x; fl = fc
+            end if
+            candidate = 0.5_wp*(left + right)
+            if (dc /= 0._wp) then
+                dx = x - fc/dc
+                if (dx > left .and. dx < right) candidate = dx
+            end if
+            if (candidate == x) return
+            x = candidate
+        end do
+
+    end subroutine s_pt_bracket
+
+    !> Scan [-limit, limit] in 128 cells, refine every sign change, and return the accepted root nearest x0.
+    subroutine s_pt_scan(x0, limit, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        real(wp), intent(in)                :: x0, limit, mj, ma, rhoe
+        type(jwl_pt_parameters), intent(in) :: mat
+        real(wp), intent(out)               :: pres, temp, aj, aa, c2
+        logical, intent(out)                :: ok
+        real(wp)                            :: x, left, right, fl, fprev, previous, trial, pj, pa, residual, derivative, distance
+        real(wp)                            :: pbest, tbest, abest, bbest, cbest
+        integer                             :: scan
+        logical                             :: accepted
+
         previous = -limit
         call s_pt_trial(previous, mj, ma, rhoe, mat, aj, aa, temp, pj, pa, fprev, derivative)
         distance = huge(1._wp)
@@ -328,25 +369,7 @@ contains
             if (ieee_is_finite(fprev) .and. ieee_is_finite(residual)) then
                 if ((fprev <= 0._wp .and. residual >= 0._wp) .or. (fprev >= 0._wp .and. residual <= 0._wp)) then
                     left = previous; right = trial; fl = fprev
-                    x = 0.5_wp*(left + right)
-                    do it = 1, 100
-                        call s_pt_accept(x, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, accepted)
-                        if (accepted) exit
-                        call s_pt_trial(x, mj, ma, rhoe, mat, aj, aa, temp, pj, pa, fc, dc)
-                        if (.not. ieee_is_finite(fc)) exit
-                        if ((fl <= 0._wp .and. fc >= 0._wp) .or. (fl >= 0._wp .and. fc <= 0._wp)) then
-                            right = x
-                        else
-                            left = x; fl = fc
-                        end if
-                        candidate = 0.5_wp*(left + right)
-                        if (dc /= 0._wp) then
-                            dx = x - fc/dc
-                            if (dx > left .and. dx < right) candidate = dx
-                        end if
-                        if (candidate == x) exit
-                        x = candidate
-                    end do
+                    call s_pt_bracket(left, right, fl, mj, ma, rhoe, mat, x, pres, temp, aj, aa, c2, accepted)
                     if (accepted .and. abs(x - x0) < distance) then
                         distance = abs(x - x0)
                         pbest = pres; tbest = temp; abest = aj; bbest = aa; cbest = c2
@@ -360,9 +383,45 @@ contains
             pres = pbest; temp = tbest; aj = abest; aa = bbest; c2 = cbest
         end if
 
+    end subroutine s_pt_scan
+
+    !> Fast PT: keep the existing split if it is in equilibrium; else the CW predictor behind the residual gate; else a safeguarded
+    !! Newton in x = ln(alpha_j/alpha_a); else a bracketed scan. Mass and energy are conserved and failure is explicit.
+    subroutine s_jwl_pt_equilibrium(mj, ma, rhoe, alpha_guess, mat, pres, temp, aj, aa, c2, ok)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        real(wp), intent(in)                :: mj, ma, rhoe, alpha_guess
+        type(jwl_pt_parameters), intent(in) :: mat
+        real(wp), intent(out)               :: pres, temp, aj, aa, c2
+        logical, intent(out)                :: ok
+        real(wp)                            :: limit, x0, alpha_cw
+        logical                             :: done, cw_ok
+
+        call s_pt_single_phase(mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok, done)
+        if (done) return
+        x0 = log(mj) - log(ma)
+        if (alpha_guess > epsilon(1._wp) .and. alpha_guess < 1._wp - epsilon(1._wp)) then
+            x0 = log(alpha_guess) - log(1._wp - alpha_guess)
+            call s_pt_accept(x0, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
+            if (ok) return
+        end if
+        call s_pt_cw_guess(mj, ma, rhoe, mat, alpha_cw, cw_ok)
+        if (cw_ok) then
+            x0 = log(alpha_cw) - log(1._wp - alpha_cw)
+            call s_pt_gate(x0, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
+            if (ok) return
+        end if
+        ! The volume coordinate has no subtraction of nearly equal densities and no dimensional floor.
+        limit = -2.5_wp*log(epsilon(1._wp))
+        x0 = max(-limit, min(limit, x0))
+        call s_pt_newton(x0, limit, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
+        if (.not. ok) call s_pt_scan(x0, limit, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
+
     end subroutine s_jwl_pt_equilibrium
 
-    !> Full PT equilibrium in (rho_j, rho_a, T, p), solved as a scaled 4x4 Newton system.
+    !> Full PT equilibrium in (rho_j, rho_a, T, p) by a scaled 4x4 Newton system: from the given volume fraction, then, if that
+    !! fails or none is usable, from the CW predictor (else alpha_j = Y_j).
     subroutine s_jwl_pt_equilibrium_matrix(mj, ma, rhoe, alpha_guess, mat, pres, temp, aj, aa, c2, ok)
 
         $:GPU_ROUTINE(parallelism='[seq]')
@@ -371,38 +430,57 @@ contains
         type(jwl_pt_parameters), intent(in) :: mat
         real(wp), intent(out)               :: pres, temp, aj, aa, c2
         logical, intent(out)                :: ok
-        real(wp)                            :: rho, yj, ya, x(4), f(4), jac(4, 4), step(4), trial(4), ft(4), jt(4, 4)
-        real(wp)                            :: ec, pc, dpc, rscale, tscale, pscale, escale, norm0, norm1, damp, ref, aguess
+        real(wp)                            :: alpha_cw
+        logical                             :: done, cw_ok
+
+        call s_pt_single_phase(mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok, done)
+        if (done) return
+        if (alpha_guess > epsilon(1._wp) .and. alpha_guess < 1._wp - epsilon(1._wp)) then
+            call s_pt_matrix_newton(mj, ma, rhoe, alpha_guess, mat, pres, temp, aj, aa, c2, ok)
+            if (ok) return
+        end if
+        call s_pt_cw_guess(mj, ma, rhoe, mat, alpha_cw, cw_ok)
+        if (.not. cw_ok) alpha_cw = mj/(mj + ma)
+        call s_pt_matrix_newton(mj, ma, rhoe, alpha_cw, mat, pres, temp, aj, aa, c2, ok)
+
+    end subroutine s_jwl_pt_equilibrium_matrix
+
+    !> Damped 4x4 Newton from the split alpha_guess. Every iterate is tested with the Fast PT acceptance, so the pressure tolerance
+    !! is relative to p and the returned state conserves energy exactly.
+    subroutine s_pt_matrix_newton(mj, ma, rhoe, alpha_guess, mat, pres, temp, aj, aa, c2, ok)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        real(wp), intent(in)                :: mj, ma, rhoe, alpha_guess
+        type(jwl_pt_parameters), intent(in) :: mat
+        real(wp), intent(out)               :: pres, temp, aj, aa, c2
+        logical, intent(out)                :: ok
+        real(wp)                            :: rho, x(4), f(4), jac(4, 4), step(4), trial(4), ft(4), jt(4, 4)
+        real(wp)                            :: tscale, scale, norm0, norm1, damp, aguess, pj, pa, residual, derivative
         integer                             :: it, ls
         logical                             :: solved
 
-        pres = 0._wp; temp = 0._wp; aj = 0._wp; aa = 0._wp; c2 = 0._wp; ok = .false.
         rho = mj + ma
-        if (.not. (mj > 0._wp .and. ma > 0._wp .and. rho > 0._wp .and. ieee_is_finite(rhoe))) return
-        if (.not. (mat%cv_j > 0._wp .and. mat%cv_a > 0._wp .and. mat%gamma_a > 0._wp)) return
-        yj = mj/rho; ya = ma/rho; rscale = rho
-        aguess = min(1._wp - 1.e-6_wp, max(1.e-6_wp, alpha_guess))
-        tscale = max(abs(rhoe)/(mj*mat%cv_j + ma*mat%cv_a), 1._wp)
-        pscale = max(abs(rhoe), rho*tscale*max(mat%cv_j, mat%cv_a), 1._wp)
-        escale = max(abs(rhoe), rho*tscale*max(mat%cv_j, mat%cv_a), 1._wp)
-        ! Unknowns are scaled densities, temperature, and pressure.
-        x(1) = max(yj/aguess, 1.e-8_wp); x(2) = max(ya/(1._wp - aguess), 1.e-8_wp)
-        call s_pt_curve(mj/aguess, mat, ec, pc, dpc)
-        x(3) = max((rhoe - mj*(ec + mat%qv_j) - ma*mat%qv_a - mat%pi_a*(1._wp - aguess))/(mj*mat%cv_j + ma*mat%cv_a)/tscale, &
-          & 1.e-8_wp)
-        x(4) = max((pc + mat%omega*mj/aguess*mat%cv_j*x(3)*tscale)/pscale, 1.e-8_wp)
+        ! Scales use the energy without qv, so a common shift of the formation energies leaves the iteration unchanged.
+        tscale = max(abs(rhoe - mj*mat%qv_j - ma*mat%qv_a)/(mj*mat%cv_j + ma*mat%cv_a), 1._wp)
+        scale = max(rho*tscale*max(mat%cv_j, mat%cv_a), 1._wp)
+        ! Unknowns rho_k/rho, T/tscale, p/scale; start at the guessed split with T from energy and p = p_j.
+        aguess = min(1._wp - epsilon(1._wp), max(epsilon(1._wp), alpha_guess))
+        call s_pt_trial(log(aguess) - log(1._wp - aguess), mj, ma, rhoe, mat, aj, aa, temp, pj, pa, residual, derivative)
+        x(1) = mj/(rho*aj); x(2) = ma/(rho*aa); x(3) = max(temp/tscale, 1.e-8_wp); x(4) = max(pj/scale, 1.e-8_wp)
         do it = 1, 80
-            call s_pt_matrix_system(x, mj, ma, rhoe, mat, rscale, tscale, pscale, escale, f, jac)
+            call s_pt_accept(log(mj*x(2)) - log(ma*x(1)), mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
+            if (ok) return
+            call s_pt_matrix_system(x, mj, ma, rhoe, mat, rho, tscale, scale, f, jac)
             norm0 = maxval(abs(f))
             if (.not. ieee_is_finite(norm0)) return
-            if (norm0 <= max(128._wp*epsilon(1._wp), 1.e-11_wp)) exit
             call s_pt_solve4(jac, -f, step, solved)
             if (.not. solved) return
             damp = 1._wp
             do ls = 1, 24
                 trial = x + damp*step
                 if (minval(trial(1:3)) > 0._wp) then
-                    call s_pt_matrix_system(trial, mj, ma, rhoe, mat, rscale, tscale, pscale, escale, ft, jt)
+                    call s_pt_matrix_system(trial, mj, ma, rhoe, mat, rho, tscale, scale, ft, jt)
                     norm1 = maxval(abs(ft))
                     if (ieee_is_finite(norm1) .and. norm1 < norm0) exit
                 end if
@@ -411,39 +489,32 @@ contains
             if (ls > 24) return
             x = trial
         end do
-        if (it > 80) return
-        call s_pt_matrix_system(x, mj, ma, rhoe, mat, rscale, tscale, pscale, escale, f, jac)
-        ref = max(256._wp*epsilon(1._wp), 1.e-10_wp)
-        if (maxval(abs(f)) > ref) return
-        aj = mj/(x(1)*rscale); aa = ma/(x(2)*rscale)
-        if (aj <= 0._wp .or. aa <= 0._wp) return
-        pres = x(4)*pscale; temp = x(3)*tscale
-        ok = ieee_is_finite(pres) .and. ieee_is_finite(temp) .and. pres > 0._wp .and. temp > 0._wp
-        if (ok) call s_pt_sound(mj, ma, aj, aa, pres, temp, mat, c2, ok)
 
-    end subroutine s_jwl_pt_equilibrium_matrix
+    end subroutine s_pt_matrix_newton
 
-    !> Scaled residual and analytic Jacobian for the four PT equilibrium equations.
-    subroutine s_pt_matrix_system(x, mj, ma, rhoe, mat, rs, ts, ps, es, f, j)
+    !> Residual and analytic Jacobian of the four PT equations; pressure and energy rows share the scale ps.
+    subroutine s_pt_matrix_system(x, mj, ma, rhoe, mat, rs, ts, ps, f, j)
 
         $:GPU_ROUTINE(parallelism='[seq]')
-        real(wp), intent(in)                :: x(4), mj, ma, rhoe, rs, ts, ps, es
+
+        real(wp), intent(in)                :: x(4), mj, ma, rhoe, rs, ts, ps
         type(jwl_pt_parameters), intent(in) :: mat
         real(wp), intent(out)               :: f(4), j(4, 4)
         real(wp)                            :: rj, ra, t, p, ec, pc, dpc, pj, pa
+
         rj = x(1)*rs; ra = x(2)*rs; t = x(3)*ts; p = x(4)*ps
         call s_pt_curve(rj, mat, ec, pc, dpc)
         pj = pc + mat%omega*rj*mat%cv_j*t
         pa = mat%gamma_a*ra*mat%cv_a*t - mat%pi_a
         f(1) = (pj - p)/ps; f(2) = (pa - p)/ps
         f(3) = mj/rj + ma/ra - 1._wp
-        f(4) = (mj*(ec + mat%qv_j + mat%cv_j*t) + ma*(mat%qv_a + mat%cv_a*t + mat%pi_a/ra) - rhoe)/es
+        f(4) = (mj*(ec + mat%qv_j + mat%cv_j*t) + ma*(mat%qv_a + mat%cv_a*t + mat%pi_a/ra) - rhoe)/ps
         j = 0._wp
         j(1, 1) = rs*(dpc + mat%omega*mat%cv_j*t)/ps; j(1, 3) = mat%omega*rj*mat%cv_j*ts/ps; j(1, 4) = -1._wp
         j(2, 2) = rs*mat%gamma_a*mat%cv_a*t/ps; j(2, 3) = mat%gamma_a*ra*mat%cv_a*ts/ps; j(2, 4) = -1._wp
         j(3, 1) = -mj*rs/rj**2; j(3, 2) = -ma*rs/ra**2
-        j(4, 1) = mj*pc*rs/rj**2/es; j(4, 2) = -ma*mat%pi_a*rs/ra**2/es
-        j(4, 3) = (mj*mat%cv_j + ma*mat%cv_a)*ts/es
+        j(4, 1) = mj*pc*rs/rj**2/ps; j(4, 2) = -ma*mat%pi_a*rs/ra**2/ps
+        j(4, 3) = (mj*mat%cv_j + ma*mat%cv_a)*ts/ps
 
     end subroutine s_pt_matrix_system
 
@@ -451,11 +522,13 @@ contains
     subroutine s_pt_solve4(a, b, x, ok)
 
         $:GPU_ROUTINE(parallelism='[seq]')
+
         real(wp), intent(in)  :: a(4, 4), b(4)
         real(wp), intent(out) :: x(4)
         logical, intent(out)  :: ok
         real(wp)              :: m(4, 5), scale, tmp
         integer               :: i, j, k, piv
+
         m(:,1:4) = a; m(:,5) = b; ok = .false.
         do k = 1, 3
             piv = k
