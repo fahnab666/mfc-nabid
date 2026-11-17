@@ -169,6 +169,20 @@ contains
 
     end function f_save_exists
 
+    !> Skip a step without an LSO file on every rank together, so no rank waits in a collective read the others left.
+    impure subroutine s_lso_sync_step_found(found)
+
+        logical, intent(inout) :: found
+
+#ifdef MFC_MPI
+        integer :: ierr
+
+        call MPI_ALLREDUCE(MPI_IN_PLACE, found, 1, MPI_LOGICAL, MPI_LAND, MPI_COMM_WORLD, ierr)
+#endif
+        lso_step_found = found
+
+    end subroutine s_lso_sync_step_found
+
     !> Helper subroutine to read IB data files
     impure subroutine s_read_ib_data_files(file_loc_base, t_step)
 
@@ -314,10 +328,8 @@ contains
         if (lso_filter_wrt) then
             file_loc = trim(t_step_dir) // '/lso_q_cons_vf1.dat'
             inquire (FILE=trim(file_loc), EXIST=file_check)
-            if (.not. file_check) then
-                lso_step_found = .false.
-                return
-            end if
+            call s_lso_sync_step_found(file_check)
+            if (.not. file_check) return
         end if
 
         ! Pass explicit slices so the dummy `dimension(-1:)` / `dimension(0:)` arguments map to the correct interior indices of the
@@ -390,10 +402,8 @@ contains
                 file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // 'lso_' // trim(file_loc_base)
             end if
             inquire (FILE=trim(file_loc), EXIST=file_exist)
-            if (.not. file_exist) then
-                lso_step_found = .false.
-                return
-            end if
+            call s_lso_sync_step_found(file_exist)
+            if (.not. file_exist) return
         end if
 
         allocate (x_cb_glb(-1:m_glb))
@@ -523,23 +533,6 @@ contains
         logical                                      :: file_exist
         character(len=10)                            :: t_step_string
         integer                                      :: i
-
-        if (lso_filter_wrt) then
-            if (file_per_process) then
-                call s_int_to_str(t_step, t_step_string)
-                write (file_loc_base, '(I0,A1,I7.7,A)') t_step, '_', proc_rank, '.dat'
-                file_loc_base = 'lso_' // trim(file_loc_base)
-                file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc_base)
-            else
-                write (file_loc_base, '(I0,A)') t_step, '.dat'
-                file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // 'lso_' // trim(file_loc_base)
-            end if
-            inquire (FILE=trim(file_loc), EXIST=file_exist)
-            if (.not. file_exist) then
-                lso_step_found = .false.
-                return
-            end if
-        end if
 
         if (file_per_process) then
             call s_int_to_str(t_step, t_step_string)

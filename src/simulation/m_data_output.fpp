@@ -2640,6 +2640,10 @@ contains
 
         data_size = (m_loc + 1)*(n_loc + 1)*(p_loc + 1)
         field_size = int(product(sizes_glb), MPI_OFFSET_KIND)*int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
+        ! The view counts mpi_io_p units, mpi_io_type per stp value (bytes under --mixed).
+        sizes_glb(1) = sizes_glb(1)*mpi_io_type
+        sizes_loc(1) = sizes_loc(1)*mpi_io_type
+        start_stat(1) = start_stat(1)*mpi_io_type
         if (present(fname)) then
             write (file_loc, '(A,I0,A)') trim(fname), t_step, '.dat'
         else
@@ -2654,12 +2658,12 @@ contains
             do l = 0, p_loc; do k = 0, n_loc; do j = 0, m_loc
                 stat_io_buf(j, k, l) = q_stat_vf(i)%sf(j, k, l)
             end do; end do; end do
-            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_stat, MPI_ORDER_FORTRAN, mpi_p, mpi_view, ierr)
+            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_stat, MPI_ORDER_FORTRAN, mpi_io_p, mpi_view, ierr)
             call MPI_TYPE_COMMIT(mpi_view, ierr)
             var_MOK = int(i, MPI_OFFSET_KIND)
             disp = field_size*(var_MOK - 1)
-            call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, mpi_view, 'native', mpi_info_int, ierr)
-            call MPI_FILE_WRITE_ALL(ifile, stat_io_buf, data_size, mpi_io_p, status, ierr)
+            call MPI_FILE_SET_VIEW(ifile, disp, mpi_io_p, mpi_view, 'native', mpi_info_int, ierr)
+            call MPI_FILE_WRITE_ALL(ifile, stat_io_buf, data_size*mpi_io_type, mpi_io_p, status, ierr)
             call MPI_TYPE_FREE(mpi_view, ierr)
         end do
         deallocate (stat_io_buf)
