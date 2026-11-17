@@ -78,8 +78,6 @@ SIM_GPU_DECL_VARS = {
     "igr_order",
     "igr_pres_lim",
     "int_comp",
-    "jwl_afterburn",
-    "jwl_reactive",
     "low_Mach",
     "lso_R_gas",
     "lso_mu",

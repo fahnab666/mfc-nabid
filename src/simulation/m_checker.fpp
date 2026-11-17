@@ -11,8 +11,8 @@ module m_checker
     use m_global_parameters
     use m_mpi_proxy
     use m_helper
-    use m_constants, only: recon_type_weno, recon_type_muscl, eos_stiffened_gas, eos_ideal_gas, time_stepper_rk3, &
-        & BC_RIEMANN_EXTRAP, BC_CHAR_SLIP_WALL, BC_CHAR_SUP_OUTFLOW
+    use m_constants, only: recon_type_weno, recon_type_muscl, time_stepper_rk3, BC_RIEMANN_EXTRAP, BC_CHAR_SLIP_WALL, &
+        & BC_CHAR_SUP_OUTFLOW
 
     implicit none
 

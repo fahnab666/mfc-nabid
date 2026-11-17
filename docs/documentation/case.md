@@ -564,17 +564,6 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 
 | Parameter        | Type    | Description                                                        |
 | ---:             | :----:  |          :---                                                      |
-| `jwl_wrt`        | Logical | Write JWL temperature, product fraction, and reaction progress.    |
-| `jwl_afterburn`  | Logical | Enable JWL afterburn energy release.                               |
-| `jwl_ab_model`   | Integer | JWL afterburn rate model.                                          |
-| `jwl_q_ab`       | Real    | Afterburn energy release per unit mass.                            |
-| `jwl_ab_tau`     | Real    | Afterburn rate time constant (used when `jwl_ab_model = 1`).       |
-| `jwl_ab_A`       | Real    | Afterburn Arrhenius-form rate pre-exponential factor.              |
-| `jwl_ab_theta`   | Real    | Afterburn Arrhenius-form activation temperature.                   |
-| `jwl_ab_n`       | Real    | Afterburn Arrhenius-form pressure exponent.                        |
-| `jwl_reactive`   | Logical | Enable JWL++ pressure-driven reactive burn.                        |
-| `jwl_G`          | Real    | JWL++ reactive-burn rate constant.                                 |
-| `jwl_b_exp`      | Real    | JWL++ reactive-burn pressure exponent.                             |
 | `prog_burn`      | Logical | Enable kinematic JWL program burn.                                 |
 | `fluid_pp(i)%%jwl_Q` | Real | Program burn energy per unit mass of JWL fluid `i`.             |
 | `pb_D_cj`        | Real    | Programmed burn Chapman-Jouguet detonation velocity.               |
@@ -584,9 +573,7 @@ Details of implementation of viscosity in MFC can be found in \cite Coralic15.
 | `pb_z_det`       | Real    | Programmed burn detonation point z-coordinate.                     |
 | `pb_t_det`       | Real    | Programmed burn detonation initiation time.                        |
 
-With `prog_burn`, a front travels from (`pb_x_det`, `pb_y_det`, `pb_z_det`) at speed `pb_D_cj` after `pb_t_det`. Each cell receives the swept fraction of `fluid_pp(JWL)%%jwl_Q` over a distance `pb_width`. The energy increment is based on the front positions at the start and end of a full flow step, so a front crossing more than one zone width in a step still deposits the prescribed energy. Progress is tied to fixed cell coordinates; use this prescribed-front model when material motion through the reaction zone is small. Use exactly one JWL fluid with positive `jwl_Q`, `pb_D_cj`, and `pb_width`. `prog_burn` cannot be combined with `jwl_reactive` or `reactive_burn`.
-
-`jwl_reactive` is a separate JWL++ control. Its source term is not wired into the solver on this branch; the bounded pressure burn below applies to `reactive_burn`.
+With `prog_burn`, a front travels from (`pb_x_det`, `pb_y_det`, `pb_z_det`) at speed `pb_D_cj` after `pb_t_det`. Each cell receives the swept fraction of `fluid_pp(JWL)%%jwl_Q` over a distance `pb_width`. The energy increment is based on the front positions at the start and end of a full flow step, so a front crossing more than one zone width in a step still deposits the prescribed energy. Progress is tied to fixed cell coordinates; use this prescribed-front model when material motion through the reaction zone is small. Use exactly one JWL fluid with positive `jwl_Q`, `pb_D_cj`, and `pb_width`. `prog_burn` cannot be combined with `reactive_burn`.
 
 ### 6. Simulation Algorithm {#sec-simulation-algorithm}
 

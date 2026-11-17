@@ -685,15 +685,7 @@ def _load():
     _r("sigma", REAL, {"surface_tension"}, math=r"\f$\sigma\f$")
     _r("surface_tension", LOG, {"surface_tension"})
 
-    # JWL reaction and diagnostic controls
-    _r("jwl_wrt", LOG, desc="Write JWL temperature, product fraction, and reaction progress")
-    _r("jwl_afterburn", LOG, desc="Enable JWL afterburn energy release")
-    _r("jwl_ab_model", INT, desc="JWL afterburn rate model")
-    for n in ["jwl_q_ab", "jwl_ab_tau", "jwl_ab_A", "jwl_ab_theta", "jwl_ab_n"]:
-        _r(n, REAL)
-    _r("jwl_reactive", LOG, desc="Enable JWL++ pressure-driven reactive burn")
-    for n in ["jwl_G", "jwl_b_exp"]:
-        _r(n, REAL)
+    # JWL programmed burn
     _r("prog_burn", LOG, desc="Enable kinematic JWL program burn")
     for n in ["pb_D_cj", "pb_width", "pb_x_det", "pb_y_det", "pb_z_det", "pb_t_det"]:
         _r(n, REAL)
@@ -1004,7 +996,6 @@ def _load():
             _r(f"{px}a({j})", REAL)
         _r(f"{px}pres", A_REAL, math=r"\f$p\f$")
         _r(f"{px}cf_val", A_REAL)
-        _r(f"{px}rxn_val", A_REAL)
         # MHD fields
         for a, sym in [("Bx", r"\f$B_x\f$"), ("By", r"\f$B_y\f$"), ("Bz", r"\f$B_z\f$")]:
             _r(f"{px}{a}", A_REAL, {"mhd"}, math=sym)
@@ -1506,8 +1497,6 @@ _nv(
     "adv_n",
     "hypoelasticity",
     "surface_tension",
-    "jwl_afterburn",
-    "jwl_reactive",
     "relativity",
     "ib",
     "num_ibs",
@@ -1679,12 +1668,6 @@ _nv(
     "lag_params",
     "probe_wrt",
     "num_probes",
-    "jwl_ab_model",
-    "jwl_q_ab",
-    "jwl_ab_tau",
-    "jwl_ab_A",
-    "jwl_ab_theta",
-    "jwl_ab_n",
     "prog_burn",
     "pb_D_cj",
     "pb_width",
@@ -1692,8 +1675,6 @@ _nv(
     "pb_y_det",
     "pb_z_det",
     "pb_t_det",
-    "jwl_G",
-    "jwl_b_exp",
     "probe",
     "acoustic_source",
     "num_source",
@@ -1864,7 +1845,6 @@ _nv(
     "flux_wrt",
     "alpha_wrt",
     "cf_wrt",
-    "jwl_wrt",
     "chem_wrt_T",
     "chem_wrt_Y",
     "alpha_rho_e_wrt",

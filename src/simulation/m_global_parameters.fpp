@@ -716,20 +716,12 @@ contains
 
         ! Simulation-only JWL source defaults
         prog_burn = .false.
-        jwl_ab_model = 2
-        jwl_q_ab = dflt_real
-        jwl_ab_tau = dflt_real
-        jwl_ab_A = dflt_real
-        jwl_ab_theta = dflt_real
-        jwl_ab_n = 0._wp
         pb_D_cj = dflt_real
         pb_width = dflt_real
         pb_x_det = 0._wp
         pb_y_det = 0._wp
         pb_z_det = 0._wp
         pb_t_det = 0._wp
-        jwl_G = dflt_real
-        jwl_b_exp = dflt_real
 
         ! In-situ visualization output (viz_wrt)
         viz_wrt = .false.
@@ -1300,11 +1292,6 @@ contains
         $:GPU_UPDATE(device='[cont_damage, tau_star, cont_damage_s, alpha_bar]')
 
         $:GPU_UPDATE(device='[hyper_cleaning, hyper_cleaning_speed, hyper_cleaning_tau]')
-
-        ! Read per-cell in s_convert_conservative_to_primitive_variables, so the device copy must
-        ! carry the host value; an unsynced .true. there indexes eqn_idx%abn/%rxn, which a non-JWL
-        ! case never assigns.
-        $:GPU_UPDATE(device='[jwl_afterburn, jwl_reactive]')
 
         ! Read per-cell in the m_lso_filter phi_p/gas_mask products and the stability-criteria
         ! reduction, so the device copy must carry the host value; an unsynced .false. there makes

@@ -341,17 +341,6 @@ DESCRIPTIONS = {
 DESCRIPTIONS.update(
     {
         "particles_lagrange": "Enable Euler-Lagrange particle tracking",
-        "jwl_wrt": "Write JWL temperature, product fraction, and reaction progress",
-        "jwl_afterburn": "Enable JWL afterburn energy release",
-        "jwl_ab_model": "JWL afterburn rate model",
-        "jwl_q_ab": "JWL afterburn energy release per unit mass",
-        "jwl_ab_tau": "JWL afterburn time constant",
-        "jwl_ab_A": "JWL afterburn Arrhenius prefactor",
-        "jwl_ab_theta": "JWL afterburn activation temperature",
-        "jwl_ab_n": "JWL afterburn pressure exponent",
-        "jwl_reactive": "Enable pressure-driven JWL reactive burn",
-        "jwl_G": "JWL reactive-burn rate constant",
-        "jwl_b_exp": "JWL reactive-burn pressure exponent",
         "prog_burn": "Enable kinematic JWL programmed burn",
         "pb_D_cj": "Programmed-burn Chapman-Jouguet detonation velocity",
         "pb_width": "Programmed-burn reaction-zone width",

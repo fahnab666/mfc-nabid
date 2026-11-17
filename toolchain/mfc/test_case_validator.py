@@ -239,7 +239,7 @@ class TestProgramBurnConstraints(unittest.TestCase):
 
     def test_requires_jwl_and_unique_source(self):
         self.assertIn("exactly one JWL", self.errors_for(**{"fluid_pp(1)%eos": 1}))
-        self.assertIn("cannot be combined", self.errors_for(jwl_reactive="T"))
+        self.assertIn("cannot be combined", self.errors_for(reactive_burn="T"))
 
 
 class TestLsoFilterConstraints(unittest.TestCase):

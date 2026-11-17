@@ -3167,8 +3167,8 @@ class CaseValidator:
         t_det = self.get("pb_t_det", 0)
         self.prohibit(not self._is_numeric(t_det) or t_det < 0, "prog_burn requires pb_t_det >= 0")
         self.prohibit(
-            self.get("jwl_reactive", "F") == "T" or self.get("reactive_burn", "F") == "T",
-            "prog_burn cannot be combined with jwl_reactive or reactive_burn",
+            self.get("reactive_burn", "F") == "T",
+            "prog_burn cannot be combined with reactive_burn",
         )
 
     def check_misc_pre_process(self):
@@ -3251,13 +3251,6 @@ class CaseValidator:
                     alpha_rho = self.get(f"patch_icpp({i})%alpha_rho({j})")
                     if alpha_rho is not None and self._is_numeric(alpha_rho):
                         self.prohibit(alpha_rho < 0, f"patch_icpp({istr})%alpha_rho({jstr}) must be non-negative (got {alpha_rho})")
-
-                # JWL++ reaction progress
-                jwl_reactive = self.get("jwl_reactive", "F") == "T"
-                rxn_val = self.get(f"patch_icpp({i})%rxn_val")
-                if rxn_val is not None and self._is_numeric(rxn_val):
-                    self.prohibit(rxn_val != 0 and not jwl_reactive, f"patch_icpp({istr})%rxn_val requires jwl_reactive")
-                    self.prohibit(rxn_val < 0 or rxn_val > 1, f"patch_icpp({istr})%rxn_val must be in [0, 1] (got {rxn_val})")
 
             # GEOMETRY
             # Patch dimensions must be positive (except in cylindrical coords where
