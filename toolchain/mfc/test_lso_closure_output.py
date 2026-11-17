@@ -559,3 +559,38 @@ def test_el_lso_filters_the_gas_volume_with_the_conserved_fields(tmp_path, facto
     assert np.isfinite(fields["pres"]).all()
     assert np.isfinite(fields["voidFraction"]).all()
     assert np.max(fields["voidFraction"]) > 1e-6
+
+
+@pytest.mark.skipif(os.environ.get("MFC_TEST_LSO_OUTPUT") != "1", reason="requires prebuilt MFC executables")
+def test_lso_statistics_take_the_mixture_density_and_pt_temperature(tmp_path):
+    """A uniform JWL and stiffened-gas mixture built at 1800 K: the statistics must return that state."""
+    root = Path(__file__).resolve().parents[2]
+    with contextlib.redirect_stdout(io.StringIO()) as output:
+        runpy.run_path(str(root / "examples/1D_jwl_pt_relaxation/case.py"))
+    case = json.loads(output.getvalue())
+    case.update(
+        {
+            "t_step_stop": 2,
+            "t_step_save": 1,
+            "bc_x%beg": -1,
+            "bc_x%end": -1,
+            "patch_icpp(1)%vel(1)": 50.0,
+            "lso_filter": "T",
+            "lso_filter_wrt": "T",
+            "lso_stat_wrt": "T",
+            "filter_sigma": 0.04,
+            "lso_R_gas": 1.0,
+            "lso_down_sample_factor": 1,
+        }
+    )
+    path = tmp_path / "case.json"
+    path.write_text(json.dumps(case))
+    result = subprocess.run([str(root / "mfc.sh"), "run", str(path), "-n", "2", "--no-debug", "-j", "4"], cwd=root, capture_output=True, text=True, timeout=180, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    rho = case["patch_icpp(1)%alpha_rho(1)"] + case["patch_icpp(1)%alpha_rho(2)"]
+    for step in (1, 2):
+        stats = np.fromfile(tmp_path / f"restart_data/lustre_lso_stat_{step}.dat").reshape((-1, 64))
+        np.testing.assert_allclose(stats[1], rho, rtol=1e-12)
+        np.testing.assert_allclose(stats[4] / stats[1], 50.0, rtol=1e-12)
+        # Fast PT holds the cell at the temperature the energy was built from.
+        np.testing.assert_allclose(stats[7] / stats[4], 1800.0, rtol=1e-9)

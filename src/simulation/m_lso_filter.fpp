@@ -48,8 +48,7 @@ module m_lso_filter
     use m_global_parameters
     use m_mpi_common
     use m_constants
-    use m_eos, only: s_phase_temperature
-    use m_variables_conversion, only: s_convert_conservative_to_primitive_variables
+    use m_eos, only: s_phase_temperature, s_phase_internal_energy
     use m_ibm, only: ib_markers
     use m_nvtx
 
@@ -168,7 +167,7 @@ contains
             end if
 
             if (lso_stat_wrt .and. n_lso_stat > 0) then
-                lso_T_eos = .not. (eoss(1) == eos_ideal_gas .or. eoss(1) == eos_stiffened_gas)
+                lso_T_eos = any_state_dependent_eos .or. num_fluids > 1
                 $:GPU_UPDATE(device='[lso_T_eos]')
                 @:ALLOCATE(q_lso_T_vf(1:1))
                 @:ALLOCATE(q_lso_T_vf(1)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
@@ -322,13 +321,11 @@ contains
         call nvtxStartRange("LSO-FILTER")
 
         if (lso_T_eos) then
-            ! q_filt_vf holds the primitives until the copy below overwrites it.
-            call s_convert_conservative_to_primitive_variables(q_cons_vf, q_lso_T_vf(1), q_filt_vf, idwint)
             $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, T]')
             do l = 0, p
                 do k = 0, n
                     do j = 0, m
-                        call s_lso_temperature(q_cons_vf, q_filt_vf, j, k, l, T)
+                        call s_lso_temperature(q_cons_vf, j, k, l, T)
                         q_lso_T_vf(1)%sf(j, k, l) = real(T, stp)
                     end do
                 end do
@@ -1163,28 +1160,59 @@ contains
 
     end subroutine s_lso_filter_ghost_refresh
 
-    !> Phase temperature of fluid 1 from the saved-state primitives.
-    subroutine s_lso_temperature(q_cons_vf, q_prim_vf, j, k, l, T)
+    !> Mixture density of a cell, the sum of the partial densities.
+    function f_lso_density(q_cons_vf, j, k, l) result(rho)
 
         $:GPU_ROUTINE(parallelism='[seq]')
 
-        type(scalar_field), intent(in) :: q_cons_vf(:), q_prim_vf(:)
+        type(scalar_field), intent(in) :: q_cons_vf(:)
+        integer, intent(in)            :: j, k, l
+        real(wp)                       :: rho
+        integer                        :: i
+
+        rho = 0._wp
+        $:GPU_LOOP(parallelism='[seq]')
+        do i = 1, num_fluids
+            rho = rho + real(q_cons_vf(eqn_idx%cont%beg + i - 1)%sf(j, k, l), wp)
+        end do
+
+    end function f_lso_density
+
+    !> Mixture temperature that carries the cell's internal energy: each phase has e_i = c_i(rho_i) + cv_i T, so rho e is linear in
+    !! T. This is the temperature the JWL PT relaxation solves for, and trace phases weigh in by their mass only.
+    subroutine s_lso_temperature(q_cons_vf, j, k, l, T)
+
+        $:GPU_ROUTINE(parallelism='[seq]')
+
+        type(scalar_field), intent(in) :: q_cons_vf(:)
         integer, intent(in)            :: j, k, l
         real(wp), intent(out)          :: T
-        real(wp)                       :: alpha_phase, rho_phase, pres
+        real(wp)                       :: alpha_phase, m_phase, e_phase, T_phase, rho, rhoe, cvsum
+        integer                        :: i
 
-        pres = real(q_prim_vf(eqn_idx%E)%sf(j, k, l), wp)
-        if (model_eqns == model_eqns_gamma_law) then
-            alpha_phase = 1._wp
-        else
-            alpha_phase = max(real(q_cons_vf(eqn_idx%E + 1)%sf(j, k, l), wp), sgm_eps)
-        end if
-        rho_phase = real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l), wp)/alpha_phase
-        if (eoss(1) == eos_stiffened_gas .or. eoss(1) == eos_ideal_gas) then
-            T = (pres + isentrope_B(1))/(lso_R_gas*rho_phase)
-        else
-            call s_phase_temperature(rho_phase, pres, 1, T)
-        end if
+        rho = 0._wp; cvsum = 0._wp
+        rhoe = real(q_cons_vf(eqn_idx%E)%sf(j, k, l), wp)
+        $:GPU_LOOP(parallelism='[seq]')
+        do i = 1, num_fluids
+            m_phase = real(q_cons_vf(eqn_idx%cont%beg + i - 1)%sf(j, k, l), wp)
+            rho = rho + m_phase
+            if (m_phase > sgm_eps) then
+                alpha_phase = 1._wp
+                if (model_eqns /= model_eqns_gamma_law) then
+                    alpha_phase = max(real(q_cons_vf(eqn_idx%adv%beg + i - 1)%sf(j, k, l), wp), sgm_eps)
+                end if
+                ! e_i - cv_i T_i does not depend on the pressure it is evaluated at
+                call s_phase_internal_energy(0._wp, alpha_phase, m_phase, i, e_phase)
+                call s_phase_temperature(m_phase/alpha_phase, 0._wp, i, T_phase)
+                rhoe = rhoe - (e_phase - m_phase*cvs(i)*T_phase)
+                cvsum = cvsum + m_phase*cvs(i)
+            end if
+        end do
+        $:GPU_LOOP(parallelism='[seq]')
+        do i = eqn_idx%mom%beg, eqn_idx%mom%end
+            rhoe = rhoe - 0.5_wp*real(q_cons_vf(i)%sf(j, k, l), wp)**2/rho
+        end do
+        T = rhoe/cvsum
 
     end subroutine s_lso_temperature
 
@@ -1245,7 +1273,7 @@ contains
                         up3 = 0._wp
                     end if
 
-                    rho = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l), wp), sgm_eps)
+                    rho = max(f_lso_density(q_cons_vf, j, k, l), sgm_eps)
                     mom1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l), wp)
                     if (n > 0) then
                         mom2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l), wp)
@@ -1349,16 +1377,16 @@ contains
                 do l = 0, p
                     do k = 0, n
                         do j = j_beg_x, j_end_x
-                            rho_loc = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, 0, 0), wp), sgm_eps)
+                            rho_loc = max(f_lso_density(q_cons_vf, j, 0, 0), sgm_eps)
                             gas_mask = 1._wp - real(q_lso_stat_vf(lso_stat_phi_p_beg)%sf(j, 0, 0), wp)
 
-                            rho_jm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j - 1, 0, 0), wp), sgm_eps)
+                            rho_jm = max(f_lso_density(q_cons_vf, j - 1, 0, 0), sgm_eps)
                             u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, 0, 0), wp)/rho_jm
                             T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, 0, 0), &
                                     & wp) - 0.5_wp*u1_jm**2*rho_jm - isentrope_B(1) - qvs(1)*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_jm = real(q_lso_T_vf(1)%sf(j - 1, 0, 0), wp)
 
-                            rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, 0, 0), wp), sgm_eps)
+                            rho_jp = max(f_lso_density(q_cons_vf, j + 1, 0, 0), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, 0, 0), wp)/rho_jp
                             T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, 0, 0), &
                                     & wp) - 0.5_wp*u1_jp**2*rho_jp - isentrope_B(1) - qvs(1)*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
@@ -1398,10 +1426,10 @@ contains
                 do l = 0, p
                     do k = k_beg_y, k_end_y
                         do j = j_beg_x, j_end_x
-                            rho_loc = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, 0), wp), sgm_eps)
+                            rho_loc = max(f_lso_density(q_cons_vf, j, k, 0), sgm_eps)
                             gas_mask = 1._wp - real(q_lso_stat_vf(lso_stat_phi_p_beg)%sf(j, k, 0), wp)
 
-                            rho_jm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j - 1, k, 0), wp), sgm_eps)
+                            rho_jm = max(f_lso_density(q_cons_vf, j - 1, k, 0), sgm_eps)
                             u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, k, 0), wp)/rho_jm
                             u2_jm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j - 1, k, 0), wp)/rho_jm
                             T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, k, 0), &
@@ -1409,7 +1437,7 @@ contains
                                     & /(rho_jm*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_jm = real(q_lso_T_vf(1)%sf(j - 1, k, 0), wp)
 
-                            rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, k, 0), wp), sgm_eps)
+                            rho_jp = max(f_lso_density(q_cons_vf, j + 1, k, 0), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, k, 0), wp)/rho_jp
                             u2_jp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j + 1, k, 0), wp)/rho_jp
                             T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, k, 0), &
@@ -1417,7 +1445,7 @@ contains
                                     & /(rho_jp*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_jp = real(q_lso_T_vf(1)%sf(j + 1, k, 0), wp)
 
-                            rho_km = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k - 1, 0), wp), sgm_eps)
+                            rho_km = max(f_lso_density(q_cons_vf, j, k - 1, 0), sgm_eps)
                             u1_km = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k - 1, 0), wp)/rho_km
                             u2_km = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k - 1, 0), wp)/rho_km
                             T_km = (real(q_cons_vf(eqn_idx%E)%sf(j, k - 1, 0), &
@@ -1425,7 +1453,7 @@ contains
                                     & /(rho_km*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_km = real(q_lso_T_vf(1)%sf(j, k - 1, 0), wp)
 
-                            rho_kp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k + 1, 0), wp), sgm_eps)
+                            rho_kp = max(f_lso_density(q_cons_vf, j, k + 1, 0), sgm_eps)
                             u1_kp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k + 1, 0), wp)/rho_kp
                             u2_kp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k + 1, 0), wp)/rho_kp
                             T_kp = (real(q_cons_vf(eqn_idx%E)%sf(j, k + 1, 0), &
@@ -1483,10 +1511,10 @@ contains
                 do l = l_beg_z, l_end_z
                     do k = k_beg_y, k_end_y
                         do j = j_beg_x, j_end_x
-                            rho_loc = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l), wp), sgm_eps)
+                            rho_loc = max(f_lso_density(q_cons_vf, j, k, l), sgm_eps)
                             gas_mask = 1._wp - real(q_lso_stat_vf(lso_stat_phi_p_beg)%sf(j, k, l), wp)
 
-                            rho_jm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j - 1, k, l), wp), sgm_eps)
+                            rho_jm = max(f_lso_density(q_cons_vf, j - 1, k, l), sgm_eps)
                             u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, k, l), wp)/rho_jm
                             u2_jm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j - 1, k, l), wp)/rho_jm
                             u3_jm = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j - 1, k, l), wp)/rho_jm
@@ -1495,7 +1523,7 @@ contains
                                     & /(rho_jm*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_jm = real(q_lso_T_vf(1)%sf(j - 1, k, l), wp)
 
-                            rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, k, l), wp), sgm_eps)
+                            rho_jp = max(f_lso_density(q_cons_vf, j + 1, k, l), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, k, l), wp)/rho_jp
                             u2_jp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j + 1, k, l), wp)/rho_jp
                             u3_jp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j + 1, k, l), wp)/rho_jp
@@ -1504,7 +1532,7 @@ contains
                                     & /(rho_jp*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_jp = real(q_lso_T_vf(1)%sf(j + 1, k, l), wp)
 
-                            rho_km = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k - 1, l), wp), sgm_eps)
+                            rho_km = max(f_lso_density(q_cons_vf, j, k - 1, l), sgm_eps)
                             u1_km = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k - 1, l), wp)/rho_km
                             u2_km = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k - 1, l), wp)/rho_km
                             u3_km = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k - 1, l), wp)/rho_km
@@ -1513,7 +1541,7 @@ contains
                                     & /(rho_km*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_km = real(q_lso_T_vf(1)%sf(j, k - 1, l), wp)
 
-                            rho_kp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k + 1, l), wp), sgm_eps)
+                            rho_kp = max(f_lso_density(q_cons_vf, j, k + 1, l), sgm_eps)
                             u1_kp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k + 1, l), wp)/rho_kp
                             u2_kp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k + 1, l), wp)/rho_kp
                             u3_kp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k + 1, l), wp)/rho_kp
@@ -1522,7 +1550,7 @@ contains
                                     & /(rho_kp*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_kp = real(q_lso_T_vf(1)%sf(j, k + 1, l), wp)
 
-                            rho_lm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l - 1), wp), sgm_eps)
+                            rho_lm = max(f_lso_density(q_cons_vf, j, k, l - 1), sgm_eps)
                             u1_lm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l - 1), wp)/rho_lm
                             u2_lm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l - 1), wp)/rho_lm
                             u3_lm = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l - 1), wp)/rho_lm
@@ -1531,7 +1559,7 @@ contains
                                     & /(rho_lm*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_lm = real(q_lso_T_vf(1)%sf(j, k, l - 1), wp)
 
-                            rho_lp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l + 1), wp), sgm_eps)
+                            rho_lp = max(f_lso_density(q_cons_vf, j, k, l + 1), sgm_eps)
                             u1_lp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l + 1), wp)/rho_lp
                             u2_lp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l + 1), wp)/rho_lp
                             u3_lp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l + 1), wp)/rho_lp

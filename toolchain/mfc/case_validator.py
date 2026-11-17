@@ -2867,7 +2867,11 @@ class CaseValidator:
             "lso_stat_wrt = T requires filtered output or post-process filtering of original data",
         )
         self.prohibit(stat_wrt and not parallel_io, "LSO statistical output requires parallel_io = T")
-        self.prohibit(stat_wrt and self.get("num_fluids") != 1, "LSO statistics currently require num_fluids = 1")
+        num_fluids = self.get("num_fluids") or 1
+        self.prohibit(
+            stat_wrt and num_fluids > 1 and any((self.get(f"fluid_pp({i})%cv") or 0) <= 0 for i in range(1, num_fluids + 1)),
+            "LSO statistics with several fluids take the mixture temperature and require fluid_pp(i)%cv > 0 for every fluid",
+        )
         self.prohibit(stat_wrt and self.get("particles_lagrange", "F") == "T", "LSO particle statistics support IBM markers, not particles_lagrange")
         eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
         eos = self.get("fluid_pp(1)%eos", eos_names["stiffened_gas"])

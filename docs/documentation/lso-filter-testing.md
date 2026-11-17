@@ -12,8 +12,10 @@ The simulation forms each nonlinear statistical product from the unfiltered stat
 filters the product. Post-process can read those products, form them from original data,
 or widen an existing filter by filtering the products and gas mask again.
 
-The 12 product blocks (12/23/36 scalar components in 1D/2D/3D) currently require one fluid. They use `lso_R_gas` for ideal and stiffened gases and the common EOS
-temperature interface for state-dependent families. Closure reconstruction is currently
+The 12 product blocks (12/23/36 scalar components in 1D/2D/3D) use the mixture density. One ideal or stiffened gas takes its temperature from `lso_R_gas`. Several fluids, or a
+state-dependent family such as JWL, take the mixture temperature that carries the cell's internal energy
+(each phase has e = c(rho) + cv T), which is the temperature the JWL PT relaxation solves for and needs `cv > 0`
+for every fluid. Closure reconstruction is currently
 limited to one calorically perfect ideal or stiffened gas. Chemistry, state-dependent
 EOS closures, and stretched y or z grids remain outside the closure acceptance scope. A stretched x grid
 is supported in situ (below). Serial LSO
@@ -298,7 +300,7 @@ Changed files in this audit pass (excluding the pre-existing staged integration)
 
 - `src/post_process/m_lso_pp_filter.fpp`: per-cell normalization and thermal offset.
 - `src/simulation/m_lso_filter.fpp`: matching statistical convolution extent at physical boundaries.
-- `toolchain/mfc/case_validator.py`: single-fluid statistics guard and EL input documentation.
+- `toolchain/mfc/case_validator.py`: multi-fluid statistics heat-capacity guard and EL input documentation.
 - `toolchain/mfc/test_case_validator.py`: unsupported mixture regression.
 - `toolchain/mfc/test_lso_closure_output.py`: executable algebraic regression.
 - `.github/scripts/monitor_slurm_job.sh`: portable file-size query.

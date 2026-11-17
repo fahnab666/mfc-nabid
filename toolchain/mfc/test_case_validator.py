@@ -276,11 +276,12 @@ class TestLsoFilterConstraints(unittest.TestCase):
         params = {**self.BASE, "lso_closure_wrt": "T", "fluid_pp(1)%eos": CONSTRAINTS["fluid_pp(1)%eos"]["names"]["jwl"]}
         self.assertTrue(any("calorically perfect" in error for error in self.errors(params, "post_process")))
 
-    def test_statistics_reject_mixture_momentum_over_partial_density(self):
+    def test_multi_fluid_statistics_need_every_heat_capacity(self):
         for stage in ("simulation", "post_process"):
-            params = {**self.BASE, "num_fluids": 2}
-            self.assertTrue(any("LSO statistics currently require num_fluids = 1" in error for error in self.errors(params, stage)))
+            params = {**self.BASE, "num_fluids": 2, "fluid_pp(1)%cv": 1.0}
+            self.assertTrue(any("require fluid_pp(i)%cv > 0 for every fluid" in error for error in self.errors(params, stage)))
             self.assertEqual(self.errors({**params, "lso_stat_wrt": "F"}, stage), [])
+            self.assertFalse(any("cv > 0 for every fluid" in error for error in self.errors({**params, "fluid_pp(2)%cv": 1.0}, stage)))
 
     def test_supported_closure_is_accepted(self):
         self.assertEqual(self.errors({**self.BASE, "lso_closure_wrt": "T"}, "post_process"), [])
