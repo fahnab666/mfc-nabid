@@ -702,7 +702,11 @@ contains
         end if
 
         if (relax) then
-            call s_infinite_relaxation_k(q_cons_ts(1)%vf)
+            if (ib) then
+                call s_infinite_relaxation_k(q_cons_ts(1)%vf, ib_markers)
+            else
+                call s_infinite_relaxation_k(q_cons_ts(1)%vf)
+            end if
             if (amr) call s_amr_relax_fine(q_cons_ts(1)%vf)
         end if
 
