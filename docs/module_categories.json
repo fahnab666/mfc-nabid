@@ -33,7 +33,6 @@
             "m_particles_EL",
             "m_particles_EL_kernels",
             "m_euler_lagrange",
-            "m_lso_filter",
             "m_qbmm",
             "m_hypoelastic",
             "m_phase_change",
@@ -67,8 +66,7 @@
             "m_start_up",
             "m_data_output",
             "m_data_input",
-            "m_delay_file_access",
-            "m_lso_pp_filter"
+            "m_delay_file_access"
         ]
     },
     {

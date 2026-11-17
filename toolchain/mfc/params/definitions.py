@@ -744,38 +744,6 @@ def _load():
     for n in ["parallel_io", "file_per_process", "run_time_info", "prim_vars_wrt", "cons_vars_wrt", "fft_wrt", "ib_state_wrt", "ib_force_wrt", "ib_surface_wrt", "ib_heat_wrt"]:
         _r(n, LOG, {"output"})
 
-    # LSO variable-weight filter
-    _r("lso_filter", LOG, {"filter"})
-    _r("lso_filter_wrt", LOG, {"filter"})
-    _r("filter_sigma", REAL, {"filter"})
-    _r("lso_filter_sigma_in", REAL, {"filter"})
-    _r("lso_filter_sigma_target", REAL, {"filter"})
-    _r("lso_down_sample_factor", INT, {"filter"})
-    _r("lso_stat_wrt", LOG, {"filter"})
-    _r("lso_R_gas", REAL, {"filter"})
-    _r("lso_mu", REAL, {"filter"})
-    _r("lso_conductivity", REAL, {"filter"})
-    _r("lso_mu_T_exp", REAL, {"filter"})
-    _r("lso_mu_T_ref", REAL, {"filter"})
-    for n in ["lso_n_passes_x", "lso_n_passes_y", "lso_n_passes_z"]:
-        _r(n, INT, {"filter"})
-    for n in ["lso_a_x", "lso_a_y", "lso_a_z"]:
-        _r(f"{n}(1)", REAL, {"filter"})
-    for n in ["lso2_n_passes_x", "lso2_n_passes_y", "lso2_n_passes_z"]:
-        _r(n, INT, {"filter"})
-    for n in ["lso2_a_x", "lso2_a_y", "lso2_a_z"]:
-        _r(f"{n}(1)", REAL, {"filter"})
-    _r("lso_pp_filter", LOG, {"filter"})
-    _r("lso_closure_wrt", LOG, {"filter"})
-    _r("lso_pp_pyramid_wrt", LOG, {"filter"})
-    for n in ["lso_pp_n_passes_x", "lso_pp_n_passes_y", "lso_pp_n_passes_z"]:
-        _r(n, INT, {"filter"})
-    for n in ["lso_pp_a_x", "lso_pp_a_y", "lso_pp_a_z"]:
-        _r(f"{n}(1)", REAL, {"filter"})
-    for n in ["lso_pp2_n_passes_x", "lso_pp2_n_passes_y", "lso_pp2_n_passes_z"]:
-        _r(n, INT, {"filter"})
-    for n in ["lso_pp2_a_x", "lso_pp2_a_y", "lso_pp2_a_z"]:
-        _r(f"{n}(1)", REAL, {"filter"})
     # AMR (rank_time_wrt is a diagnostic)
     for n in [
         "rank_time_wrt",
@@ -1377,18 +1345,6 @@ FORTRAN_ARRAY_DIMS: dict[str, str] = {
     "vel_wrt": "3",
     "mean_dpdx": "3",
     "mean_mflux": "3",
-    "lso_a_x": "5, 60",
-    "lso_a_y": "5, 60",
-    "lso_a_z": "5, 60",
-    "lso2_a_x": "5, 60",
-    "lso2_a_y": "5, 60",
-    "lso2_a_z": "5, 60",
-    "lso_pp_a_x": "5, 60",
-    "lso_pp_a_y": "5, 60",
-    "lso_pp_a_z": "5, 60",
-    "lso_pp2_a_x": "5, 60",
-    "lso_pp2_a_y": "5, 60",
-    "lso_pp2_a_z": "5, 60",
     "amr_block_beg": "3",
     "amr_block_end": "3",
 }
@@ -1533,85 +1489,6 @@ _nv(
     _ALL,
     "num_particle_clouds",
     "particle_cloud",
-)
-_nv(
-    _SIM_POST,
-    "lso_filter",
-    "lso_filter_wrt",
-    "filter_sigma",
-    "lso_down_sample_factor",
-    "lso_stat_wrt",
-    "lso_R_gas",
-    "lso_mu",
-    "lso_conductivity",
-    "lso_mu_T_exp",
-    "lso_mu_T_ref",
-    "lso_pp_filter",
-    "lso_closure_wrt",
-    "lso_n_passes_x",
-    "lso_n_passes_y",
-    "lso_n_passes_z",
-    "lso_a_x",
-    "lso_a_y",
-    "lso_a_z",
-    "lso2_n_passes_x",
-    "lso2_n_passes_y",
-    "lso2_n_passes_z",
-    "lso2_a_x",
-    "lso2_a_y",
-    "lso2_a_z",
-    "lso_pp_n_passes_x",
-    "lso_pp_n_passes_y",
-    "lso_pp_n_passes_z",
-    "lso_pp_a_x",
-    "lso_pp_a_y",
-    "lso_pp_a_z",
-    "lso_pp2_n_passes_x",
-    "lso_pp2_n_passes_y",
-    "lso_pp2_n_passes_z",
-    "lso_pp2_a_x",
-    "lso_pp2_a_y",
-    "lso_pp2_a_z",
-)
-_decl(
-    _POST,
-    "lso_filter",
-    "lso_filter_wrt",
-    "filter_sigma",
-    "lso_down_sample_factor",
-    "lso_stat_wrt",
-    "lso_R_gas",
-    "lso_mu",
-    "lso_conductivity",
-    "lso_mu_T_exp",
-    "lso_mu_T_ref",
-    "lso_pp_filter",
-    "lso_closure_wrt",
-    "lso_pp_pyramid_wrt",
-    "lso_n_passes_x",
-    "lso_n_passes_y",
-    "lso_n_passes_z",
-    "lso_a_x",
-    "lso_a_y",
-    "lso_a_z",
-    "lso2_n_passes_x",
-    "lso2_n_passes_y",
-    "lso2_n_passes_z",
-    "lso2_a_x",
-    "lso2_a_y",
-    "lso2_a_z",
-    "lso_pp_n_passes_x",
-    "lso_pp_n_passes_y",
-    "lso_pp_n_passes_z",
-    "lso_pp_a_x",
-    "lso_pp_a_y",
-    "lso_pp_a_z",
-    "lso_pp2_n_passes_x",
-    "lso_pp2_n_passes_y",
-    "lso_pp2_n_passes_z",
-    "lso_pp2_a_x",
-    "lso_pp2_a_y",
-    "lso_pp2_a_z",
 )
 _nv(
     _PRE_SIM,
@@ -1815,7 +1692,6 @@ _nv(
 )
 _nv(
     _POST,
-    "lso_pp_pyramid_wrt",
     "x_output",
     "y_output",
     "z_output",

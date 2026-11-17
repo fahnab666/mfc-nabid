@@ -238,28 +238,6 @@ module m_global_parameters
     $:GPU_DECLARE(create='[ib_airfoil_grids]')
     !> @}
 
-    !> @name LSO variable-weight Gaussian filter
-    !> @{
-    integer, parameter :: lso_max_passes = 60  !< Maximum number of filter passes (must match Python LSO_MAX_PASSES)
-    integer            :: n_lso_stat           !< Number of statistical product fields
-    integer            :: m_lso_ds, n_lso_ds, p_lso_ds
-    integer            :: m_glb_lso_ds, n_glb_lso_ds, p_glb_lso_ds
-    integer            :: lso_ds_lo(3)         !< Global coarse index of this rank's first LSO coarse cell
-    integer            :: lso_stat_phi_p_beg, lso_stat_phi_p_end
-    integer            :: lso_stat_rho_beg, lso_stat_rho_end
-    integer            :: lso_stat_rhoke_beg, lso_stat_rhoke_end
-    integer            :: lso_stat_up_beg, lso_stat_up_end
-    integer            :: lso_stat_rhou_beg, lso_stat_rhou_end
-    integer            :: lso_stat_rhouu_beg, lso_stat_rhouu_end
-    integer            :: lso_stat_rhouke_beg, lso_stat_rhouke_end
-    integer            :: lso_stat_rhouT_beg, lso_stat_rhouT_end
-    integer            :: lso_stat_tau_beg, lso_stat_tau_end
-    integer            :: lso_stat_q_beg, lso_stat_q_end
-    integer            :: lso_stat_rhotau_u_beg, lso_stat_rhotau_u_end
-    integer            :: lso_stat_gu_beg, lso_stat_gu_end
-    $:GPU_DECLARE(create='[lso_conductivity, lso_mu_T_exp, lso_mu_T_ref]')
-    !> @}
-
     !> @name Bubble modeling
     !> @{
     #:if MFC_CASE_OPTIMIZATION
@@ -733,47 +711,6 @@ contains
         viz_z_beg = dflt_real; viz_z_end = dflt_real
 
         ! Bubble modeling (sim-specific)
-
-        ! LSO variable-weight Gaussian filter
-        lso_filter = .false.
-        lso_filter_wrt = .false.
-        lso_down_sample_factor = 1
-        lso_stat_wrt = .false.
-        n_lso_stat = 0
-        m_lso_ds = 0; n_lso_ds = 0; p_lso_ds = 0
-        m_glb_lso_ds = 0; n_glb_lso_ds = 0; p_glb_lso_ds = 0
-        lso_ds_lo = 0
-        filter_sigma = dflt_real
-        lso_n_passes_x = 0
-        lso_n_passes_y = 0
-        lso_n_passes_z = 0
-        lso_a_x = 0.0_wp
-        lso_a_y = 0.0_wp
-        lso_a_z = 0.0_wp
-        lso2_n_passes_x = 0
-        lso2_n_passes_y = 0
-        lso2_n_passes_z = 0
-        lso2_a_x = 0.0_wp
-        lso2_a_y = 0.0_wp
-        lso2_a_z = 0.0_wp
-        lso_R_gas = 287.0_wp
-        lso_mu = 0.0_wp
-        lso_conductivity = 0.0_wp
-        lso_mu_T_exp = 0.0_wp
-        lso_mu_T_ref = 0.0_wp
-        lso_stat_phi_p_beg = 0; lso_stat_phi_p_end = 0
-        lso_stat_rho_beg = 0; lso_stat_rho_end = 0
-        lso_stat_rhoke_beg = 0; lso_stat_rhoke_end = 0
-        lso_stat_up_beg = 0; lso_stat_up_end = 0
-        lso_stat_rhou_beg = 0; lso_stat_rhou_end = 0
-        lso_stat_rhouu_beg = 0; lso_stat_rhouu_end = 0
-        lso_stat_rhouke_beg = 0; lso_stat_rhouke_end = 0
-        lso_stat_rhouT_beg = 0; lso_stat_rhouT_end = 0
-        lso_stat_tau_beg = 0; lso_stat_tau_end = 0
-        lso_stat_q_beg = 0; lso_stat_q_end = 0
-        lso_stat_rhotau_u_beg = 0; lso_stat_rhotau_u_end = 0
-        lso_stat_gu_beg = 0; lso_stat_gu_end = 0
-
         bubble_model = 1
         polytropic = .true.
         thermal = dflt_int
@@ -1210,11 +1147,6 @@ contains
 
         call s_configure_coordinate_bounds(recon_type, weno_polyn, muscl_polyn, igr_order, buff_size, idwint, idwbuff, viscous, &
                                            & euler_lagrange, m, n, p, num_dims, igr, ib, fd_number)
-        if (lso_filter) then
-            buff_size = max(buff_size, 4, lso_down_sample_factor - 1)
-            idwbuff(1:num_dims)%beg = -buff_size
-            idwbuff(1:num_dims)%end = idwint(1:num_dims)%end + buff_size
-        end if
         $:GPU_UPDATE(device='[idwint, idwbuff]')
 
         ! Allocation bounds: the coarse subdomain, widened to hold a refined block when amr_max_grid_size pins one larger than it.
@@ -1292,11 +1224,6 @@ contains
         $:GPU_UPDATE(device='[cont_damage, tau_star, cont_damage_s, alpha_bar]')
 
         $:GPU_UPDATE(device='[hyper_cleaning, hyper_cleaning_speed, hyper_cleaning_tau]')
-
-        ! Read per-cell in the m_lso_filter phi_p/gas_mask products and the stability-criteria
-        ! reduction, so the device copy must carry the host value; an unsynced .false. there makes
-        ! every cell look like gas, zeroing phi_p and u_p. Not case-optimized, so sync unconditionally.
-        $:GPU_UPDATE(device='[ib]')
 
         #:if not MFC_CASE_OPTIMIZATION
             $:GPU_UPDATE(device='[wenojs, mapped_weno, wenoz, teno]')

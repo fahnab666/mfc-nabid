@@ -20,8 +20,6 @@ module m_global_parameters
 
     implicit none
 
-    integer, parameter :: lso_max_passes = 60
-
     !> @name Logistics
     !> @{
     integer :: num_procs  !< Number of processors
@@ -48,24 +46,6 @@ module m_global_parameters
     !> @{
     integer :: m_glb, n_glb, p_glb
     !> @}
-
-    ! LSO statistical-product layout and coarsened-grid dimensions are derived
-    ! from the case and are shared with the post-process filter module.
-    integer :: n_lso_stat
-    integer :: m_lso_ds, n_lso_ds, p_lso_ds
-    integer :: m_glb_lso_ds, n_glb_lso_ds, p_glb_lso_ds
-    integer :: lso_stat_phi_p_beg, lso_stat_phi_p_end
-    integer :: lso_stat_rho_beg, lso_stat_rho_end
-    integer :: lso_stat_rhoke_beg, lso_stat_rhoke_end
-    integer :: lso_stat_up_beg, lso_stat_up_end
-    integer :: lso_stat_rhou_beg, lso_stat_rhou_end
-    integer :: lso_stat_rhouu_beg, lso_stat_rhouu_end
-    integer :: lso_stat_rhouke_beg, lso_stat_rhouke_end
-    integer :: lso_stat_rhouT_beg, lso_stat_rhouT_end
-    integer :: lso_stat_tau_beg, lso_stat_tau_end
-    integer :: lso_stat_q_beg, lso_stat_q_end
-    integer :: lso_stat_rhotau_u_beg, lso_stat_rhotau_u_end
-    integer :: lso_stat_gu_beg, lso_stat_gu_end
 
     ! num_dims, num_vels: in m_global_parameters_common
     !> @name Cell-boundary locations in the x-, y- and z-coordinate directions
@@ -223,13 +203,6 @@ contains
         bc_io = .false.
         num_bc_patches = dflt_int
 
-        lso_R_gas = 287.0_wp
-        lso_mu = 0.0_wp
-        lso_conductivity = 0.0_wp
-        lso_mu_T_exp = 0.0_wp
-        lso_mu_T_ref = 0.0_wp
-        lso_pp_pyramid_wrt = .false.
-
         chem_params%gamma_method = 1
         chem_params%transport_model = 1
 
@@ -375,15 +348,6 @@ contains
         schlieren_alpha = dflt_real
 
         fd_order = dflt_int
-
-        lso_down_sample_factor = 1
-        n_lso_stat = 0
-        lso_pp2_n_passes_x = 0
-        lso_pp2_n_passes_y = 0
-        lso_pp2_n_passes_z = 0
-        lso_pp2_a_x = 0._wp
-        lso_pp2_a_y = 0._wp
-        lso_pp2_a_z = 0._wp
 
         ! Bubble modeling (post-specific)
         nb = dflt_int
@@ -532,7 +496,6 @@ contains
             fd_number = max(1, fd_order/2)
             buff_size = buff_size + fd_number
         end if
-        if (lso_stat_wrt .or. lso_pp_filter .or. lso_closure_wrt) buff_size = max(buff_size, 4)
 
         ! Configuring Coordinate Direction Indexes
         idwint(1)%beg = 0; idwint(2)%beg = 0; idwint(3)%beg = 0

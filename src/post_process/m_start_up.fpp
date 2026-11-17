@@ -29,7 +29,6 @@ module m_start_up
     use m_finite_differences
     use m_constants, only: model_eqns_gamma_law, model_eqns_5eq, model_eqns_6eq, format_silo
     use m_chemistry
-    use m_lso_pp_filter
 
 #ifdef MFC_MPI
     use mpi
@@ -88,13 +87,6 @@ contains
                 p = int((p + 1)/3) - 1
             end if
 
-            if (lso_filter_wrt .and. lso_down_sample_factor > 1) then
-                m = (m + 1)/lso_down_sample_factor - 1
-                if (n > 0) n = (n + 1)/lso_down_sample_factor - 1
-                if (p > 0) p = (p + 1)/lso_down_sample_factor - 1
-                call s_update_cell_bounds(cells_bounds, m, n, p)
-            end if
-
             m_glb = m
             n_glb = n
             p_glb = p
@@ -143,7 +135,7 @@ contains
     impure subroutine s_perform_time_step(t_step)
 
         integer, intent(inout) :: t_step
-        integer                :: eta_hh, eta_mm, eta_ss, c
+        integer                :: eta_hh, eta_mm, eta_ss
         real(wp)               :: eta_sec
 
         if (proc_rank == 0) then
@@ -167,9 +159,7 @@ contains
             end if
         end if
 
-        lso_step_found = .true.
         call s_read_data_files(t_step)
-        if (lso_filter_wrt .and. .not. lso_step_found) return
 
         if (amr) call s_read_amr_data(t_step)
 
@@ -187,106 +177,12 @@ contains
             else
                 call s_populate_grid_variables_buffers(x_cb, x_cc, dx, offset_x, offset_y, offset_z, y_cb, y_cc, dy, z_cb, z_cc, dz)
             end if
-        end if
-
-        if (lso_stat_wrt .and. n_lso_stat > 0 .and. (lso_filter_wrt .or. .not. lso_pp_filter)) then
-            call s_read_lso_fields(q_lso_pp_stat_vf, n_lso_stat, t_step, 'lso_stat_')
-        end if
-        if (ib .and. lso_filter_wrt .and. (lso_pp_filter .or. lso_closure_wrt)) then
-            call s_read_lso_fields(q_lso_pp_w_vf, 1, t_step, 'lso_mask_')
-        else if (ib .and. lso_pp_filter .and. .not. lso_filter_wrt) then
-            call s_lso_pp_mask_from_ib(q_lso_pp_w_vf)
-        end if
-
-        if (lso_pp_filter) then
-            if (lso_stat_wrt .and. .not. lso_filter_wrt) then
-                ! Raw-product derivatives need the original state's physical and MPI halos.
-                if (chemistry) call s_compute_q_T_sf(q_T_sf, q_cons_vf, idwint)
-                call s_populate_variables_buffers(bc_type, q_cons_vf, q_T_sf=q_T_sf)
-                if (ib) then
-                    call s_compute_lso_pp_stat_fields(q_cons_vf, q_lso_pp_w_vf)
-                else
-                    call s_compute_lso_pp_stat_fields(q_cons_vf)
-                end if
-            else
-                do c = 1, n_lso_stat, sys_size
-                    call s_apply_lso_pp_filter(q_lso_pp_stat_vf(c:min(c + sys_size - 1, n_lso_stat)))
-                end do
-            end if
-            if (ib) then
-                call s_apply_lso_pp_filter_masked(q_cons_vf, q_lso_pp_w_vf)
-            else
-                call s_apply_lso_pp_filter(q_cons_vf)
-            end if
-            if (lso_stat_wrt .and. .not. lso_filter_wrt) call s_filter_lso_pp_stat_fields()
-        end if
-
-        ! seed the chemistry temperature over the INTERIOR only (mirrors the simulation,
-        ! m_start_up): the ghost q_cons is unread at this point, so a ghost-inclusive sweep
-        ! would Newton-iterate on garbage (NaN under NaN-init builds) at rank seams and
-        ! physical boundaries; s_populate_variables_buffers below extends q_T into the ghosts
-        if (chemistry) call s_compute_q_T_sf(q_T_sf, q_cons_vf, idwint)
-
-        if (buff_size > 0) then
             call s_populate_variables_buffers(bc_type, q_cons_vf, q_T_sf=q_T_sf)
         end if
 
         call s_convert_conservative_to_primitive_variables(q_cons_vf, q_T_sf, q_prim_vf, idwbuff)
 
     end subroutine s_perform_time_step
-
-    !> Read a saved LSO statistical or gas-mask field.
-    impure subroutine s_read_lso_fields(q_vf, nv, t_step, prefix)
-
-        type(scalar_field), intent(inout) :: q_vf(:)
-        integer, intent(in)               :: nv, t_step
-        character(LEN=*), intent(in)      :: prefix
-
-#ifdef MFC_MPI
-        integer                              :: ifile, i, mpi_view, data_size
-        integer, dimension(MPI_STATUS_SIZE)  :: status
-        integer(kind=MPI_OFFSET_KIND)        :: disp, field_size, file_size
-        integer, dimension(num_dims)         :: sizes_glb, sizes_loc, starts
-        real(stp), allocatable               :: field_io_buf(:,:,:)
-        character(LEN=path_len + 2*name_len) :: file_loc
-        logical                              :: file_exist
-
-        sizes_glb(1) = m_glb + 1; sizes_loc(1) = m + 1; starts(1) = start_idx(1)
-        if (num_dims >= 2) then
-            sizes_glb(2) = n_glb + 1; sizes_loc(2) = n + 1; starts(2) = start_idx(2)
-        end if
-        if (num_dims == 3) then
-            sizes_glb(3) = p_glb + 1; sizes_loc(3) = p + 1; starts(3) = start_idx(3)
-        end if
-        data_size = product(sizes_loc)
-        field_size = int(product(sizes_glb), MPI_OFFSET_KIND)*int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
-
-        write (file_loc, '(A,A,I0,A)') trim(case_dir) // '/restart_data' // trim(mpiiofs), trim(prefix), t_step, '.dat'
-        inquire (FILE=trim(file_loc), EXIST=file_exist)
-        if (.not. file_exist) call s_mpi_abort('Required LSO file ' // trim(file_loc) // ' is missing.')
-
-        call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, MPI_MODE_RDONLY, mpi_info_int, ifile, ierr)
-        call MPI_FILE_GET_SIZE(ifile, file_size, ierr)
-        @:PROHIBIT(file_size < field_size*int(nv, MPI_OFFSET_KIND), &
-                   & "LSO field file contains fewer fields than expected; regenerate it with the matching simulation build")
-        allocate (field_io_buf(0:m,0:n,0:p))
-        do i = 1, nv
-            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, starts, MPI_ORDER_FORTRAN, mpi_p, mpi_view, ierr)
-            call MPI_TYPE_COMMIT(mpi_view, ierr)
-            disp = field_size*int(i - 1, MPI_OFFSET_KIND)
-            call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, mpi_view, 'native', mpi_info_int, ierr)
-            call MPI_FILE_READ_ALL(ifile, field_io_buf, data_size*mpi_io_type, mpi_io_p, status, ierr)
-            q_vf(i)%sf(0:m,0:n,0:p) = field_io_buf
-            call MPI_TYPE_FREE(mpi_view, ierr)
-        end do
-        deallocate (field_io_buf)
-        call MPI_FILE_CLOSE(ifile, ierr)
-        call s_refresh_lso_pp_fields(q_vf)
-#else
-        call s_mpi_abort('LSO statistical output requires an MPI build.')
-#endif
-
-    end subroutine s_read_lso_fields
 
     !> Fill the ghost layers of ib_markers from neighbor ranks, then copy the ghost-inclusive field to q_sf.
     impure subroutine s_exchange_ib_markers_halo(q_sf)
@@ -329,8 +225,6 @@ contains
         real(wp), dimension(num_fluids) :: alpha_rho
         real(wp)                        :: T
         integer                         :: x_beg, x_end, y_beg, y_end, z_beg, z_end
-        type(scalar_field), allocatable :: q_lso_cls_vf(:)
-        integer                         :: lso_n_cls
 
         if (output_partial_domain) then
             call s_define_output_region
@@ -362,44 +256,6 @@ contains
         end if
 
         call s_write_grid_to_formatted_database_file(t_step)
-
-        if (lso_stat_wrt .and. n_lso_stat > 0) then
-            do i = 1, n_lso_stat
-                out%q_sf = q_lso_pp_stat_vf(i)%sf(x_beg:x_end,y_beg:y_end,z_beg:z_end)
-                write (varname, '(A,I3.3)') 'lso_stat_', i
-                call s_write_variable_to_formatted_database_file(varname, t_step)
-            end do
-            out%q_sf = q_lso_pp_stat_vf(lso_stat_gu_beg)%sf(x_beg:x_end,y_beg:y_end,z_beg:z_end)
-            varname = 'g_u_x'
-            call s_write_variable_to_formatted_database_file(varname, t_step)
-            if (num_dims >= 2) then
-                out%q_sf = q_lso_pp_stat_vf(lso_stat_gu_beg + 1)%sf(x_beg:x_end,y_beg:y_end,z_beg:z_end)
-                varname = 'g_u_y'
-                call s_write_variable_to_formatted_database_file(varname, t_step)
-            end if
-            if (num_dims == 3) then
-                out%q_sf = q_lso_pp_stat_vf(lso_stat_gu_beg + 2)%sf(x_beg:x_end,y_beg:y_end,z_beg:z_end)
-                varname = 'g_u_z'
-                call s_write_variable_to_formatted_database_file(varname, t_step)
-            end if
-        end if
-
-        if (lso_closure_wrt .and. lso_stat_wrt .and. n_lso_stat > 0) then
-            lso_n_cls = f_lso_n_closure()
-            allocate (q_lso_cls_vf(1:lso_n_cls))
-            do i = 1, lso_n_cls
-                allocate (q_lso_cls_vf(i)%sf(idwbuff(1)%beg:idwbuff(1)%end,idwbuff(2)%beg:idwbuff(2)%end, &
-                          & idwbuff(3)%beg:idwbuff(3)%end))
-            end do
-            call s_compute_lso_closure_fields(q_lso_pp_stat_vf, q_cons_vf, q_lso_pp_w_vf, q_lso_cls_vf)
-            do i = 1, lso_n_cls
-                out%q_sf = q_lso_cls_vf(i)%sf(x_beg:x_end,y_beg:y_end,z_beg:z_end)
-                write (varname, '(A,I3.3)') 'lso_closure_', i
-                call s_write_variable_to_formatted_database_file(varname, t_step)
-                deallocate (q_lso_cls_vf(i)%sf)
-            end do
-            deallocate (q_lso_cls_vf)
-        end if
 
         if (omega_wrt(2) .or. omega_wrt(3) .or. qm_wrt .or. liutex_wrt .or. schlieren_wrt) then
             call s_compute_finite_difference_coefficients(m, x_cc, fd%fd_coeff_x, buff_size, fd_number, fd_order, offset_x)
@@ -973,7 +829,6 @@ contains
         call s_initialize_eos_module()
         call s_initialize_variables_conversion_module(store_mixture_fields=.true., lagrange_beta_index=beta_idx)
         call s_initialize_data_input_module()
-        call s_initialize_lso_pp_filter_module()
         call s_initialize_derived_variables_module()
         call s_initialize_data_output_module()
 
@@ -1138,28 +993,6 @@ contains
         ib_bc_y = bc_y
         ib_bc_z = bc_z
 
-        num_dims = 1 + min(1, n) + min(1, p)
-        if (lso_stat_wrt .and. (lso_pp_filter .or. lso_filter_wrt)) then
-            block
-                integer :: nt
-                nt = num_dims*(num_dims + 1)/2
-                lso_stat_phi_p_beg = 1; lso_stat_phi_p_end = 1
-                lso_stat_rho_beg = 2; lso_stat_rho_end = 2
-                lso_stat_rhoke_beg = 3; lso_stat_rhoke_end = 3
-                lso_stat_up_beg = 4; lso_stat_up_end = lso_stat_up_beg + num_dims - 1
-                lso_stat_rhou_beg = lso_stat_up_end + 1; lso_stat_rhou_end = lso_stat_rhou_beg + num_dims - 1
-                lso_stat_rhouu_beg = lso_stat_rhou_end + 1; lso_stat_rhouu_end = lso_stat_rhouu_beg + nt - 1
-                lso_stat_rhouke_beg = lso_stat_rhouu_end + 1; lso_stat_rhouke_end = lso_stat_rhouke_beg + num_dims - 1
-                lso_stat_rhouT_beg = lso_stat_rhouke_end + 1; lso_stat_rhouT_end = lso_stat_rhouT_beg + num_dims - 1
-                lso_stat_tau_beg = lso_stat_rhouT_end + 1; lso_stat_tau_end = lso_stat_tau_beg + nt - 1
-                lso_stat_q_beg = lso_stat_tau_end + 1; lso_stat_q_end = lso_stat_q_beg + num_dims - 1
-                lso_stat_rhotau_u_beg = lso_stat_q_end + 1
-                lso_stat_rhotau_u_end = lso_stat_rhotau_u_beg + num_dims - 1
-                lso_stat_gu_beg = lso_stat_rhotau_u_end + 1
-                lso_stat_gu_end = lso_stat_gu_beg + num_dims - 1
-                n_lso_stat = lso_stat_gu_end
-            end block
-        end if
         call s_initialize_parallel_io()
         output_offsets = (/offset_x, offset_y, offset_z/)
         call s_mpi_decompose_computational_domain(write_silo_ghost_offsets=format == format_silo, adjust_local_domains=.false., &
@@ -1203,7 +1036,6 @@ contains
         call s_finalize_data_output_module()
         call s_finalize_derived_variables_module()
         call s_finalize_data_input_module()
-        call s_finalize_lso_pp_filter_module()
         call s_finalize_variables_conversion_module()
         call s_finalize_eos_module()
         if (num_procs > 1) then

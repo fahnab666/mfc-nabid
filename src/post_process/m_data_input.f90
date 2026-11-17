@@ -43,7 +43,6 @@ module m_data_input
     type(integer_field), allocatable, dimension(:,:), public :: bc_type    !< Boundary condition identifiers
     type(scalar_field), public                               :: q_T_sf     !< Temperature field
     type(integer_field), public                              :: ib_markers
-    logical, public                                          :: lso_step_found = .true.
 
     !> One AMR fine-block piece owned by this rank, held for visualization overlay of the refined solution.
     type, public :: amr_fine_block
@@ -89,36 +88,6 @@ contains
     end subroutine s_read_grid_data_direction
 
 #ifdef MFC_MPI
-    !> Sparse fine-grid samples at coarse-cell centres for categorical IB markers.
-    impure subroutine s_lso_fine_view(element_type, corner, disp, view)
-
-        integer, intent(in)                          :: element_type, corner(3)
-        integer(kind=MPI_OFFSET_KIND), intent(inout) :: disp
-        integer, intent(out)                         :: view
-        integer                                      :: strides(3), starts(3), sizes(3), bytes, x_view, y_view, ierr
-        integer(kind=MPI_ADDRESS_KIND)               :: pitch
-
-        strides = 1
-        strides(1:num_dims) = lso_down_sample_factor
-        sizes = [m_glb + 1, n_glb + 1, p_glb + 1]*strides
-        starts = (strides - 1)/2 + corner
-        starts(1:num_dims) = starts(1:num_dims) + start_idx*strides(1:num_dims)
-        call MPI_TYPE_SIZE(element_type, bytes, ierr)
-        disp = disp + int(bytes, MPI_OFFSET_KIND)*(int(starts(1), MPI_OFFSET_KIND) + int(sizes(1), &
-                          & MPI_OFFSET_KIND)*(int(starts(2), MPI_OFFSET_KIND) + int(sizes(2), MPI_OFFSET_KIND)*int(starts(3), &
-                          & MPI_OFFSET_KIND)))
-        call MPI_TYPE_VECTOR(m + 1, 1, strides(1), element_type, x_view, ierr)
-        pitch = int(bytes, MPI_ADDRESS_KIND)*int(sizes(1), MPI_ADDRESS_KIND)*int(strides(2), MPI_ADDRESS_KIND)
-        call MPI_TYPE_CREATE_HVECTOR(n + 1, 1, pitch, x_view, y_view, ierr)
-        pitch = int(bytes, MPI_ADDRESS_KIND)*int(sizes(1), MPI_ADDRESS_KIND)*int(sizes(2), MPI_ADDRESS_KIND)*int(strides(3), &
-                    & MPI_ADDRESS_KIND)
-        call MPI_TYPE_CREATE_HVECTOR(p + 1, 1, pitch, y_view, view, ierr)
-        call MPI_TYPE_COMMIT(view, ierr)
-        call MPI_TYPE_FREE(x_view, ierr)
-        call MPI_TYPE_FREE(y_view, ierr)
-
-    end subroutine s_lso_fine_view
-
     !> Helper subroutine to setup MPI data I/O parameters
     impure subroutine s_setup_mpi_io_params(data_size, m_MOK, n_MOK, p_MOK, WP_MOK, MOK, str_MOK, NVARS_MOK)
 
@@ -184,8 +153,6 @@ contains
         integer(KIND=MPI_OFFSET_KIND)       :: disp
         integer(KIND=MPI_OFFSET_KIND)       :: m_MOK, n_MOK, p_MOK, MOK, WP_MOK, var_MOK
         integer                             :: save_index
-        integer                             :: view
-        integer, allocatable                :: marker_samples(:,:,:)
 #endif
 
         if (.not. ib) return
@@ -233,20 +200,8 @@ contains
                     disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1 + int(save_index, MPI_OFFSET_KIND))
                 end if
 
-                if (lso_filter_wrt .and. lso_down_sample_factor > 1) then
-                    disp = disp*int(lso_down_sample_factor, MPI_OFFSET_KIND)**num_dims
-                    ! IDs are categorical: nearest fine centre, lower index on an even-factor tie.
-                    call s_lso_fine_view(MPI_INTEGER, [0, 0, 0], disp, view)
-                    allocate (marker_samples(0:m,0:n,0:p))
-                    call MPI_FILE_SET_VIEW(ifile, disp, MPI_INTEGER, view, 'native', mpi_info_int, ierr)
-                    call MPI_FILE_READ_ALL(ifile, marker_samples, data_size, MPI_INTEGER, status, ierr)
-                    ib_markers%sf(0:m,0:n,0:p) = marker_samples
-                    deallocate (marker_samples)
-                    call MPI_TYPE_FREE(view, ierr)
-                else
-                    call MPI_FILE_SET_VIEW(ifile, disp, MPI_INTEGER, MPI_IO_IB_DATA%view, 'native', mpi_info_int, ierr)
-                    call MPI_FILE_READ(ifile, MPI_IO_IB_DATA%var%sf, data_size, MPI_INTEGER, status, ierr)
-                end if
+                call MPI_FILE_SET_VIEW(ifile, disp, MPI_INTEGER, MPI_IO_IB_DATA%view, 'native', mpi_info_int, ierr)
+                call MPI_FILE_READ(ifile, MPI_IO_IB_DATA%var%sf, data_size, MPI_INTEGER, status, ierr)
 
                 call MPI_FILE_CLOSE(ifile, ierr)
 #endif
@@ -311,15 +266,6 @@ contains
             call s_assign_default_bc_type(bc_type)
         end if
 
-        if (lso_filter_wrt) then
-            file_loc = trim(t_step_dir) // '/lso_q_cons_vf1.dat'
-            inquire (FILE=trim(file_loc), EXIST=file_check)
-            if (.not. file_check) then
-                lso_step_found = .false.
-                return
-            end if
-        end if
-
         ! Pass explicit slices so the dummy `dimension(-1:)` / `dimension(0:)` arguments map to the correct interior indices of the
         ! actual arrays. Without slicing, when offset_x%beg or buff_size > 0 (i.e. format=1 parallel 3D ranks), Fortran's
         ! assumed-shape re-mapping shifts the read by that many slots and leaves the last interior cells uninitialized - corrupting
@@ -337,9 +283,6 @@ contains
         do i = 1, sys_size
             write (file_num, '(I0)') i
             file_loc = trim(t_step_dir) // '/q_cons_vf' // trim(file_num) // '.dat'
-            if (lso_filter_wrt) then
-                file_loc = trim(t_step_dir) // '/lso_q_cons_vf' // trim(file_num) // '.dat'
-            end if
             inquire (FILE=trim(file_loc), EXIST=file_check)
 
             if (file_check) then
@@ -372,29 +315,11 @@ contains
         integer(KIND=MPI_OFFSET_KIND)        :: MOK
         integer(kind=MPI_OFFSET_KIND)        :: offset
         character(LEN=path_len + 2*name_len) :: file_loc
-        character(LEN=name_len)              :: file_loc_base
         logical                              :: file_exist
         integer(kind=8)                      :: file_bytes, bytes_needed
         character(len=10)                    :: case_m_str, file_m_str
         character(len=10)                    :: t_step_string
         integer                              :: i
-
-        if (lso_filter_wrt) then
-            if (file_per_process) then
-                call s_int_to_str(t_step, t_step_string)
-                write (file_loc_base, '(I0,A1,I7.7,A)') t_step, '_', proc_rank, '.dat'
-                file_loc_base = 'lso_' // trim(file_loc_base)
-                file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc_base)
-            else
-                write (file_loc_base, '(I0,A)') t_step, '.dat'
-                file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // 'lso_' // trim(file_loc_base)
-            end if
-            inquire (FILE=trim(file_loc), EXIST=file_exist)
-            if (.not. file_exist) then
-                lso_step_found = .false.
-                return
-            end if
-        end if
 
         allocate (x_cb_glb(-1:m_glb))
         allocate (y_cb_glb(-1:n_glb))
@@ -405,7 +330,6 @@ contains
         else
             stride = 1
         end if
-        if (lso_filter_wrt .and. lso_down_sample_factor > 1) stride = lso_down_sample_factor
 
         file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // 'x_cb.dat'
         inquire (FILE=trim(file_loc), EXIST=file_exist, SIZE=file_bytes)
@@ -519,35 +443,15 @@ contains
         integer                                      :: ifile, ierr, data_size
         integer, dimension(MPI_STATUS_SIZE)          :: status
         integer(KIND=MPI_OFFSET_KIND)                :: disp, var_MOK
-        character(LEN=path_len + 2*name_len)         :: file_loc, file_loc_base
+        character(LEN=path_len + 2*name_len)         :: file_loc
         logical                                      :: file_exist
         character(len=10)                            :: t_step_string
         integer                                      :: i
 
-        if (lso_filter_wrt) then
-            if (file_per_process) then
-                call s_int_to_str(t_step, t_step_string)
-                write (file_loc_base, '(I0,A1,I7.7,A)') t_step, '_', proc_rank, '.dat'
-                file_loc_base = 'lso_' // trim(file_loc_base)
-                file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc_base)
-            else
-                write (file_loc_base, '(I0,A)') t_step, '.dat'
-                file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // 'lso_' // trim(file_loc_base)
-            end if
-            inquire (FILE=trim(file_loc), EXIST=file_exist)
-            if (.not. file_exist) then
-                lso_step_found = .false.
-                return
-            end if
-        end if
-
         if (file_per_process) then
             call s_int_to_str(t_step, t_step_string)
-            write (file_loc_base, '(I0,A1,I7.7,A)') t_step, '_', proc_rank, '.dat'
-            if (lso_filter_wrt) then
-                file_loc_base = 'lso_' // trim(file_loc_base)
-            end if
-            file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc_base)
+            write (file_loc, '(I0,A1,I7.7,A)') t_step, '_', proc_rank, '.dat'
+            file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc)
             inquire (FILE=trim(file_loc), EXIST=file_exist)
 
             if (file_exist) then
@@ -604,11 +508,8 @@ contains
                 call s_mpi_abort('File ' // trim(file_loc) // ' is missing. Exiting.')
             end if
         else
-            write (file_loc_base, '(I0,A)') t_step, '.dat'
-            if (lso_filter_wrt) then
-                file_loc_base = 'lso_' // trim(file_loc_base)
-            end if
-            file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc_base)
+            write (file_loc, '(I0,A)') t_step, '.dat'
+            file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
             inquire (FILE=trim(file_loc), EXIST=file_exist)
 
             if (file_exist) then

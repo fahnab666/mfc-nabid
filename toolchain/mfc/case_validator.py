@@ -260,17 +260,6 @@ PHYSICS_DOCS = {
             "does not have. Not supported with igr or chemistry (which carries its own mixture-averaged conduction)."
         ),
     },
-    "check_lso_filter": {
-        "title": "LSO Filtering",
-        "category": "Numerical Schemes",
-        "explanation": (
-            "LSO statistical products require one fluid and either simulation MPI output or post-process filtering of original data. "
-            "Original-data IBM statistics require stationary bodies; moving-body products need the in-situ solid velocity. "
-            "State-dependent EOS statistics require positive cv and reference temperature. "
-            "Particle products support IBM markers, not particles_lagrange. "
-            "Closure reconstruction currently supports one calorically perfect ideal or stiffened gas."
-        ),
-    },
     # Feature Compatibility
     "check_mhd": {
         "title": "Magnetohydrodynamics (MHD)",
@@ -1460,13 +1449,7 @@ class CaseValidator:
         )
         for i, prefix in state_dependent.items():
             el_temperature = self.get("particles_lagrange", "F") == "T" and (self.get(f"particle_params%suth({i})", 0) or 0) > 0
-            needs_temperature = (
-                self.get("T_wrt", "F") == "T"
-                or (i == 1 and self._is_numeric(rta) and rta > 0)
-                or (i == 1 and self.get("lso_stat_wrt", "F") == "T")
-                or (dynamic_ib and prefix == "jwl")
-                or el_temperature
-            )
+            needs_temperature = self.get("T_wrt", "F") == "T" or (i == 1 and self._is_numeric(rta) and rta > 0) or (dynamic_ib and prefix == "jwl") or el_temperature
             if needs_temperature:
                 cv = self.get(f"fluid_pp({i})%cv")
                 self.prohibit(cv is None or cv <= 0, f"the temperature of fluid {i} needs fluid_pp({i})%cv > 0")
@@ -2832,84 +2815,6 @@ class CaseValidator:
             if coord_a is not None and coord_b is not None:
                 self.prohibit(coord_a >= coord_b, f"{direction}_a must be less than {direction}_b with stretch_{direction} enabled")
 
-    def check_lso_filter(self, stage):
-        """Reject LSO configurations that otherwise produce missing or invalid output."""
-        enabled = any(self.get(key, "F") == "T" for key in ("lso_filter", "lso_filter_wrt", "lso_stat_wrt", "lso_pp_filter", "lso_closure_wrt", "lso_pp_pyramid_wrt"))
-        if not enabled:
-            return
-
-        lso_filter = self.get("lso_filter", "F") == "T"
-        filter_wrt = self.get("lso_filter_wrt", "F") == "T"
-        stat_wrt = self.get("lso_stat_wrt", "F") == "T"
-        pp_filter = self.get("lso_pp_filter", "F") == "T"
-        closure_wrt = self.get("lso_closure_wrt", "F") == "T"
-        pyramid_wrt = self.get("lso_pp_pyramid_wrt", "F") == "T"
-        parallel_io = self.get("parallel_io", "F") == "T"
-        sigma = self.get("filter_sigma")
-        factor = self.get("lso_down_sample_factor", 1) or 1
-        lso_R_gas = self.get("lso_R_gas", 287.0)
-        if lso_R_gas is None:
-            lso_R_gas = 287.0
-
-        self.prohibit(sigma is None or sigma <= 0, "LSO filtering requires filter_sigma > 0")
-        stretch_x = self.get("stretch_x", "F") == "T"
-        self.prohibit(any(self.get(f"stretch_{d}", "F") == "T" for d in "yz"), "LSO filtering requires uniform y and z grids")
-        self.prohibit(stretch_x and pp_filter, "lso_pp_filter requires a uniform x grid")
-        self.prohibit(factor < 1, "lso_down_sample_factor must be a positive integer")
-        if factor > 1:
-            for direction, key in (("x", "m"), ("y", "n"), ("z", "p")):
-                cells = self.get(key, 0)
-                if cells and (cells + 1) % factor != 0:
-                    self.prohibit(True, f"lso_down_sample_factor must divide {direction} cells + 1")
-        self.prohibit(filter_wrt and not lso_filter, "lso_filter_wrt = T requires lso_filter = T")
-        self.prohibit(
-            stat_wrt and not filter_wrt and not pyramid_wrt and not (stage == "post_process" and pp_filter),
-            "lso_stat_wrt = T requires filtered output or post-process filtering of original data",
-        )
-        self.prohibit(stat_wrt and not parallel_io, "LSO statistical output requires parallel_io = T")
-        self.prohibit(stat_wrt and self.get("num_fluids") != 1, "LSO statistics currently require num_fluids = 1")
-        self.prohibit(stat_wrt and self.get("particles_lagrange", "F") == "T", "LSO particle statistics support IBM markers, not particles_lagrange")
-        eos_names = CONSTRAINTS["fluid_pp(1)%eos"]["names"]
-        eos = self.get("fluid_pp(1)%eos", eos_names["stiffened_gas"])
-        cv = self.get("fluid_pp(1)%cv")
-        self.prohibit(stat_wrt and lso_R_gas <= 0, "LSO statistics require lso_R_gas > 0")
-        mu_t_exp = self.get("lso_mu_T_exp", 0.0) or 0.0
-        mu_t_ref = self.get("lso_mu_T_ref", 0.0) or 0.0
-        self.prohibit(mu_t_exp > 0.0 and mu_t_ref <= 0.0, "lso_mu_T_exp > 0 requires lso_mu_T_ref > 0")
-        self.prohibit(
-            stat_wrt and self.get("chemistry", "F") != "T" and eos not in (eos_names["stiffened_gas"], eos_names["ideal_gas"]) and (cv is None or cv <= 0),
-            "LSO statistics with a state-dependent EOS require fluid_pp(1)%cv > 0",
-        )
-
-        if stage != "post_process":
-            return
-
-        if pp_filter and not filter_wrt and stat_wrt and self.get("ib", "F") == "T":
-            moving = any(value for key, value in self.params.items() if re.fullmatch(r"patch_ib\(\d+\)%(moving_ibm|kin_model|vel\(\d+\)|angular_vel\(\d+\))|particle_cloud\(\d+\)%moving_ibm", key))
-            self.prohibit(bool(moving), "Original-data IBM statistics require stationary bodies; use in-situ statistics to retain particle velocities")
-
-        if filter_wrt and factor > 1:
-            self.prohibit(not parallel_io or self.get("file_per_process", "F") == "T", "Downsampled LSO post-processing requires shared parallel_io files")
-            self.prohibit(self.get("down_sample", "F") == "T", "LSO downsampling cannot be combined with legacy down_sample")
-            self.prohibit(
-                (self.get("num_bc_patches", 0) or 0) > 0 or any(self.get(f"bc_{d}%{side}") == -17 for d in "xyz" for side in ("beg", "end")),
-                "Downsampled LSO post-processing does not support spatial boundary-condition files",
-            )
-            for key in ("m", "n", "p"):
-                cells = self.get(key, 0) or 0
-                self.prohibit(cells > 0 and (cells + 1) // factor < 2, "Downsampled LSO post-processing needs at least two cells per active direction")
-
-        self.prohibit(pp_filter and self.get("ib", "F") == "T" and not parallel_io, "IBM LSO post-process filtering requires parallel_io = T")
-        if pyramid_wrt:
-            self.prohibit(not pp_filter or filter_wrt, "lso_pp_pyramid_wrt needs lso_pp_filter = T on the original data")
-            self.prohibit(factor < 2, "lso_pp_pyramid_wrt needs lso_down_sample_factor >= 2")
-            self.prohibit(not parallel_io or self.get("file_per_process", "F") == "T", "lso_pp_pyramid_wrt needs shared parallel_io files")
-        self.prohibit(closure_wrt and not stat_wrt, "lso_closure_wrt = T requires lso_stat_wrt = T")
-        if closure_wrt:
-            self.prohibit(self.get("num_fluids") != 1, "LSO closures currently require num_fluids = 1")
-            self.prohibit(self.get("chemistry", "F") == "T", "LSO closures do not support chemistry")
-            self.prohibit(eos not in (eos_names["stiffened_gas"], eos_names["ideal_gas"]), "LSO closures require a calorically perfect ideal or stiffened gas")
-
     def check_perturb_density(self):
         """Checks initial partial density perturbation constraints (pre-process)"""
         perturb_flow = self.get("perturb_flow", "F") == "T"
@@ -3931,7 +3836,6 @@ class CaseValidator:
     def validate_simulation(self):
         """Validate simulation-specific parameters"""
         self.validate_common()
-        self.check_lso_filter("simulation")
         self.check_geometry_precision_simulation()
         self.check_finite_difference()
         self.check_time_stepping()
@@ -3964,7 +3868,6 @@ class CaseValidator:
     def validate_pre_process(self):
         """Validate pre-process-specific parameters"""
         self.validate_common()
-        self.check_lso_filter("pre_process")
         self.check_restart()
         self.check_domain_extents()
         self.check_qbmm_pre_process()
@@ -3983,7 +3886,6 @@ class CaseValidator:
     def validate_post_process(self):
         """Validate post-process-specific parameters"""
         self.validate_common()
-        self.check_lso_filter("post_process")
         self.check_finite_difference()
         self.check_time_stepping()
         self.check_output_format()
