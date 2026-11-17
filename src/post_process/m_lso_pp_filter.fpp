@@ -21,7 +21,8 @@ module m_lso_pp_filter
     use m_global_parameters
     use m_mpi_common
     use m_constants
-    use m_variables_conversion, only: gammas
+    use m_variables_conversion, only: gammas, s_convert_to_mixture_variables, s_compute_pressure
+    use m_eos, only: s_phase_temperature
     use m_data_input, only: ib_markers
 
 #ifdef MFC_MPI
@@ -48,6 +49,10 @@ module m_lso_pp_filter
     ! Post-filtered normalization weight w2 = filter2(w1) (interior only), used by the closure pass; 1 without a mask.
     type(scalar_field) :: q_lso_pp_w_vf(1:1)
 
+    ! Phase temperature for EOS beyond ideal and stiffened gas, evaluated once per cell for the stat products.
+    logical               :: lso_T_eos = .false.
+    real(wp), allocatable :: lso_pp_T(:,:,:)
+
 contains
 
     impure subroutine s_initialize_lso_pp_filter_module()
@@ -66,6 +71,11 @@ contains
             do i = 1, n_lso_stat
                 allocate (q_lso_pp_stat_vf(i)%sf(0:m,0:n,0:p))
             end do
+            lso_T_eos = .not. (eoss(1) == eos_ideal_gas .or. eoss(1) == eos_stiffened_gas)
+            if (lso_T_eos) then
+                @:ALLOCATE(lso_pp_T(-1:m + 1, merge(-1, 0, n > 0):merge(n + 1, 0, n > 0), merge(-1, 0, p > 0):merge(p + 1, 0, &
+                           & p > 0)))
+            end if
         end if
 
     end subroutine s_initialize_lso_pp_filter_module
@@ -74,8 +84,15 @@ contains
 
         integer :: i
 
-        if (allocated(lso_pp_tmp)) deallocate (lso_pp_tmp)
-        if (associated(q_lso_pp_w_vf(1)%sf)) deallocate (q_lso_pp_w_vf(1)%sf)
+        if (allocated(lso_pp_tmp)) then
+            @:DEALLOCATE(lso_pp_tmp)
+        end if
+        if (allocated(lso_pp_T)) then
+            @:DEALLOCATE(lso_pp_T)
+        end if
+        if (associated(q_lso_pp_w_vf(1)%sf)) then
+            @:DEALLOCATE(q_lso_pp_w_vf(1)%sf)
+        end if
 
         if (allocated(q_lso_pp_stat_vf)) then
             do i = 1, n_lso_stat
@@ -675,6 +692,49 @@ contains
 
     end subroutine s_lso_pp_filter_ghost_refresh
 
+    !> Fill the ghosts of read or derived LSO fields. Statistical and closure vectors can exceed the shared MPI buffers' sys_size
+    !! capacity.
+    impure subroutine s_refresh_lso_pp_fields(q_vf)
+
+        type(scalar_field), intent(inout) :: q_vf(:)
+        integer                           :: c, last
+
+        do c = 1, size(q_vf), sys_size
+            last = min(c + sys_size - 1, size(q_vf))
+            call s_lso_pp_filter_ghost_refresh(q_vf(c:last), 1, .true.)
+            if (n > 0) call s_lso_pp_filter_ghost_refresh(q_vf(c:last), 2, .true.)
+            if (p > 0) call s_lso_pp_filter_ghost_refresh(q_vf(c:last), 3, .true.)
+        end do
+
+    end subroutine s_refresh_lso_pp_fields
+
+    !> Temperature of fluid 1 from the saved EOS state (EOS beyond ideal and stiffened gas).
+    function f_lso_pp_temperature(q_cons_vf, j, k, l) result(T)
+
+        type(scalar_field), intent(in) :: q_cons_vf(:)
+        integer, intent(in)            :: j, k, l
+        real(wp)                       :: T, rho, gamma, pi_inf, qv, dyn_p, pres
+        real(wp)                       :: rhoYks(num_species)
+        integer                        :: i
+
+        call s_convert_to_mixture_variables(q_cons_vf, j, k, l, rho, gamma, pi_inf, qv)
+        dyn_p = 0._wp
+        do i = eqn_idx%mom%beg, eqn_idx%mom%end
+            dyn_p = dyn_p + 0.5_wp*real(q_cons_vf(i)%sf(j, k, l), wp)**2/rho
+        end do
+        rhoYks = 0._wp
+        if (chemistry) then
+            do i = 1, num_species
+                rhoYks(i) = real(q_cons_vf(eqn_idx%species%beg + i - 1)%sf(j, k, l), wp)
+            end do
+        end if
+        T = dflt_T_guess
+        call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j, k, l), q_cons_vf(eqn_idx%alf)%sf(j, k, l), dyn_p, pi_inf, gamma, rho, &
+                                & qv, rhoYks, pres, T)
+        call s_phase_temperature(rho, pres, 1, T)
+
+    end function f_lso_pp_temperature
+
     !> Build the LSO stat product fields from the post_process-filtered conserved state. No IB markers in post_process, so phi_p = 0
     !! and gas_mask = 1 everywhere. CPU loops.
     impure subroutine s_compute_lso_pp_stat_fields(q_cons_vf, w_vf)
@@ -704,6 +764,18 @@ contains
         real(wp) :: q1, q2, q3
         real(wp) :: fprop, mu_loc, k_loc
 
+        if (lso_T_eos) then
+            ! Interior and the face-neighbour ghosts the centred differences read.
+            do l = lbound(lso_pp_T, 3), ubound(lso_pp_T, 3)
+                do k = lbound(lso_pp_T, 2), ubound(lso_pp_T, 2)
+                    do j = -1, m + 1
+                        if (count([j < 0 .or. j > m, k < 0 .or. k > n, l < 0 .or. l > p]) > 1) cycle
+                        lso_pp_T(j, k, l) = f_lso_pp_temperature(q_cons_vf, j, k, l)
+                    end do
+                end do
+            end do
+        end if
+
         ! Pass 1: algebraic products. gas_mask = 1 everywhere (no IB).
 
         do l = 0, p
@@ -729,6 +801,7 @@ contains
                     ke = 0.5_wp*(mom1**2 + mom2**2 + mom3**2)/rho
                     e_int = (E_loc - ke)/rho
                     T_loc = e_int/(gammas(1)*lso_R_gas)
+                    if (lso_T_eos) T_loc = lso_pp_T(j, k, l)
 
                     ! phi_p, rho scalar, rhoke scalar, u_p (no IB in post_process filter)
                     q_lso_pp_stat_vf(lso_stat_phi_p_beg)%sf(j, k, l) = 0._stp
@@ -796,10 +869,12 @@ contains
                     rho_jm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j - 1, 0, 0), wp), sgm_eps)
                     u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, 0, 0), wp)/rho_jm
                     T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, 0, 0), wp) - 0.5_wp*u1_jm**2*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
+                    if (lso_T_eos) T_jm = lso_pp_T(j - 1, 0, 0)
 
                     rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, 0, 0), wp), sgm_eps)
                     u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, 0, 0), wp)/rho_jp
                     T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, 0, 0), wp) - 0.5_wp*u1_jp**2*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
+                    if (lso_T_eos) T_jp = lso_pp_T(j + 1, 0, 0)
 
                     ddx = x_cc(j + 1) - x_cc(j - 1)
                     du1dx = (u1_jp - u1_jm)/ddx
@@ -808,6 +883,7 @@ contains
                     u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, 0, 0), wp)/rho_loc
                     ! mu(T), lambda(T) at the cell temperature (power law, constant Pr; 1 when lso_mu_T_exp = 0)
                     T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, 0, 0), wp) - 0.5_wp*(u1**2)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
+                    if (lso_T_eos) T_loc = lso_pp_T(j, 0, 0)
                     fprop = 1._wp
                     if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
                     mu_loc = fprop*lso_mu
@@ -832,24 +908,28 @@ contains
                         u2_jm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j - 1, k, 0), wp)/rho_jm
                         T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, k, 0), &
                                 & wp) - 0.5_wp*(u1_jm**2 + u2_jm**2)*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
+                        if (lso_T_eos) T_jm = lso_pp_T(j - 1, k, 0)
 
                         rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, k, 0), wp), sgm_eps)
                         u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, k, 0), wp)/rho_jp
                         u2_jp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j + 1, k, 0), wp)/rho_jp
                         T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, k, 0), &
                                 & wp) - 0.5_wp*(u1_jp**2 + u2_jp**2)*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
+                        if (lso_T_eos) T_jp = lso_pp_T(j + 1, k, 0)
 
                         rho_km = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k - 1, 0), wp), sgm_eps)
                         u1_km = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k - 1, 0), wp)/rho_km
                         u2_km = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k - 1, 0), wp)/rho_km
                         T_km = (real(q_cons_vf(eqn_idx%E)%sf(j, k - 1, 0), &
                                 & wp) - 0.5_wp*(u1_km**2 + u2_km**2)*rho_km)/(rho_km*gammas(1)*lso_R_gas)
+                        if (lso_T_eos) T_km = lso_pp_T(j, k - 1, 0)
 
                         rho_kp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k + 1, 0), wp), sgm_eps)
                         u1_kp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k + 1, 0), wp)/rho_kp
                         u2_kp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k + 1, 0), wp)/rho_kp
                         T_kp = (real(q_cons_vf(eqn_idx%E)%sf(j, k + 1, 0), &
                                 & wp) - 0.5_wp*(u1_kp**2 + u2_kp**2)*rho_kp)/(rho_kp*gammas(1)*lso_R_gas)
+                        if (lso_T_eos) T_kp = lso_pp_T(j, k + 1, 0)
 
                         ddx = x_cc(j + 1) - x_cc(j - 1)
                         ddy = y_cc(k + 1) - y_cc(k - 1)
@@ -866,6 +946,7 @@ contains
                         ! mu(T), lambda(T) at the cell temperature (power law, constant Pr; 1 when lso_mu_T_exp = 0)
                         T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, k, 0), &
                                  & wp) - 0.5_wp*(u1**2 + u2**2)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
+                        if (lso_T_eos) T_loc = lso_pp_T(j, k, 0)
                         fprop = 1._wp
                         if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
                         mu_loc = fprop*lso_mu
@@ -900,6 +981,7 @@ contains
                             u3_jm = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j - 1, k, l), wp)/rho_jm
                             T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, k, l), &
                                     & wp) - 0.5_wp*(u1_jm**2 + u2_jm**2 + u3_jm**2)*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
+                            if (lso_T_eos) T_jm = lso_pp_T(j - 1, k, l)
 
                             rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, k, l), wp), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, k, l), wp)/rho_jp
@@ -907,6 +989,7 @@ contains
                             u3_jp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j + 1, k, l), wp)/rho_jp
                             T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, k, l), &
                                     & wp) - 0.5_wp*(u1_jp**2 + u2_jp**2 + u3_jp**2)*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
+                            if (lso_T_eos) T_jp = lso_pp_T(j + 1, k, l)
 
                             rho_km = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k - 1, l), wp), sgm_eps)
                             u1_km = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k - 1, l), wp)/rho_km
@@ -914,6 +997,7 @@ contains
                             u3_km = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k - 1, l), wp)/rho_km
                             T_km = (real(q_cons_vf(eqn_idx%E)%sf(j, k - 1, l), &
                                     & wp) - 0.5_wp*(u1_km**2 + u2_km**2 + u3_km**2)*rho_km)/(rho_km*gammas(1)*lso_R_gas)
+                            if (lso_T_eos) T_km = lso_pp_T(j, k - 1, l)
 
                             rho_kp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k + 1, l), wp), sgm_eps)
                             u1_kp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k + 1, l), wp)/rho_kp
@@ -921,6 +1005,7 @@ contains
                             u3_kp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k + 1, l), wp)/rho_kp
                             T_kp = (real(q_cons_vf(eqn_idx%E)%sf(j, k + 1, l), &
                                     & wp) - 0.5_wp*(u1_kp**2 + u2_kp**2 + u3_kp**2)*rho_kp)/(rho_kp*gammas(1)*lso_R_gas)
+                            if (lso_T_eos) T_kp = lso_pp_T(j, k + 1, l)
 
                             rho_lm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l - 1), wp), sgm_eps)
                             u1_lm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l - 1), wp)/rho_lm
@@ -928,6 +1013,7 @@ contains
                             u3_lm = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l - 1), wp)/rho_lm
                             T_lm = (real(q_cons_vf(eqn_idx%E)%sf(j, k, l - 1), &
                                     & wp) - 0.5_wp*(u1_lm**2 + u2_lm**2 + u3_lm**2)*rho_lm)/(rho_lm*gammas(1)*lso_R_gas)
+                            if (lso_T_eos) T_lm = lso_pp_T(j, k, l - 1)
 
                             rho_lp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l + 1), wp), sgm_eps)
                             u1_lp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l + 1), wp)/rho_lp
@@ -935,6 +1021,7 @@ contains
                             u3_lp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l + 1), wp)/rho_lp
                             T_lp = (real(q_cons_vf(eqn_idx%E)%sf(j, k, l + 1), &
                                     & wp) - 0.5_wp*(u1_lp**2 + u2_lp**2 + u3_lp**2)*rho_lp)/(rho_lp*gammas(1)*lso_R_gas)
+                            if (lso_T_eos) T_lp = lso_pp_T(j, k, l + 1)
 
                             ddx = x_cc(j + 1) - x_cc(j - 1)
                             ddy = y_cc(k + 1) - y_cc(k - 1)
@@ -959,6 +1046,7 @@ contains
                             ! mu(T), lambda(T) at the cell temperature (power law, constant Pr; 1 when lso_mu_T_exp = 0)
                             T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, k, l), &
                                      & wp) - 0.5_wp*(u1**2 + u2**2 + u3**2)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
+                            if (lso_T_eos) T_loc = lso_pp_T(j, k, l)
                             fprop = 1._wp
                             if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
                             mu_loc = fprop*lso_mu
