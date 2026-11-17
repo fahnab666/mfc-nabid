@@ -87,6 +87,8 @@ def test_original_ib_post_filter_matches_masked_products(tmp_path, ndim, ranks, 
     speed2 = sum(u * u for u in velocity)
     energy = 2.5 * rho * temperature + 0.4 + 0.3 * rho + 0.5 * rho * speed2
     conserved = [rho, *[rho * u for u in velocity], energy, np.ones(shape)]
+    # The LSO products and closures take T = e/(gammas R), which leaves out the stiffening offsets.
+    temperature = (energy - 0.5 * rho * speed2) / (2.5 * rho)
     np.stack(conserved, axis=-1).ravel(order="F").tofile(tmp_path / "restart_data/lustre_1.dat")
     case.update(
         {
@@ -181,7 +183,7 @@ def test_original_ib_post_filter_matches_masked_products(tmp_path, ndim, ranks, 
     nt = len(pairs)
     momentum = expected[3 + ndim : 3 + 2 * ndim]
     rsg = [expected[3 + 2 * ndim + i] - momentum[a] * momentum[b] / expected[1] for i, (a, b) in enumerate(pairs)]
-    favre_temperature = (normalized[-2] * weight - 0.5 * expected[2] - 0.4 * weight - 0.3 * expected[1]) / (2.5 * expected[1])
+    favre_temperature = (normalized[-2] * weight - 0.5 * expected[2]) / (2.5 * expected[1])
     qt = [3.5 * (expected[3 + 3 * ndim + nt + a] - favre_temperature * momentum[a]) for a in range(ndim)]
     eku = [0.5 * (expected[3 + 2 * ndim + nt + a] - momentum[a] * expected[2] / expected[1]) for a in range(ndim)]
     mixture_velocity = expected[-ndim:]
@@ -310,7 +312,8 @@ def test_viscous_closure_uses_each_cells_mask(tmp_path, stiffening, boundary, fa
     usable = (weight > 0.1) & (weight < 0.9)
     assert np.count_nonzero(usable) > 4, "test must exercise a varying gas mask"
     rho, mx, my = stats[1], stats[5], stats[6]
-    expected_temperature = (fields["E"][usable] * weight[usable] - 0.5 * stats[2][usable] - stiffening * weight[usable]) / (2.5 * rho[usable])
+    # The closure temperature is e/(gammas R), without the stiffening offset.
+    expected_temperature = (fields["E"][usable] * weight[usable] - 0.5 * stats[2][usable]) / (2.5 * rho[usable])
     np.testing.assert_allclose(closures[14][usable], expected_temperature, rtol=1e-9, atol=1e-12)
     for actual, product, contraction in (
         (closures[7], stats[19], stats[14] * mx + stats[15] * my),
@@ -324,7 +327,7 @@ def test_viscous_closure_uses_each_cells_mask(tmp_path, stiffening, boundary, fa
 @pytest.mark.skipif(os.environ.get("MFC_TEST_LSO_OUTPUT") != "1", reason="requires prebuilt MFC executables")
 @pytest.mark.parametrize(
     "ndim,factor,ranks,mode",
-    [(1, 2, 1, "fixed"), (1, 3, 2, "fixed"), (2, 2, 2, "fixed"), (3, 2, 2, "fixed")] + [(1, 2, 2, mode) for mode in ("cfl_adap_dt", "cfl_const_dt", "unaligned", "wide")] + [(1, 1, 1, "serial")],
+    [(1, 2, 1, "fixed"), (1, 3, 2, "fixed"), (2, 2, 2, "fixed"), (3, 2, 2, "fixed")] + [(1, 2, 2, mode) for mode in ("cfl_adap_dt", "cfl_const_dt", "wide")] + [(1, 1, 1, "serial")],
 )
 def test_lso_reader_preserves_fields_and_cell_centres(tmp_path, ndim, factor, ranks, mode):
     from .viz.silo_reader import read_silo_file
@@ -334,8 +337,6 @@ def test_lso_reader_preserves_fields_and_cell_centres(tmp_path, ndim, factor, ra
         runpy.run_path(str(root / "examples/1D_lso_mach3_shocktube/case.py"))
     case = json.loads(output.getvalue())
     cells = 32 * factor
-    if mode == "unaligned":
-        cells = 90
     case.update(
         {
             "m": cells - 1,
@@ -372,7 +373,6 @@ def test_lso_reader_preserves_fields_and_cell_centres(tmp_path, ndim, factor, ra
     case_path.write_text(json.dumps(case))
     options = ["--debug", "-j", "4"] if ndim == 3 else ["--no-debug", "--no-build"]
     result = subprocess.run([str(root / "mfc.sh"), "run", str(case_path), "-n", str(ranks), *options], cwd=root, capture_output=True, text=True, timeout=180, check=False)
-    # Uneven rank blocks are supported by assigning each coarse cell to its first fine-cell owner.
     assert result.returncode == 0, result.stdout + result.stderr
     names = ["alpha_rho1", *[f"mom{i}" for i in range(1, ndim + 1)], "E", "alpha1"]
     coarse = cells // factor
@@ -461,11 +461,14 @@ def test_lso_temperature_products_use_saved_state(tmp_path, ranks, conductivity,
             "filter_sigma": 0.04,
             "lso_pp_filter": "F",
             "lso_down_sample_factor": 1,
-            "fluid_pp(1)%k_therm": conductivity,
+            "lso_conductivity": conductivity,
             "bc_x%beg": boundary,
             "bc_x%end": boundary,
         }
     )
+    if conductivity:
+        # The heat-flux block is part of the viscous pass.
+        case.update({"viscous": "T", "fluid_pp(1)%Re(1)": 100.0, "lso_mu": 0.01})
     for patch, centre, length in ((1, 0.5, 1.0), (2, 0.7425, 0.515)):
         case.update({f"patch_icpp({patch})%x_centroid": centre, f"patch_icpp({patch})%length_x": length})
     case["patch_icpp(2)%alter_patch(1)"] = "T"

@@ -5200,10 +5200,12 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         stack.pop()
 
     def lso_filter_tests():
-        """Regression coverage for plain and IBM-normalized LSO output."""
+        """In-situ LSO Gaussian filter on the 2D base case: plain cascade, stretched x, and the IB-aware
+        normalized filter with downsampled output. The filtered fields are written to
+        <case>/lso/D and packed alongside the unfiltered output."""
         dim2d = next(params for (dim_info, params) in get_dimensions() if dim_info[0] == ["x", "y"])
         stack.push("2D", dim2d)
-        stack.push("LSO Filter", {"lso_filter": "T", "lso_filter_wrt": "T", "filter_sigma": 0.06, "fd_order": 1, "parallel_io": "F", "cons_vars_wrt": "T"})
+        stack.push("LSO Filter", {"lso_filter": "T", "lso_filter_wrt": "T", "filter_sigma": 0.06, "fd_order": 1})
         cases.append(define_case_d(stack, "", {}))
         # Stretching widens x beyond [0, 1], so the patches are widened to cover it.
         stretch = {"stretch_x": "T", "a_x": 2.0, "x_a": 0.3, "x_b": 0.7, "loops_x": 1}

@@ -17,10 +17,9 @@ temperature interface for state-dependent families. Closure reconstruction is cu
 limited to one calorically perfect ideal or stiffened gas. Chemistry, state-dependent
 EOS closures, and stretched y or z grids remain outside the closure acceptance scope. A stretched x grid
 is supported in situ (below). Serial LSO
-output is implemented. Simulation downsampling uses coarse-grid MPI views and requires the global cell count in every
-active direction to divide by the factor. A coarse cell belongs to the rank holding its first fine
-cell, so any rank layout works; samples at rank edges read refreshed fine ghosts. The stage-2 coarse
-filter still requires per-rank divisibility. Reduced-grid post-processing requires
+output is implemented. Simulation downsampling uses coarse-grid MPI views and requires the cell count
+of every rank in every active direction to divide by the factor. Each rank decimates its own block,
+and the simulation checker rejects other layouts. Reduced-grid post-processing requires
 `parallel_io=T`, `file_per_process=F`, at least two coarse cells in each active direction,
 and a valid MPI decomposition of the coarse grid. It rejects legacy `down_sample=T`
 and spatial boundary-condition files. Other layouts remain outside this reader's scope.
@@ -30,10 +29,10 @@ The simulation's coarse-cell-center interpolation is unchanged.
 
 The reference is [BC Kim's cleanup/lso-polish branch](https://github.com/BCKim55/MFC_BCKim/tree/213fa4145190370e3f528fbf75b79df37904ad9e),
 which contains all seven recommended commits.
-The mask builder, raw-product path, gas-velocity block, transport power law,
-two-cascade filter and pyramid were already ported into this fork. This audit
-removes the validator restriction that prevented direct original-data processing
-and fixes its temperature, transport and MPI-halo handling.
+The LSO modules, driver semantics, parameters and regression tests follow that branch.
+This fork adds three things on top of it: the stretched-x in-situ filter, the EL
+gas-volume field, and the EOS phase temperature for families other than ideal and
+stiffened gas.
 
 For the binary gas indicator `g`, the filtered gas fraction is `alpha_g = F[g]`
 and the particle fraction is `phi_p = F[1-g]`. Conserved output uses the normalized
@@ -44,12 +43,12 @@ floor limits the normalized interpretation in regions with very little filtered 
 
 The residual viscous stress uses `u_m = F[g u] + F[phi_p u_p]`, rather than Favre
 velocity. The `g*u` block supplies the gas contribution. Direct original-data
-statistics support stationary immersed bodies; use saved in-situ statistics for
-moving bodies so the solid-velocity contribution is retained. Temperature is
-recovered from the saved EOS state before applying `mu(T)` and the corresponding
-conductivity. This retains stiffening and formation-energy offsets and the JWL
-phase-temperature interface. The stretched-x in-situ filter and EL gas-volume
-output retain their implementations.
+statistics support stationary immersed bodies. Use saved in-situ statistics for
+moving bodies so the solid-velocity contribution is retained. For ideal and stiffened
+gases the temperature in the products and closures is `(E - KE)/(rho gamma R)`, which
+leaves out the stiffening pressure. Other EOS families, JWL included, use the EOS phase
+temperature evaluated from the saved state. `mu(T)` and the conductivity follow from
+that temperature.
 
 Run post-process on an existing stationary IBM case with these overrides:
 
@@ -70,11 +69,12 @@ files. Filtered-input runs require the corresponding filtered mask and skip
 missing filtered snapshots. Pyramid output includes a filtered initial snapshot
 on the coarse grid; it is read as coarse data in the second run.
 
-Periodic post-process passes are ordered to reduce intermediate spectral
-amplification. Their convolution product is unchanged. The 32-cell-width test
-exposed an intermediate gain above `1e11` with the original order; the ordered
-19-pass stage stays below `1.01` on the 4097-point test grid. Nonperiodic pass
-order is preserved because extrapolated-boundary operators need not commute.
+Filter passes are reordered greedily to reduce intermediate spectral amplification.
+On a periodic grid the convolution product is unchanged. The 32-cell-width test
+exposed an intermediate gain above `1e11` with the original order, and the ordered
+19-pass stage stays below `1.01` on the 4097-point test grid. The reordering applies
+at every boundary type. Extrapolated-boundary operators need not commute, so near a
+nonperiodic wall the reordered cascade can differ slightly from the original order.
 
 The executable regression `test_original_ib_post_filter_matches_masked_products`
 starts without any in-situ LSO files, inserts a manufactured variable-density,
