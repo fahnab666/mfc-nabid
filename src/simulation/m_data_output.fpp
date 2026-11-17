@@ -2117,7 +2117,14 @@ contains
 
         integer :: i
 
+#ifdef MFC_MPI
+        integer :: ierr
+#endif
+
         if (bubbles_lagrange .or. particles_lagrange) call s_close_lag_output()
+#ifdef MFC_MPI
+        if (viz_wrt .and. viz_mine) call MPI_COMM_FREE(viz_comm, ierr)
+#endif
 
         if (down_sample) then
             do i = 1, sys_size
