@@ -87,8 +87,6 @@ def test_original_ib_post_filter_matches_masked_products(tmp_path, ndim, ranks, 
     speed2 = sum(u * u for u in velocity)
     energy = 2.5 * rho * temperature + 0.4 + 0.3 * rho + 0.5 * rho * speed2
     conserved = [rho, *[rho * u for u in velocity], energy, np.ones(shape)]
-    # The LSO products and closures take T = e/(gammas R), which leaves out the stiffening offsets.
-    temperature = (energy - 0.5 * rho * speed2) / (2.5 * rho)
     np.stack(conserved, axis=-1).ravel(order="F").tofile(tmp_path / "restart_data/lustre_1.dat")
     case.update(
         {
@@ -183,7 +181,7 @@ def test_original_ib_post_filter_matches_masked_products(tmp_path, ndim, ranks, 
     nt = len(pairs)
     momentum = expected[3 + ndim : 3 + 2 * ndim]
     rsg = [expected[3 + 2 * ndim + i] - momentum[a] * momentum[b] / expected[1] for i, (a, b) in enumerate(pairs)]
-    favre_temperature = (normalized[-2] * weight - 0.5 * expected[2]) / (2.5 * expected[1])
+    favre_temperature = (normalized[-2] * weight - 0.5 * expected[2] - 0.4 * weight - 0.3 * expected[1]) / (2.5 * expected[1])
     qt = [3.5 * (expected[3 + 3 * ndim + nt + a] - favre_temperature * momentum[a]) for a in range(ndim)]
     eku = [0.5 * (expected[3 + 2 * ndim + nt + a] - momentum[a] * expected[2] / expected[1]) for a in range(ndim)]
     mixture_velocity = expected[-ndim:]
@@ -312,8 +310,7 @@ def test_viscous_closure_uses_each_cells_mask(tmp_path, stiffening, boundary, fa
     usable = (weight > 0.1) & (weight < 0.9)
     assert np.count_nonzero(usable) > 4, "test must exercise a varying gas mask"
     rho, mx, my = stats[1], stats[5], stats[6]
-    # The closure temperature is e/(gammas R), without the stiffening offset.
-    expected_temperature = (fields["E"][usable] * weight[usable] - 0.5 * stats[2][usable]) / (2.5 * rho[usable])
+    expected_temperature = (fields["E"][usable] * weight[usable] - 0.5 * stats[2][usable] - stiffening * weight[usable]) / (2.5 * rho[usable])
     np.testing.assert_allclose(closures[14][usable], expected_temperature, rtol=1e-9, atol=1e-12)
     for actual, product, contraction in (
         (closures[7], stats[19], stats[14] * mx + stats[15] * my),

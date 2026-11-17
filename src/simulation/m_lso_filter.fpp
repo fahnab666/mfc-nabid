@@ -1264,7 +1264,7 @@ contains
                     u3 = mom3/rho
                     ke = 0.5_wp*(mom1**2 + mom2**2 + mom3**2)/rho
                     e_int = (E_loc - ke)/rho
-                    T_loc = e_int/(gammas(1)*lso_R_gas)
+                    T_loc = (e_int - isentrope_B(1)/rho - qvs(1))/(gammas(1)*lso_R_gas)
                     if (lso_T_eos) T_loc = real(q_lso_T_vf(1)%sf(j, k, l), wp)
 
                     ! phi_p, rho scalar, rhoke scalar, u_p
@@ -1355,13 +1355,13 @@ contains
                             rho_jm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j - 1, 0, 0), wp), sgm_eps)
                             u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, 0, 0), wp)/rho_jm
                             T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, 0, 0), &
-                                    & wp) - 0.5_wp*u1_jm**2*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
+                                    & wp) - 0.5_wp*u1_jm**2*rho_jm - isentrope_B(1) - qvs(1)*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_jm = real(q_lso_T_vf(1)%sf(j - 1, 0, 0), wp)
 
                             rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, 0, 0), wp), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, 0, 0), wp)/rho_jp
                             T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, 0, 0), &
-                                    & wp) - 0.5_wp*u1_jp**2*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
+                                    & wp) - 0.5_wp*u1_jp**2*rho_jp - isentrope_B(1) - qvs(1)*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_jp = real(q_lso_T_vf(1)%sf(j + 1, 0, 0), wp)
 
                             dx = x_cc(j + 1) - x_cc(j - 1)
@@ -1371,7 +1371,7 @@ contains
                             u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, 0, 0), wp)/rho_loc
                             ! mu(T), lambda(T) at the cell temperature (power law, constant Pr; 1 when lso_mu_T_exp = 0)
                             T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, 0, 0), &
-                                     & wp) - 0.5_wp*(u1**2)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
+                                     & wp) - 0.5_wp*(u1**2)*rho_loc - isentrope_B(1) - qvs(1)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_loc = real(q_lso_T_vf(1)%sf(j, 0, 0), wp)
                             fprop = 1._wp
                             if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
@@ -1405,28 +1405,32 @@ contains
                             u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, k, 0), wp)/rho_jm
                             u2_jm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j - 1, k, 0), wp)/rho_jm
                             T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, k, 0), &
-                                    & wp) - 0.5_wp*(u1_jm**2 + u2_jm**2)*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
+                                    & wp) - 0.5_wp*(u1_jm**2 + u2_jm**2)*rho_jm - isentrope_B(1) - qvs(1)*rho_jm) &
+                                    & /(rho_jm*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_jm = real(q_lso_T_vf(1)%sf(j - 1, k, 0), wp)
 
                             rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, k, 0), wp), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, k, 0), wp)/rho_jp
                             u2_jp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j + 1, k, 0), wp)/rho_jp
                             T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, k, 0), &
-                                    & wp) - 0.5_wp*(u1_jp**2 + u2_jp**2)*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
+                                    & wp) - 0.5_wp*(u1_jp**2 + u2_jp**2)*rho_jp - isentrope_B(1) - qvs(1)*rho_jp) &
+                                    & /(rho_jp*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_jp = real(q_lso_T_vf(1)%sf(j + 1, k, 0), wp)
 
                             rho_km = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k - 1, 0), wp), sgm_eps)
                             u1_km = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k - 1, 0), wp)/rho_km
                             u2_km = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k - 1, 0), wp)/rho_km
                             T_km = (real(q_cons_vf(eqn_idx%E)%sf(j, k - 1, 0), &
-                                    & wp) - 0.5_wp*(u1_km**2 + u2_km**2)*rho_km)/(rho_km*gammas(1)*lso_R_gas)
+                                    & wp) - 0.5_wp*(u1_km**2 + u2_km**2)*rho_km - isentrope_B(1) - qvs(1)*rho_km) &
+                                    & /(rho_km*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_km = real(q_lso_T_vf(1)%sf(j, k - 1, 0), wp)
 
                             rho_kp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k + 1, 0), wp), sgm_eps)
                             u1_kp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k + 1, 0), wp)/rho_kp
                             u2_kp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k + 1, 0), wp)/rho_kp
                             T_kp = (real(q_cons_vf(eqn_idx%E)%sf(j, k + 1, 0), &
-                                    & wp) - 0.5_wp*(u1_kp**2 + u2_kp**2)*rho_kp)/(rho_kp*gammas(1)*lso_R_gas)
+                                    & wp) - 0.5_wp*(u1_kp**2 + u2_kp**2)*rho_kp - isentrope_B(1) - qvs(1)*rho_kp) &
+                                    & /(rho_kp*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_kp = real(q_lso_T_vf(1)%sf(j, k + 1, 0), wp)
 
                             dx = x_cc(j + 1) - x_cc(j - 1)
@@ -1443,7 +1447,8 @@ contains
                             u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, 0), wp)/rho_loc
                             ! mu(T), lambda(T) at the cell temperature (power law, constant Pr; 1 when lso_mu_T_exp = 0)
                             T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, k, 0), &
-                                     & wp) - 0.5_wp*(u1**2 + u2**2)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
+                                     & wp) - 0.5_wp*(u1**2 + u2**2)*rho_loc - isentrope_B(1) - qvs(1)*rho_loc)/(rho_loc*gammas(1) &
+                                     & *lso_R_gas)
                             if (lso_T_eos) T_loc = real(q_lso_T_vf(1)%sf(j, k, 0), wp)
                             fprop = 1._wp
                             if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
@@ -1486,7 +1491,8 @@ contains
                             u2_jm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j - 1, k, l), wp)/rho_jm
                             u3_jm = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j - 1, k, l), wp)/rho_jm
                             T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, k, l), &
-                                    & wp) - 0.5_wp*(u1_jm**2 + u2_jm**2 + u3_jm**2)*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
+                                    & wp) - 0.5_wp*(u1_jm**2 + u2_jm**2 + u3_jm**2)*rho_jm - isentrope_B(1) - qvs(1)*rho_jm) &
+                                    & /(rho_jm*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_jm = real(q_lso_T_vf(1)%sf(j - 1, k, l), wp)
 
                             rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, k, l), wp), sgm_eps)
@@ -1494,7 +1500,8 @@ contains
                             u2_jp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j + 1, k, l), wp)/rho_jp
                             u3_jp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j + 1, k, l), wp)/rho_jp
                             T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, k, l), &
-                                    & wp) - 0.5_wp*(u1_jp**2 + u2_jp**2 + u3_jp**2)*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
+                                    & wp) - 0.5_wp*(u1_jp**2 + u2_jp**2 + u3_jp**2)*rho_jp - isentrope_B(1) - qvs(1)*rho_jp) &
+                                    & /(rho_jp*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_jp = real(q_lso_T_vf(1)%sf(j + 1, k, l), wp)
 
                             rho_km = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k - 1, l), wp), sgm_eps)
@@ -1502,7 +1509,8 @@ contains
                             u2_km = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k - 1, l), wp)/rho_km
                             u3_km = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k - 1, l), wp)/rho_km
                             T_km = (real(q_cons_vf(eqn_idx%E)%sf(j, k - 1, l), &
-                                    & wp) - 0.5_wp*(u1_km**2 + u2_km**2 + u3_km**2)*rho_km)/(rho_km*gammas(1)*lso_R_gas)
+                                    & wp) - 0.5_wp*(u1_km**2 + u2_km**2 + u3_km**2)*rho_km - isentrope_B(1) - qvs(1)*rho_km) &
+                                    & /(rho_km*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_km = real(q_lso_T_vf(1)%sf(j, k - 1, l), wp)
 
                             rho_kp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k + 1, l), wp), sgm_eps)
@@ -1510,7 +1518,8 @@ contains
                             u2_kp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k + 1, l), wp)/rho_kp
                             u3_kp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k + 1, l), wp)/rho_kp
                             T_kp = (real(q_cons_vf(eqn_idx%E)%sf(j, k + 1, l), &
-                                    & wp) - 0.5_wp*(u1_kp**2 + u2_kp**2 + u3_kp**2)*rho_kp)/(rho_kp*gammas(1)*lso_R_gas)
+                                    & wp) - 0.5_wp*(u1_kp**2 + u2_kp**2 + u3_kp**2)*rho_kp - isentrope_B(1) - qvs(1)*rho_kp) &
+                                    & /(rho_kp*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_kp = real(q_lso_T_vf(1)%sf(j, k + 1, l), wp)
 
                             rho_lm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l - 1), wp), sgm_eps)
@@ -1518,7 +1527,8 @@ contains
                             u2_lm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l - 1), wp)/rho_lm
                             u3_lm = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l - 1), wp)/rho_lm
                             T_lm = (real(q_cons_vf(eqn_idx%E)%sf(j, k, l - 1), &
-                                    & wp) - 0.5_wp*(u1_lm**2 + u2_lm**2 + u3_lm**2)*rho_lm)/(rho_lm*gammas(1)*lso_R_gas)
+                                    & wp) - 0.5_wp*(u1_lm**2 + u2_lm**2 + u3_lm**2)*rho_lm - isentrope_B(1) - qvs(1)*rho_lm) &
+                                    & /(rho_lm*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_lm = real(q_lso_T_vf(1)%sf(j, k, l - 1), wp)
 
                             rho_lp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l + 1), wp), sgm_eps)
@@ -1526,7 +1536,8 @@ contains
                             u2_lp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l + 1), wp)/rho_lp
                             u3_lp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l + 1), wp)/rho_lp
                             T_lp = (real(q_cons_vf(eqn_idx%E)%sf(j, k, l + 1), &
-                                    & wp) - 0.5_wp*(u1_lp**2 + u2_lp**2 + u3_lp**2)*rho_lp)/(rho_lp*gammas(1)*lso_R_gas)
+                                    & wp) - 0.5_wp*(u1_lp**2 + u2_lp**2 + u3_lp**2)*rho_lp - isentrope_B(1) - qvs(1)*rho_lp) &
+                                    & /(rho_lp*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_lp = real(q_lso_T_vf(1)%sf(j, k, l + 1), wp)
 
                             dx = x_cc(j + 1) - x_cc(j - 1)
@@ -1551,7 +1562,8 @@ contains
                             u3 = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l), wp)/rho_loc
                             ! mu(T), lambda(T) at the cell temperature (power law, constant Pr; 1 when lso_mu_T_exp = 0)
                             T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, k, l), &
-                                     & wp) - 0.5_wp*(u1**2 + u2**2 + u3**2)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
+                                     & wp) - 0.5_wp*(u1**2 + u2**2 + u3**2)*rho_loc - isentrope_B(1) - qvs(1)*rho_loc) &
+                                     & /(rho_loc*gammas(1)*lso_R_gas)
                             if (lso_T_eos) T_loc = real(q_lso_T_vf(1)%sf(j, k, l), wp)
                             fprop = 1._wp
                             if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
