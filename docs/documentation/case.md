@@ -858,7 +858,7 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `fft_wrt`               | Logical | Enable FFT output |
 | `lso_filter`            | Logical | Apply a least-squares optimized (LSO) variable-weight Gaussian filter to conserved variables at each save step |
 | `lso_filter_wrt`        | Logical | Write LSO-filtered fields with an lso_ filename prefix alongside unfiltered data |
-| `lso_down_sample_factor`| Integer | Stride factor for coarsening the filtered output grid (1 = no coarsening). Must divide each active global cell count. Uneven rank blocks are supported by the first filter stage; the stage-2 coarse filter also requires per-rank divisibility. Reduced-grid post-processing requires shared parallel I/O; see @ref lso-filter-testing for supported layouts. |
+| `lso_down_sample_factor`| Integer | Stride factor for coarsening the filtered output grid (1 = no coarsening). Each rank decimates its own cells, so every rank's cell count in each active direction must be divisible by it. Reduced-grid post-processing requires shared parallel I/O; see @ref lso-filter-testing for supported layouts. |
 | `lso_stat_wrt`          | Logical | Write filtered product blocks (12/23/36 scalar components in 1D/2D/3D). Requires `num_fluids=1`, `parallel_io=T` and `particles_lagrange=F`. Use `lso_filter_wrt=T` for in-situ products, or `lso_pp_filter=T` in post-process for original data; original-data IBM statistics require stationary bodies. |
 | `lso_R_gas`             | Real    | Specific gas constant [J/(kg·K)] for temperature reconstruction used in stat fields. Default 287.0 (dry air). |
 | `filter_sigma`          | Real    | Target Gaussian filter standard deviation in physical units. On a stretched x grid (`stretch_x=T`; y and z uniform, no `lso_pp_filter` or stage-2 coarse filter) simulation replaces the x weights with ceil((σ/(1.2 Δx_min))²) passes of per-cell weights whose zeroth, first and second physical moments are exact. |
@@ -868,7 +868,7 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `lso_a_x`               | Real    | Per-pass 9-point stencil coefficients in x (5 × lso_max_passes, auto-computed) |
 | `lso_a_y`               | Real    | Per-pass 9-point stencil coefficients in y (5 × lso_max_passes, auto-computed) |
 | `lso_a_z`               | Real    | Per-pass 9-point stencil coefficients in z (5 × lso_max_passes, auto-computed) |
-| `lso2_n_passes_x`       | Integer | Stage-2 (coarse grid) passes in x, auto-computed when `lso_filter_wrt=T`, `lso_down_sample_factor>1` and `filter_sigma` exceeds 1.05 × σ₁; σ₁ = 8 × stride × largest active fine-grid spacing |
+| `lso2_n_passes_x`       | Integer | Stage-2 (coarse grid) passes in x for the two-stage in-situ pyramid (auto-computed when `lso_filter_wrt=T`, `lso_down_sample_factor>1` and `filter_sigma` exceeds 1.05 × σ₁, with σ₁ = max(8, 1.6 × factor) cells; requires `parallel_io=T`) |
 | `lso2_n_passes_y`       | Integer | Stage-2 passes in y (auto-computed) |
 | `lso2_n_passes_z`       | Integer | Stage-2 passes in z (auto-computed) |
 | `lso2_a_x`              | Real    | Stage-2 per-pass stencil coefficients in x (auto-computed) |
@@ -888,7 +888,7 @@ To restart the simulation from $k$-th time step, see @ref running "Restarting Ca
 | `lso_pp_a_y`            | Real    | Post-process per-pass stencil coefficients in y (5 × lso_max_passes) |
 | `lso_pp_a_z`            | Real    | Post-process per-pass stencil coefficients in z (5 × lso_max_passes) |
 | `lso_mu`                | Real    | Dynamic viscosity [Pa·s] for viscous stress computation in stat fields. Default 0 (inviscid). |
-| `lso_conductivity`      | Real    | Optional thermal conductivity [W/(m·K)] for LSO heat flux. If zero, use `fluid_pp(1)%%k_therm`. |
+| `lso_conductivity`      | Real    | Thermal conductivity [W/(m·K)] for heat-flux computation in stat fields. Default 0 (adiabatic). |
 | `lso_mu_T_exp`          | Real    | Exponent for `mu(T)=lso_mu (T/lso_mu_T_ref)^n`; zero keeps constant properties. |
 | `lso_mu_T_ref`          | Real    | Reference temperature [K] for the LSO viscosity power law; required when `lso_mu_T_exp > 0`. |
 | `fluid_pp(i)%%k_therm`  | Real    | Thermal conductivity used for heat-flux closure fields; see Fluid Materials. |

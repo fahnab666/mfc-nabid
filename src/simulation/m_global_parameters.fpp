@@ -244,7 +244,6 @@ module m_global_parameters
     integer            :: n_lso_stat           !< Number of statistical product fields
     integer            :: m_lso_ds, n_lso_ds, p_lso_ds
     integer            :: m_glb_lso_ds, n_glb_lso_ds, p_glb_lso_ds
-    integer            :: lso_ds_lo(3)         !< Global coarse index of this rank's first LSO coarse cell
     integer            :: lso_stat_phi_p_beg, lso_stat_phi_p_end
     integer            :: lso_stat_rho_beg, lso_stat_rho_end
     integer            :: lso_stat_rhoke_beg, lso_stat_rhoke_end
@@ -257,7 +256,6 @@ module m_global_parameters
     integer            :: lso_stat_q_beg, lso_stat_q_end
     integer            :: lso_stat_rhotau_u_beg, lso_stat_rhotau_u_end
     integer            :: lso_stat_gu_beg, lso_stat_gu_end
-    $:GPU_DECLARE(create='[lso_conductivity, lso_mu_T_exp, lso_mu_T_ref]')
     !> @}
 
     !> @name Bubble modeling
@@ -750,7 +748,6 @@ contains
         n_lso_stat = 0
         m_lso_ds = 0; n_lso_ds = 0; p_lso_ds = 0
         m_glb_lso_ds = 0; n_glb_lso_ds = 0; p_glb_lso_ds = 0
-        lso_ds_lo = 0
         filter_sigma = dflt_real
         lso_n_passes_x = 0
         lso_n_passes_y = 0

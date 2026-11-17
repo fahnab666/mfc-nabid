@@ -102,11 +102,6 @@ contains
             nGlobal = int(m_glb + 1, kind=8)*int(n_glb + 1, kind=8)*int(p_glb + 1, kind=8)
 
             if (cfl_adap_dt .or. cfl_const_dt) cfl_dt = .true.
-            if (cfl_dt) then
-                ! Post-process filenames and marker offsets use save indices in CFL mode.
-                t_step_start = n_start
-                t_step_save = 1
-            end if
 
             if (any((/bc_x%beg, bc_x%end, bc_y%beg, bc_y%end, bc_z%beg, bc_z%end/) == -17) .or. num_bc_patches > 0) then
                 bc_io = .true.
@@ -143,7 +138,7 @@ contains
     impure subroutine s_perform_time_step(t_step)
 
         integer, intent(inout) :: t_step
-        integer                :: eta_hh, eta_mm, eta_ss, c
+        integer                :: eta_hh, eta_mm, eta_ss
         real(wp)               :: eta_sec
 
         if (proc_rank == 0) then
@@ -187,6 +182,7 @@ contains
             else
                 call s_populate_grid_variables_buffers(x_cb, x_cc, dx, offset_x, offset_y, offset_z, y_cb, y_cc, dy, z_cb, z_cc, dz)
             end if
+            call s_populate_variables_buffers(bc_type, q_cons_vf, q_T_sf=q_T_sf)
         end if
 
         if (lso_stat_wrt .and. n_lso_stat > 0 .and. (lso_filter_wrt .or. .not. lso_pp_filter)) then
@@ -199,35 +195,23 @@ contains
         end if
 
         if (lso_pp_filter) then
+            ! Original data: products of the unfiltered, phase-weighted state, filtered with it below.
             if (lso_stat_wrt .and. .not. lso_filter_wrt) then
-                ! Raw-product derivatives need the original state's physical and MPI halos.
-                if (chemistry) call s_compute_q_T_sf(q_T_sf, q_cons_vf, idwint)
-                call s_populate_variables_buffers(bc_type, q_cons_vf, q_T_sf=q_T_sf)
                 if (ib) then
                     call s_compute_lso_pp_stat_fields(q_cons_vf, q_lso_pp_w_vf)
                 else
                     call s_compute_lso_pp_stat_fields(q_cons_vf)
                 end if
-            else
-                do c = 1, n_lso_stat, sys_size
-                    call s_apply_lso_pp_filter(q_lso_pp_stat_vf(c:min(c + sys_size - 1, n_lso_stat)))
-                end do
             end if
             if (ib) then
                 call s_apply_lso_pp_filter_masked(q_cons_vf, q_lso_pp_w_vf)
             else
                 call s_apply_lso_pp_filter(q_cons_vf)
             end if
-            if (lso_stat_wrt .and. .not. lso_filter_wrt) call s_filter_lso_pp_stat_fields()
-        end if
+            ! Widening: the simulation products take the same sigma2 pass as the state.
+            if (lso_stat_wrt) call s_filter_lso_pp_stat_fields()
 
-        ! seed the chemistry temperature over the INTERIOR only (mirrors the simulation,
-        ! m_start_up): the ghost q_cons is unread at this point, so a ghost-inclusive sweep
-        ! would Newton-iterate on garbage (NaN under NaN-init builds) at rank seams and
-        ! physical boundaries; s_populate_variables_buffers below extends q_T into the ghosts
-        if (chemistry) call s_compute_q_T_sf(q_T_sf, q_cons_vf, idwint)
-
-        if (buff_size > 0) then
+            if (chemistry) call s_compute_q_T_sf(q_T_sf, q_cons_vf, idwint)
             call s_populate_variables_buffers(bc_type, q_cons_vf, q_T_sf=q_T_sf)
         end if
 
@@ -260,6 +244,10 @@ contains
         end if
         data_size = product(sizes_loc)
         field_size = int(product(sizes_glb), MPI_OFFSET_KIND)*int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
+        ! The view counts mpi_io_p units, mpi_io_type per stp value (bytes under --mixed).
+        sizes_glb(1) = sizes_glb(1)*mpi_io_type
+        sizes_loc(1) = sizes_loc(1)*mpi_io_type
+        starts(1) = starts(1)*mpi_io_type
 
         write (file_loc, '(A,A,I0,A)') trim(case_dir) // '/restart_data' // trim(mpiiofs), trim(prefix), t_step, '.dat'
         inquire (FILE=trim(file_loc), EXIST=file_exist)
@@ -271,10 +259,10 @@ contains
                    & "LSO field file contains fewer fields than expected; regenerate it with the matching simulation build")
         allocate (field_io_buf(0:m,0:n,0:p))
         do i = 1, nv
-            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, starts, MPI_ORDER_FORTRAN, mpi_p, mpi_view, ierr)
+            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, starts, MPI_ORDER_FORTRAN, mpi_io_p, mpi_view, ierr)
             call MPI_TYPE_COMMIT(mpi_view, ierr)
             disp = field_size*int(i - 1, MPI_OFFSET_KIND)
-            call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, mpi_view, 'native', mpi_info_int, ierr)
+            call MPI_FILE_SET_VIEW(ifile, disp, mpi_io_p, mpi_view, 'native', mpi_info_int, ierr)
             call MPI_FILE_READ_ALL(ifile, field_io_buf, data_size*mpi_io_type, mpi_io_p, status, ierr)
             q_vf(i)%sf(0:m,0:n,0:p) = field_io_buf
             call MPI_TYPE_FREE(mpi_view, ierr)
@@ -392,6 +380,7 @@ contains
                           & idwbuff(3)%beg:idwbuff(3)%end))
             end do
             call s_compute_lso_closure_fields(q_lso_pp_stat_vf, q_cons_vf, q_lso_pp_w_vf, q_lso_cls_vf)
+            call s_refresh_lso_pp_fields(q_lso_cls_vf)
             do i = 1, lso_n_cls
                 out%q_sf = q_lso_cls_vf(i)%sf(x_beg:x_end,y_beg:y_end,z_beg:z_end)
                 write (varname, '(A,I3.3)') 'lso_closure_', i

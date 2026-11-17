@@ -797,6 +797,7 @@ contains
         integer(kind=8)         :: i, j, k, l
         integer                 :: stor
         integer                 :: save_count
+        character(LEN=path_len) :: orig_case_dir
 
         if (down_sample) then
             call s_populate_variables_buffers(bc_type, q_cons_ts(1)%vf, pb_ts(1)%sf, mv_ts(1)%sf, q_T_sf)
@@ -865,11 +866,11 @@ contains
         ! back to host so s_write_data_files reads the correct values.
         if (lso_filter .and. lso_filter_wrt) then
             if (particles_lagrange) then
-                call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_T_sf, q_particles(part_q_idx%alphaf))
+                call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_particles(part_q_idx%alphaf))
             else if (bubbles_lagrange) then
-                call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_T_sf, q_beta(bub_q_idx%alphaf))
+                call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_beta(bub_q_idx%alphaf))
             else
-                call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf, q_T_sf)
+                call s_copy_and_apply_lso_filter(q_cons_ts(stor)%vf)
             end if
             do i = 1, size(q_filt_vf)
 #ifndef FRONTIER_UNIFIED
@@ -910,6 +911,18 @@ contains
                 else
                     call s_write_lso_stat_file(q_lso_stat_vf, n_lso_stat, save_count)
                 end if
+            end if
+
+            ! Serial path: also dump the (full-resolution) filtered copy under <case_dir>/lso.
+            if (.not. parallel_io) then
+                orig_case_dir = case_dir
+                case_dir = trim(case_dir) // '/lso'
+                if (euler_lagrange) then
+                    call s_write_data_files(q_filt_vf(1:sys_size), q_T_sf, q_prim_vf, save_count, bc_type, q_filt_vf(sys_size + 1))
+                else
+                    call s_write_data_files(q_filt_vf, q_T_sf, q_prim_vf, save_count, bc_type)
+                end if
+                case_dir = orig_case_dir
             end if
         end if
 
@@ -1145,31 +1158,25 @@ contains
 
     end subroutine s_initialize_modules
 
-    !> Set up the MPI execution environment, bind GPUs, and decompose the computational domain
-    !> Coarse cell J belongs to the rank holding its first fine cell factor*J, so any rank layout tiles the coarse grid; a coarse
-    !! sample then reads at most factor - 1 fine ghost cells.
+    !> Per-rank coarse extents: each rank decimates its own cells, so the coarse blocks tile the global coarse grid only when every
+    !! rank's cell count is divisible by lso_down_sample_factor (s_check_lso_decomposition).
     impure subroutine s_set_lso_coarse_extents
 
-        integer :: d, f, sidx(3), cells(3), ext(3), glb(3)
+        integer :: f
 
         f = lso_down_sample_factor
-        sidx = 0
-        if (allocated(start_idx)) sidx(1:size(start_idx)) = start_idx
-        cells = [m, n, p] + 1
-        glb = [m_glb, n_glb, p_glb] + 1
-        ext = 0
-        do d = 1, num_dims
-            lso_ds_lo(d) = (sidx(d) + f - 1)/f
-            ext(d) = (sidx(d) + cells(d) - 1)/f - lso_ds_lo(d)
-            glb(d) = glb(d)/f
-        end do
-        m_lso_ds = ext(1); n_lso_ds = ext(2); p_lso_ds = ext(3)
-        m_glb_lso_ds = glb(1) - 1
-        n_glb_lso_ds = merge(glb(2) - 1, 0, num_dims > 1)
-        p_glb_lso_ds = merge(glb(3) - 1, 0, num_dims > 2)
+        m_lso_ds = (m + 1)/f - 1; m_glb_lso_ds = (m_glb + 1)/f - 1
+        n_lso_ds = 0; n_glb_lso_ds = 0; p_lso_ds = 0; p_glb_lso_ds = 0
+        if (n > 0) then
+            n_lso_ds = (n + 1)/f - 1; n_glb_lso_ds = (n_glb + 1)/f - 1
+        end if
+        if (p > 0) then
+            p_lso_ds = (p + 1)/f - 1; p_glb_lso_ds = (p_glb + 1)/f - 1
+        end if
 
     end subroutine s_set_lso_coarse_extents
 
+    !> Set up the MPI execution environment, bind GPUs, and decompose the computational domain
     impure subroutine s_initialize_mpi_domain
 
         integer :: ierr
