@@ -471,7 +471,7 @@ contains
         aguess = min(1._wp - epsilon(1._wp), max(epsilon(1._wp), alpha_guess))
         call s_pt_trial(log(aguess) - log(1._wp - aguess), mj, ma, rhoe, mat, aj, aa, temp, pj, pa, residual, derivative)
         x(1) = mj/(rho*aj); x(2) = ma/(rho*aa); x(3) = max(temp/tscale, 1.e-8_wp); x(4) = max(pj/scale, 1.e-8_wp)
-        do it = 1, 80
+        do it = 1, 2000
             call s_pt_accept(log(mj*x(2)) - log(ma*x(1)), mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
             if (ok) return
             call s_pt_matrix_system(x, mj, ma, rhoe, mat, rho, tscale, scale, f, jac)
