@@ -212,6 +212,20 @@ def test_reconstructed_wall_mixture_is_a_pt_fixed_point(solve, stiffness, solver
                 assert energy_eq == pytest.approx(energy, rel=solve.rtol)
 
 
+def test_fast_solver_bounds_the_constituent_pressure_difference(solve):
+    """Every Fast PT return, the CW gate included, leaves |p_j - p_a| within the gate's tau**2 of the pressure."""
+    a, b, r1, r2, omega, rho0, _, cj, ca, ga = MAT[:10]
+    rng = np.random.default_rng(20261116)
+    bound = max(1e-8, 64 * np.finfo(np.float32 if solve.bits == 32 else np.float64).eps)
+    for _ in range(2000):
+        rj, temp, yj = 10 ** rng.uniform(-0.5, 3), 10 ** rng.uniform(2.4, 3.7), 10 ** rng.uniform(-4, 0) * rng.uniform(0.1, 1)
+        mj, ma, energy, _, _ = manufactured(rj, temp, yj, MAT)
+        pres, temp, aj, aa, _, ok = solve(mj, ma, energy, MAT, 0.0)
+        assert ok == 1
+        pj = a * np.exp(-r1 * rho0 * aj / mj) + b * np.exp(-r2 * rho0 * aj / mj) + omega * mj / aj * cj * temp
+        assert abs(pj - ga * ma / aa * ca * temp) <= 4 * bound * pres
+
+
 @pytest.mark.parametrize("stiffness,t0", [(0.0, 0.0), (1e7, 0.0), (0.0, 300.0), (1e7, 300.0)])
 def test_manufactured_equilibria(solve, stiffness, t0):
     mat = MAT.copy()

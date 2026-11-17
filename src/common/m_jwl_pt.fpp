@@ -219,7 +219,8 @@ contains
     end subroutine s_pt_accept
 
     !> CW residual gate: if |p_j - p_a| <= 1e-4 max(|p_j|, |p_a|) at the CW split, return the split refined by one Newton step in
-    !! rho_j, with p the mean of the constituent pressures. Since x = ln(m_j) - ln(rho_j - Y rho), that step is x - ln(1 + R/R_x).
+    !! rho_j, with p the mean of the constituent pressures, if the refined residual is within tau**2. Since x = ln(m_j) - ln(rho_j -
+    !! Y rho), that step is x - ln(1 + R/R_x).
     subroutine s_pt_gate(x, mj, ma, rhoe, mat, pres, temp, aj, aa, c2, ok)
 
         $:GPU_ROUTINE(parallelism='[seq]')
@@ -238,7 +239,9 @@ contains
         if (.not. (ieee_is_finite(ratio) .and. ratio > 0._wp)) return
         call s_pt_trial(x - log(ratio), mj, ma, rhoe, mat, aj, aa, temp, pj, pa, residual, derivative)
         pres = 0.5_wp*(pj + pa)
-        ok = ieee_is_finite(pres) .and. ieee_is_finite(temp) .and. temp > 0._wp .and. pres > 0._wp
+        ! A Newton step from a residual of tau leaves O(tau**2); a larger one means the step failed, so the solver takes over.
+        ok = ieee_is_finite(pres) .and. ieee_is_finite(temp) .and. temp > 0._wp .and. pres > 0._wp .and. abs(residual) &
+                            & <= max(tau*tau, 64._wp*epsilon(1._wp))*max(abs(pj), abs(pa))
         if (ok) call s_pt_sound(mj, ma, aj, aa, pres, temp, mat, c2, ok)
 
     end subroutine s_pt_gate
