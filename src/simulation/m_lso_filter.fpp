@@ -970,8 +970,8 @@ contains
     end subroutine s_lso_filter_stage2
 
     !> Refresh ghost cells between filter passes for direction mpi_dir (1=x, 2=y, 3=z). MPI ghosts come via sendrecv, then
-    !! IBM-flagged ghosts are zero-extrapolated to keep particle velocity out of the fluid stencil. BC_GHOST_EXTRAP faces are
-    !! re-extrapolated from the current edge cell; other physical BCs are left as is.
+    !! IBM-flagged ghosts are zero-extrapolated to keep particle velocity out of the fluid stencil. Non-periodic physical faces are
+    !! re-extrapolated from the current edge cell, the same closure the stat fields and the gas mask take.
     impure subroutine s_lso_filter_ghost_refresh(q_cons_vf, mpi_dir)
 
         type(scalar_field), intent(inout) :: q_cons_vf(:)
@@ -1001,10 +1001,10 @@ contains
         end do
 #endif
 
-        ! BC_GHOST_EXTRAP: re-extrapolate from the filtered edge cell each pass.
+        ! Non-periodic walls: re-extrapolate from the filtered edge cell each pass.
         select case (mpi_dir)
         case (1)
-            if (beg_bc == BC_GHOST_EXTRAP) then
+            if (beg_bc < 0 .and. beg_bc /= BC_PERIODIC) then
                 do i = 1, nv
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
@@ -1029,7 +1029,7 @@ contains
                     $:END_GPU_PARALLEL_LOOP()
                 end do
             end if
-            if (end_bc == BC_GHOST_EXTRAP) then
+            if (end_bc < 0 .and. end_bc /= BC_PERIODIC) then
                 do i = 1, nv
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
@@ -1055,7 +1055,7 @@ contains
                 end do
             end if
         case (2)
-            if (beg_bc == BC_GHOST_EXTRAP) then
+            if (beg_bc < 0 .and. beg_bc /= BC_PERIODIC) then
                 do i = 1, nv
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
@@ -1080,7 +1080,7 @@ contains
                     $:END_GPU_PARALLEL_LOOP()
                 end do
             end if
-            if (end_bc == BC_GHOST_EXTRAP) then
+            if (end_bc < 0 .and. end_bc /= BC_PERIODIC) then
                 do i = 1, nv
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
@@ -1106,7 +1106,7 @@ contains
                 end do
             end if
         case (3)
-            if (beg_bc == BC_GHOST_EXTRAP) then
+            if (beg_bc < 0 .and. beg_bc /= BC_PERIODIC) then
                 do i = 1, nv
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 1, buff_size
@@ -1131,7 +1131,7 @@ contains
                     $:END_GPU_PARALLEL_LOOP()
                 end do
             end if
-            if (end_bc == BC_GHOST_EXTRAP) then
+            if (end_bc < 0 .and. end_bc /= BC_PERIODIC) then
                 do i = 1, nv
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 1, buff_size
@@ -1641,19 +1641,11 @@ contains
 
         integer  :: i, ipass, j, k, l, sx
         real(wp) :: c0, c1, c2, c3, c4, qs
-        ! Filter range per direction (shrinks at physical boundaries).
-        integer :: j_beg_x, j_end_x
-        integer :: k_beg_y, k_end_y
-        integer :: l_beg_z, l_end_z
-
-        j_beg_x = 0; j_end_x = m
-        if (bc_x%beg < 0 .and. bc_x%beg /= BC_PERIODIC) j_beg_x = buff_size
-        if (bc_x%end < 0 .and. bc_x%end /= BC_PERIODIC) j_end_x = m - buff_size
 
         if (.not. lso_x_ready) call s_lso_setup_x_weights()
         call s_lso_stat_ghost_refresh(1)
         if (lso_x_phys) then
-            $:LSO_X_PHYS_PASSES('q_lso_stat_vf', 'n_lso_stat', 's_lso_stat_ghost_refresh(1)', 'j_beg_x', 'j_end_x')
+            $:LSO_X_PHYS_PASSES('q_lso_stat_vf', 'n_lso_stat', 's_lso_stat_ghost_refresh(1)')
         end if
         do ipass = 1, merge(0, lso_n_passes_x, lso_x_phys)
             c0 = lso_a_x(1, ipass)
@@ -1665,7 +1657,7 @@ contains
                 $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                 do l = 0, p
                     do k = 0, n
-                        do j = j_beg_x, j_end_x
+                        do j = 0, m
                             lso_tmp(j, k, l) = c0*real(q_lso_stat_vf(i)%sf(j, k, l), wp) + c1*(real(q_lso_stat_vf(i)%sf(j - 1, k, &
                                     & l), wp) + real(q_lso_stat_vf(i)%sf(j + 1, k, l), wp)) + c2*(real(q_lso_stat_vf(i)%sf(j - 2, &
                                     & k, l), wp) + real(q_lso_stat_vf(i)%sf(j + 2, k, l), &
@@ -1679,7 +1671,7 @@ contains
                 $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                 do l = 0, p
                     do k = 0, n
-                        do j = j_beg_x, j_end_x
+                        do j = 0, m
                             q_lso_stat_vf(i)%sf(j, k, l) = real(lso_tmp(j, k, l), stp)
                         end do
                     end do
@@ -1692,10 +1684,6 @@ contains
         end do
 
         if (n > 0) then
-            k_beg_y = 0; k_end_y = n
-            if (bc_y%beg < 0 .and. bc_y%beg /= BC_PERIODIC) k_beg_y = buff_size
-            if (bc_y%end < 0 .and. bc_y%end /= BC_PERIODIC) k_end_y = n - buff_size
-
             call s_lso_stat_ghost_refresh(2)
             do ipass = 1, lso_n_passes_y
                 c0 = lso_a_y(1, ipass)
@@ -1706,7 +1694,7 @@ contains
                 do i = 1, n_lso_stat
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
-                        do k = k_beg_y, k_end_y
+                        do k = 0, n
                             do j = 0, m
                                 lso_tmp(j, k, l) = c0*real(q_lso_stat_vf(i)%sf(j, k, l), wp) + c1*(real(q_lso_stat_vf(i)%sf(j, &
                                         & k - 1, l), wp) + real(q_lso_stat_vf(i)%sf(j, k + 1, l), &
@@ -1720,7 +1708,7 @@ contains
                     $:END_GPU_PARALLEL_LOOP()
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
-                        do k = k_beg_y, k_end_y
+                        do k = 0, n
                             do j = 0, m
                                 q_lso_stat_vf(i)%sf(j, k, l) = real(lso_tmp(j, k, l), stp)
                             end do
@@ -1735,10 +1723,6 @@ contains
         end if
 
         if (p > 0) then
-            l_beg_z = 0; l_end_z = p
-            if (bc_z%beg < 0 .and. bc_z%beg /= BC_PERIODIC) l_beg_z = buff_size
-            if (bc_z%end < 0 .and. bc_z%end /= BC_PERIODIC) l_end_z = p - buff_size
-
             call s_lso_stat_ghost_refresh(3)
             do ipass = 1, lso_n_passes_z
                 c0 = lso_a_z(1, ipass)
@@ -1748,7 +1732,7 @@ contains
                 c4 = lso_a_z(5, ipass)
                 do i = 1, n_lso_stat
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
-                    do l = l_beg_z, l_end_z
+                    do l = 0, p
                         do k = 0, n
                             do j = 0, m
                                 lso_tmp(j, k, l) = c0*real(q_lso_stat_vf(i)%sf(j, k, l), wp) + c1*(real(q_lso_stat_vf(i)%sf(j, k, &
@@ -1762,7 +1746,7 @@ contains
                     end do
                     $:END_GPU_PARALLEL_LOOP()
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
-                    do l = l_beg_z, l_end_z
+                    do l = 0, p
                         do k = 0, n
                             do j = 0, m
                                 q_lso_stat_vf(i)%sf(j, k, l) = real(lso_tmp(j, k, l), stp)
@@ -1780,8 +1764,8 @@ contains
     end subroutine s_apply_lso_stat_filter
 
     !> Ghost-cell refresh for q_lso_stat_vf in direction mpi_dir (1=x, 2=y, 3=z). Halos are packed on the GPU into buff_stat_*, only
-    !! the small halo buffers are transferred host<->device for MPI, BC_GHOST_EXTRAP / BC_PERIODIC are reapplied on the GPU, and the
-    !! stat fields never leave device memory.
+    !! the small halo buffers are transferred host<->device for MPI, wall extrapolation / BC_PERIODIC are reapplied on the GPU, and
+    !! the stat fields never leave device memory.
     impure subroutine s_lso_stat_ghost_refresh(mpi_dir)
 
         integer, intent(in) :: mpi_dir
@@ -2041,11 +2025,11 @@ contains
         end if
 #endif
 
-        ! BC_GHOST_EXTRAP: copy the edge cell into the ghost layer.
+        ! Non-periodic walls: copy the edge cell into the ghost layer.
         ! BC_PERIODIC (single-rank, no MPI partner): wrap the local domain.
         select case (mpi_dir)
         case (1)
-            if (beg_bc == BC_GHOST_EXTRAP) then
+            if (beg_bc < 0 .and. beg_bc /= BC_PERIODIC) then
                 $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, n_lso_stat
                     do l = 0, p
@@ -2070,7 +2054,7 @@ contains
                 end do
                 $:END_GPU_PARALLEL_LOOP()
             end if
-            if (end_bc == BC_GHOST_EXTRAP) then
+            if (end_bc < 0 .and. end_bc /= BC_PERIODIC) then
                 $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, n_lso_stat
                     do l = 0, p
@@ -2096,7 +2080,7 @@ contains
                 $:END_GPU_PARALLEL_LOOP()
             end if
         case (2)
-            if (beg_bc == BC_GHOST_EXTRAP) then
+            if (beg_bc < 0 .and. beg_bc /= BC_PERIODIC) then
                 $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, n_lso_stat
                     do l = 0, p
@@ -2121,7 +2105,7 @@ contains
                 end do
                 $:END_GPU_PARALLEL_LOOP()
             end if
-            if (end_bc == BC_GHOST_EXTRAP) then
+            if (end_bc < 0 .and. end_bc /= BC_PERIODIC) then
                 $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, n_lso_stat
                     do l = 0, p
@@ -2147,7 +2131,7 @@ contains
                 $:END_GPU_PARALLEL_LOOP()
             end if
         case (3)
-            if (beg_bc == BC_GHOST_EXTRAP) then
+            if (beg_bc < 0 .and. beg_bc /= BC_PERIODIC) then
                 $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, n_lso_stat
                     do l = 1, buff_size
@@ -2172,7 +2156,7 @@ contains
                 end do
                 $:END_GPU_PARALLEL_LOOP()
             end if
-            if (end_bc == BC_GHOST_EXTRAP) then
+            if (end_bc < 0 .and. end_bc /= BC_PERIODIC) then
                 $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, n_lso_stat
                     do l = 1, buff_size

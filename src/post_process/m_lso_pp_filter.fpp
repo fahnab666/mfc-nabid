@@ -112,22 +112,17 @@ contains
 
     !> Apply the post_process LSO filter to q_cons_vf in place: the stage-1 pass set, followed by the stage-2 set when the toolchain
     !! split a wide target across two cascades (a single cascade is only well conditioned up to ~40 cells).
-    impure subroutine s_apply_lso_pp_filter(q_cons_vf, walls)
+    impure subroutine s_apply_lso_pp_filter(q_cons_vf)
 
         type(scalar_field), intent(inout) :: q_cons_vf(:)
-        logical, intent(in), optional     :: walls  !< edge-extrapolate every non-periodic physical face (fields without BC ghosts)
-        logical                           :: w
 
-        w = .false.
-        if (present(walls)) w = walls
+        call s_apply_lso_pp_passes(q_cons_vf, 1, lso_pp_n_passes_x, lso_pp_a_x)
+        if (n > 0) call s_apply_lso_pp_passes(q_cons_vf, 2, lso_pp_n_passes_y, lso_pp_a_y)
+        if (p > 0) call s_apply_lso_pp_passes(q_cons_vf, 3, lso_pp_n_passes_z, lso_pp_a_z)
 
-        call s_apply_lso_pp_passes(q_cons_vf, 1, lso_pp_n_passes_x, lso_pp_a_x, w)
-        if (n > 0) call s_apply_lso_pp_passes(q_cons_vf, 2, lso_pp_n_passes_y, lso_pp_a_y, w)
-        if (p > 0) call s_apply_lso_pp_passes(q_cons_vf, 3, lso_pp_n_passes_z, lso_pp_a_z, w)
-
-        call s_apply_lso_pp_passes(q_cons_vf, 1, lso_pp2_n_passes_x, lso_pp2_a_x, w)
-        if (n > 0) call s_apply_lso_pp_passes(q_cons_vf, 2, lso_pp2_n_passes_y, lso_pp2_a_y, w)
-        if (p > 0) call s_apply_lso_pp_passes(q_cons_vf, 3, lso_pp2_n_passes_z, lso_pp2_a_z, w)
+        call s_apply_lso_pp_passes(q_cons_vf, 1, lso_pp2_n_passes_x, lso_pp2_a_x)
+        if (n > 0) call s_apply_lso_pp_passes(q_cons_vf, 2, lso_pp2_n_passes_y, lso_pp2_a_y)
+        if (p > 0) call s_apply_lso_pp_passes(q_cons_vf, 3, lso_pp2_n_passes_z, lso_pp2_a_z)
 
     end subroutine s_apply_lso_pp_filter
 
@@ -137,13 +132,11 @@ contains
     !! @param dir Sweep direction (1 = x, 2 = y, 3 = z)
     !! @param n_passes Number of passes; no-op when < 1
     !! @param a Per-pass stencil coefficients a(1:5, pass)
-    !! @param walls Edge-extrapolate every non-periodic physical face
-    impure subroutine s_apply_lso_pp_passes(q_vf, dir, n_passes, a, walls)
+    impure subroutine s_apply_lso_pp_passes(q_vf, dir, n_passes, a)
 
         type(scalar_field), intent(inout) :: q_vf(:)
         integer, intent(in)               :: dir, n_passes
         real(wp), intent(in)              :: a(5, lso_max_passes)
-        logical, intent(in)               :: walls
         integer                           :: i, ipass, j, k, l, nv, sj, sk, sl
         real(wp)                          :: c0, c1, c2, c3, c4
 
@@ -160,7 +153,7 @@ contains
         nv = size(q_vf)
 
         do ipass = 1, n_passes
-            call s_lso_pp_filter_ghost_refresh(q_vf, dir, walls)
+            call s_lso_pp_filter_ghost_refresh(q_vf, dir)
             c0 = a(1, ipass)
             c1 = a(2, ipass)
             c2 = a(3, ipass)
@@ -231,7 +224,7 @@ contains
         end do
 
         call s_apply_lso_pp_filter(q_cons_vf)
-        call s_apply_lso_pp_filter(w_vf, walls=.true.)
+        call s_apply_lso_pp_filter(w_vf)
 
         do l = 0, p
             do k = 0, n
@@ -520,9 +513,9 @@ contains
         ! in chunks of at most sys_size fields, the size of the shared MPI halo buffers (2 nd + 1 = 7 > sys_size in 3D)
         do c = 1, 2*nd + 1, sys_size
             b = min(2*nd + 1, c + sys_size - 1)
-            call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 1, .true.)
-            if (n > 0) call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 2, .true.)
-            if (p > 0) call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 3, .true.)
+            call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 1)
+            if (n > 0) call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 2)
+            if (p > 0) call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 3)
         end do
 
         ! Quasi-uniform output-grid spacing (mean; exact for integer decimation).
@@ -621,14 +614,12 @@ contains
 
     end subroutine s_compute_lso_closure_fields
 
-    !> Refresh ghosts for direction mpi_dir (1=x, 2=y, 3=z): MPI faces via s_mpi_sendrecv_variables_buffers, BC_GHOST_EXTRAP faces
-    !! re-extrapolated from the edge cell, BC_PERIODIC faces wrapped locally. With walls, every other physical face is extrapolated
-    !! too, for scratch fields whose ghosts no boundary routine fills.
-    impure subroutine s_lso_pp_filter_ghost_refresh(q_cons_vf, mpi_dir, walls)
+    !> Refresh ghosts for direction mpi_dir (1=x, 2=y, 3=z): MPI faces via s_mpi_sendrecv_variables_buffers, non-periodic physical
+    !! faces re-extrapolated from the edge cell, BC_PERIODIC faces wrapped locally.
+    impure subroutine s_lso_pp_filter_ghost_refresh(q_cons_vf, mpi_dir)
 
         type(scalar_field), intent(inout) :: q_cons_vf(:)
         integer, intent(in)               :: mpi_dir
-        logical, intent(in), optional     :: walls
         integer                           :: i, j, k, l, beg_bc, end_bc, nv
         logical                           :: ext_beg, ext_end
 
@@ -651,14 +642,8 @@ contains
         if (end_bc >= 0) call s_mpi_sendrecv_variables_buffers(q_cons_vf, mpi_dir, 1, nv)
 #endif
 
-        ext_beg = beg_bc == BC_GHOST_EXTRAP
-        ext_end = end_bc == BC_GHOST_EXTRAP
-        if (present(walls)) then
-            if (walls) then
-                ext_beg = beg_bc < 0 .and. beg_bc /= BC_PERIODIC
-                ext_end = end_bc < 0 .and. end_bc /= BC_PERIODIC
-            end if
-        end if
+        ext_beg = beg_bc < 0 .and. beg_bc /= BC_PERIODIC
+        ext_end = end_bc < 0 .and. end_bc /= BC_PERIODIC
 
         select case (mpi_dir)
         case (1)
@@ -731,9 +716,9 @@ contains
 
         do c = 1, size(q_vf), sys_size
             last = min(c + sys_size - 1, size(q_vf))
-            call s_lso_pp_filter_ghost_refresh(q_vf(c:last), 1, .true.)
-            if (n > 0) call s_lso_pp_filter_ghost_refresh(q_vf(c:last), 2, .true.)
-            if (p > 0) call s_lso_pp_filter_ghost_refresh(q_vf(c:last), 3, .true.)
+            call s_lso_pp_filter_ghost_refresh(q_vf(c:last), 1)
+            if (n > 0) call s_lso_pp_filter_ghost_refresh(q_vf(c:last), 2)
+            if (p > 0) call s_lso_pp_filter_ghost_refresh(q_vf(c:last), 3)
         end do
 
     end subroutine s_refresh_lso_pp_fields
@@ -1173,7 +1158,7 @@ contains
         integer :: c
 
         do c = 1, n_lso_stat, sys_size
-            call s_apply_lso_pp_filter(q_lso_pp_stat_vf(c:min(c + sys_size - 1, n_lso_stat)), walls=.true.)
+            call s_apply_lso_pp_filter(q_lso_pp_stat_vf(c:min(c + sys_size - 1, n_lso_stat)))
         end do
         ! The silo writer reads the ghosts at rank seams, which the filter passes leave stale.
         call s_refresh_lso_pp_fields(q_lso_pp_stat_vf)
