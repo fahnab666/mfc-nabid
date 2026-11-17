@@ -1057,8 +1057,6 @@ contains
                     $:END_GPU_PARALLEL_LOOP()
                 end do
             end if
-#ifdef MFC_MPI
-#endif
         case (2)
             if (beg_bc == BC_GHOST_EXTRAP) then
                 do i = 1, nv
@@ -1110,8 +1108,6 @@ contains
                     $:END_GPU_PARALLEL_LOOP()
                 end do
             end if
-#ifdef MFC_MPI
-#endif
         case (3)
             if (beg_bc == BC_GHOST_EXTRAP) then
                 do i = 1, nv
@@ -1163,8 +1159,6 @@ contains
                     $:END_GPU_PARALLEL_LOOP()
                 end do
             end if
-#ifdef MFC_MPI
-#endif
         end select
 
     end subroutine s_lso_filter_ghost_refresh
@@ -1229,12 +1223,15 @@ contains
 
         ! Pass 1: algebraic products.
 
-        $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[i, j, k, l, ib_id, rho, mom1, mom2, mom3, u1, u2, u3, E_loc, ke, e_int, T_loc, &
+                            & phi_p, gas_mask, up1, up2, up3]')
         do l = 0, p
             do k = 0, n
                 do j = 0, m
-                    if (ib .and. ib_markers%sf(j, k, l) > 0) then
-                        ib_id = ib_markers%sf(j, k, l)
+                    ! ib_markers is unallocated without ib, and Fortran does not short-circuit .and.
+                    ib_id = 0
+                    if (ib) ib_id = ib_markers%sf(j, k, l)
+                    if (ib_id > 0) then
                         phi_p = 1._wp
                         gas_mask = 0._wp
                         up1 = patch_ib(ib_id)%vel(1)
@@ -1347,7 +1344,8 @@ contains
         if (viscous .and. lso_mu > 0._wp) then
             if (n == 0) then
                 ! 1D: x-gradients only.
-                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
+                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, rho_loc, gas_mask, rho_jm, rho_jp, u1_jm, u1_jp, T_jm, T_jp, &
+                                    & dx, du1dx, dTdx, u1, T_loc, fprop, mu_loc, k_loc, tau11, q1]')
                 do l = 0, p
                     do k = 0, n
                         do j = j_beg_x, j_end_x
@@ -1393,7 +1391,10 @@ contains
                 $:END_GPU_PARALLEL_LOOP()
             else if (p == 0) then
                 ! 2D: x- and y-gradients.
-                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
+                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, rho_loc, gas_mask, rho_jm, rho_jp, rho_km, rho_kp, u1_jm, &
+                                    & u1_jp, u1_km, u1_kp, u2_jm, u2_jp, u2_km, u2_kp, T_jm, T_jp, T_km, T_kp, dx, dy, du1dx, &
+                                    & du1dy, du2dx, du2dy, dTdx, dTdy, div_u, u1, u2, T_loc, fprop, mu_loc, k_loc, tau11, tau12, &
+                                    & tau22, q1, q2]')
                 do l = 0, p
                     do k = k_beg_y, k_end_y
                         do j = j_beg_x, j_end_x
@@ -1469,7 +1470,11 @@ contains
                 $:END_GPU_PARALLEL_LOOP()
             else
                 ! 3D: x-, y-, and z-gradients.
-                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
+                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, rho_loc, gas_mask, rho_jm, rho_jp, rho_km, rho_kp, rho_lm, &
+                                    & rho_lp, u1_jm, u1_jp, u1_km, u1_kp, u1_lm, u1_lp, u2_jm, u2_jp, u2_km, u2_kp, u2_lm, u2_lp, &
+                                    & u3_jm, u3_jp, u3_km, u3_kp, u3_lm, u3_lp, T_jm, T_jp, T_km, T_kp, T_lm, T_lp, dx, dy, dz, &
+                                    & du1dx, du1dy, du1dz, du2dx, du2dy, du2dz, du3dx, du3dy, du3dz, dTdx, dTdy, dTdz, div_u, u1, &
+                                    & u2, u3, T_loc, fprop, mu_loc, k_loc, tau11, tau12, tau13, tau22, tau23, tau33, q1, q2, q3]')
                 do l = l_beg_z, l_end_z
                     do k = k_beg_y, k_end_y
                         do j = j_beg_x, j_end_x

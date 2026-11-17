@@ -35,7 +35,8 @@ module m_lso_pp_filter
 
     public :: s_initialize_lso_pp_filter_module, s_finalize_lso_pp_filter_module, s_apply_lso_pp_filter, &
         & s_compute_lso_pp_stat_fields, s_filter_lso_pp_stat_fields, q_lso_pp_stat_vf, s_apply_lso_pp_filter_masked, &
-        & s_lso_pp_mask_from_ib, s_compute_lso_closure_fields, f_lso_n_closure, q_lso_pp_w_vf, s_write_lso_pp_pyramid_files
+        & s_lso_pp_mask_from_ib, s_compute_lso_closure_fields, f_lso_n_closure, q_lso_pp_w_vf, s_write_lso_pp_pyramid_files, &
+        & s_refresh_lso_pp_fields
 
     ! Floor on the normalized-convolution denominator filter(w).
     real(wp), parameter :: lso_w_floor = 1.0e-3_wp
@@ -46,7 +47,7 @@ module m_lso_pp_filter
     ! Filtered stat fields (lso_stat_wrt = T).
     type(scalar_field), allocatable :: q_lso_pp_stat_vf(:)
 
-    ! Post-filtered normalization weight w2 = filter2(w1) (interior only), used by the closure pass; 1 without a mask.
+    ! Post-filtered normalization weight w2 = filter2(w1), used by the closure pass; 1 without a mask.
     type(scalar_field) :: q_lso_pp_w_vf(1:1)
 
     ! Phase temperature for EOS beyond ideal and stiffened gas, evaluated once per cell for the stat products.
@@ -59,17 +60,21 @@ contains
 
         integer :: i
 
-        allocate (lso_pp_tmp(0:m,0:n,0:p))
+        @:ALLOCATE(lso_pp_tmp(0:m, 0:n, 0:p))
 
-        if (lso_pp_filter) then
-            allocate (q_lso_pp_w_vf(1)%sf(0:m,0:n,0:p))
+        if (lso_pp_filter .or. lso_closure_wrt) then
+            ! Ghost layers for the masked filter passes.
+            @:ALLOCATE(q_lso_pp_w_vf(1)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                       & idwbuff(3)%beg:idwbuff(3)%end))
             q_lso_pp_w_vf(1)%sf = 1._stp
         end if
 
         if (lso_stat_wrt .and. n_lso_stat > 0) then
-            allocate (q_lso_pp_stat_vf(1:n_lso_stat))
+            ! Ghost layers so the silo writer can read the rank-overlap cells, as for q_cons_vf.
+            @:ALLOCATE(q_lso_pp_stat_vf(1:n_lso_stat))
             do i = 1, n_lso_stat
-                allocate (q_lso_pp_stat_vf(i)%sf(0:m,0:n,0:p))
+                @:ALLOCATE(q_lso_pp_stat_vf(i)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
+                           & idwbuff(3)%beg:idwbuff(3)%end))
             end do
             lso_T_eos = .not. (eoss(1) == eos_ideal_gas .or. eoss(1) == eos_stiffened_gas)
             if (lso_T_eos) then
@@ -96,26 +101,33 @@ contains
 
         if (allocated(q_lso_pp_stat_vf)) then
             do i = 1, n_lso_stat
-                if (associated(q_lso_pp_stat_vf(i)%sf)) deallocate (q_lso_pp_stat_vf(i)%sf)
+                if (associated(q_lso_pp_stat_vf(i)%sf)) then
+                    @:DEALLOCATE(q_lso_pp_stat_vf(i)%sf)
+                end if
             end do
-            deallocate (q_lso_pp_stat_vf)
+            @:DEALLOCATE(q_lso_pp_stat_vf)
         end if
 
     end subroutine s_finalize_lso_pp_filter_module
 
     !> Apply the post_process LSO filter to q_cons_vf in place: the stage-1 pass set, followed by the stage-2 set when the toolchain
     !! split a wide target across two cascades (a single cascade is only well conditioned up to ~40 cells).
-    impure subroutine s_apply_lso_pp_filter(q_cons_vf)
+    impure subroutine s_apply_lso_pp_filter(q_cons_vf, walls)
 
         type(scalar_field), intent(inout) :: q_cons_vf(:)
+        logical, intent(in), optional     :: walls  !< edge-extrapolate every non-periodic physical face (fields without BC ghosts)
+        logical                           :: w
 
-        call s_apply_lso_pp_passes(q_cons_vf, 1, lso_pp_n_passes_x, lso_pp_a_x)
-        if (n > 0) call s_apply_lso_pp_passes(q_cons_vf, 2, lso_pp_n_passes_y, lso_pp_a_y)
-        if (p > 0) call s_apply_lso_pp_passes(q_cons_vf, 3, lso_pp_n_passes_z, lso_pp_a_z)
+        w = .false.
+        if (present(walls)) w = walls
 
-        call s_apply_lso_pp_passes(q_cons_vf, 1, lso_pp2_n_passes_x, lso_pp2_a_x)
-        if (n > 0) call s_apply_lso_pp_passes(q_cons_vf, 2, lso_pp2_n_passes_y, lso_pp2_a_y)
-        if (p > 0) call s_apply_lso_pp_passes(q_cons_vf, 3, lso_pp2_n_passes_z, lso_pp2_a_z)
+        call s_apply_lso_pp_passes(q_cons_vf, 1, lso_pp_n_passes_x, lso_pp_a_x, w)
+        if (n > 0) call s_apply_lso_pp_passes(q_cons_vf, 2, lso_pp_n_passes_y, lso_pp_a_y, w)
+        if (p > 0) call s_apply_lso_pp_passes(q_cons_vf, 3, lso_pp_n_passes_z, lso_pp_a_z, w)
+
+        call s_apply_lso_pp_passes(q_cons_vf, 1, lso_pp2_n_passes_x, lso_pp2_a_x, w)
+        if (n > 0) call s_apply_lso_pp_passes(q_cons_vf, 2, lso_pp2_n_passes_y, lso_pp2_a_y, w)
+        if (p > 0) call s_apply_lso_pp_passes(q_cons_vf, 3, lso_pp2_n_passes_z, lso_pp2_a_z, w)
 
     end subroutine s_apply_lso_pp_filter
 
@@ -125,11 +137,13 @@ contains
     !! @param dir Sweep direction (1 = x, 2 = y, 3 = z)
     !! @param n_passes Number of passes; no-op when < 1
     !! @param a Per-pass stencil coefficients a(1:5, pass)
-    impure subroutine s_apply_lso_pp_passes(q_vf, dir, n_passes, a)
+    !! @param walls Edge-extrapolate every non-periodic physical face
+    impure subroutine s_apply_lso_pp_passes(q_vf, dir, n_passes, a, walls)
 
         type(scalar_field), intent(inout) :: q_vf(:)
         integer, intent(in)               :: dir, n_passes
         real(wp), intent(in)              :: a(5, lso_max_passes)
+        logical, intent(in)               :: walls
         integer                           :: i, ipass, j, k, l, nv, sj, sk, sl
         real(wp)                          :: c0, c1, c2, c3, c4
 
@@ -146,7 +160,7 @@ contains
         nv = size(q_vf)
 
         do ipass = 1, n_passes
-            call s_lso_pp_filter_ghost_refresh(q_vf, dir)
+            call s_lso_pp_filter_ghost_refresh(q_vf, dir, walls)
             c0 = a(1, ipass)
             c1 = a(2, ipass)
             c2 = a(3, ipass)
@@ -217,7 +231,7 @@ contains
         end do
 
         call s_apply_lso_pp_filter(q_cons_vf)
-        call s_apply_lso_pp_filter(w_vf)
+        call s_apply_lso_pp_filter(w_vf, walls=.true.)
 
         do l = 0, p
             do k = 0, n
@@ -270,7 +284,7 @@ contains
         end do
         mc = nloc(1); nc = nloc(2); pc = nloc(3)
 
-        allocate (buf(0:mc,0:nc,0:pc,1:max(sys_size, n_lso_stat, 1)))
+        @:ALLOCATE(buf(0:mc, 0:nc, 0:pc, 1:max(sys_size, n_lso_stat, 1)))
 
         do i = 1, sys_size
             call s_lso_pp_decimate(q_cons_vf(i), buf(:,:,:,i), mc, nc, pc)
@@ -290,7 +304,7 @@ contains
             call s_write_lso_pp_coarse_file(buf, n_lso_stat, fname, nloc, nglb, sc)
         end if
 
-        deallocate (buf)
+        @:DEALLOCATE(buf)
 
         call s_write_lso_pp_coarse_grid(x_cb(-1:m), 1, 'lso_x_cb.dat', nloc, sc)
         if (n > 0) call s_write_lso_pp_coarse_grid(y_cb(-1:n), 2, 'lso_y_cb.dat', nloc, sc)
@@ -368,6 +382,10 @@ contains
         sizes_glb = nglb(1:num_dims) + 1
         sizes_loc = nloc(1:num_dims) + 1
         start_loc = sc(1:num_dims)
+        ! The view counts mpi_io_p units, mpi_io_type per stp value (bytes under --mixed).
+        sizes_glb(1) = sizes_glb(1)*mpi_io_type
+        sizes_loc(1) = sizes_loc(1)*mpi_io_type
+        start_loc(1) = start_loc(1)*mpi_io_type
         data_size = product(nloc + 1)
         blk = int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
         do i = 1, 3
@@ -379,11 +397,11 @@ contains
         if (file_exist .and. proc_rank == 0) call MPI_FILE_DELETE(file_loc, mpi_info_int, ierr)
         call s_mpi_barrier()
         call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
-        call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_loc, MPI_ORDER_FORTRAN, mpi_p, mpi_view, ierr)
+        call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_loc, MPI_ORDER_FORTRAN, mpi_io_p, mpi_view, ierr)
         call MPI_TYPE_COMMIT(mpi_view, ierr)
         do i = 1, nv
             disp = blk*int(i - 1, MPI_OFFSET_KIND)
-            call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, mpi_view, 'native', mpi_info_int, ierr)
+            call MPI_FILE_SET_VIEW(ifile, disp, mpi_io_p, mpi_view, 'native', mpi_info_int, ierr)
             call MPI_FILE_WRITE_ALL(ifile, buf(:,:,:,i), data_size*mpi_io_type, mpi_io_p, status, ierr)
         end do
         call MPI_TYPE_FREE(mpi_view, ierr)
@@ -420,13 +438,13 @@ contains
             ! entries cb_c(-1:Nc) sit at file positions 0:Nc+1; the rank at the domain start also writes cb_c(-1)
             i0 = merge(-1, 0, sc(dir) == 0)
             nw = nloc(dir) - i0 + 1
-            allocate (seg(nw))
+            @:ALLOCATE(seg(nw))
             do jc = i0, nloc(dir)
                 seg(jc - i0 + 1) = cb(lso_down_sample_factor*(jc + 1) - 1)
             end do
             disp = int(sc(dir) + i0 + 1, MPI_OFFSET_KIND)*int(storage_size(0._wp)/8, MPI_OFFSET_KIND)
             call MPI_FILE_WRITE_AT(ifile, disp, seg, nw, mpi_p, status, ierr)
-            deallocate (seg)
+            @:DEALLOCATE(seg)
         end if
         call MPI_FILE_CLOSE(ifile, ierr)
 
@@ -479,8 +497,8 @@ contains
 
         ! Favre velocity, Favre temperature and mixture velocity with ghost extents for the gradient stencils.
         do i = 1, 2*nd + 1
-            allocate (uT_vf(i)%sf(lbound(q_cons_vf(1)%sf, 1):ubound(q_cons_vf(1)%sf, 1),lbound(q_cons_vf(1)%sf, &
-                      & 2):ubound(q_cons_vf(1)%sf, 2),lbound(q_cons_vf(1)%sf, 3):ubound(q_cons_vf(1)%sf, 3)))
+            @:ALLOCATE(uT_vf(i)%sf(lbound(q_cons_vf(1)%sf, 1):ubound(q_cons_vf(1)%sf, 1), lbound(q_cons_vf(1)%sf, &
+                       & 2):ubound(q_cons_vf(1)%sf, 2), lbound(q_cons_vf(1)%sf, 3):ubound(q_cons_vf(1)%sf, 3)))
         end do
         do l = 0, p
             do k = 0, n
@@ -502,9 +520,9 @@ contains
         ! in chunks of at most sys_size fields, the size of the shared MPI halo buffers (2 nd + 1 = 7 > sys_size in 3D)
         do c = 1, 2*nd + 1, sys_size
             b = min(2*nd + 1, c + sys_size - 1)
-            call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 1)
-            if (n > 0) call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 2)
-            if (p > 0) call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 3)
+            call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 1, .true.)
+            if (n > 0) call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 2, .true.)
+            if (p > 0) call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 3, .true.)
         end do
 
         ! Quasi-uniform output-grid spacing (mean; exact for integer decimation).
@@ -598,18 +616,21 @@ contains
         end do
 
         do i = 1, 2*nd + 1
-            deallocate (uT_vf(i)%sf)
+            @:DEALLOCATE(uT_vf(i)%sf)
         end do
 
     end subroutine s_compute_lso_closure_fields
 
     !> Refresh ghosts for direction mpi_dir (1=x, 2=y, 3=z): MPI faces via s_mpi_sendrecv_variables_buffers, BC_GHOST_EXTRAP faces
-    !! re-extrapolated from the edge cell, BC_PERIODIC faces wrapped locally.
-    impure subroutine s_lso_pp_filter_ghost_refresh(q_cons_vf, mpi_dir)
+    !! re-extrapolated from the edge cell, BC_PERIODIC faces wrapped locally. With walls, every other physical face is extrapolated
+    !! too, for scratch fields whose ghosts no boundary routine fills.
+    impure subroutine s_lso_pp_filter_ghost_refresh(q_cons_vf, mpi_dir, walls)
 
         type(scalar_field), intent(inout) :: q_cons_vf(:)
         integer, intent(in)               :: mpi_dir
+        logical, intent(in), optional     :: walls
         integer                           :: i, j, k, l, beg_bc, end_bc, nv
+        logical                           :: ext_beg, ext_end
 
         nv = size(q_cons_vf)
 
@@ -630,18 +651,27 @@ contains
         if (end_bc >= 0) call s_mpi_sendrecv_variables_buffers(q_cons_vf, mpi_dir, 1, nv)
 #endif
 
+        ext_beg = beg_bc == BC_GHOST_EXTRAP
+        ext_end = end_bc == BC_GHOST_EXTRAP
+        if (present(walls)) then
+            if (walls) then
+                ext_beg = beg_bc < 0 .and. beg_bc /= BC_PERIODIC
+                ext_end = end_bc < 0 .and. end_bc /= BC_PERIODIC
+            end if
+        end if
+
         select case (mpi_dir)
         case (1)
             do i = 1, nv
                 do l = 0, p
                     do k = 0, n
                         do j = 1, buff_size
-                            if (beg_bc == BC_GHOST_EXTRAP) then
+                            if (ext_beg) then
                                 q_cons_vf(i)%sf(-j, k, l) = q_cons_vf(i)%sf(0, k, l)
                             else if (beg_bc == BC_PERIODIC) then
                                 q_cons_vf(i)%sf(-j, k, l) = q_cons_vf(i)%sf(m - j + 1, k, l)
                             end if
-                            if (end_bc == BC_GHOST_EXTRAP) then
+                            if (ext_end) then
                                 q_cons_vf(i)%sf(m + j, k, l) = q_cons_vf(i)%sf(m, k, l)
                             else if (end_bc == BC_PERIODIC) then
                                 q_cons_vf(i)%sf(m + j, k, l) = q_cons_vf(i)%sf(j - 1, k, l)
@@ -655,12 +685,12 @@ contains
                 do l = 0, p
                     do k = 1, buff_size
                         do j = 0, m
-                            if (beg_bc == BC_GHOST_EXTRAP) then
+                            if (ext_beg) then
                                 q_cons_vf(i)%sf(j, -k, l) = q_cons_vf(i)%sf(j, 0, l)
                             else if (beg_bc == BC_PERIODIC) then
                                 q_cons_vf(i)%sf(j, -k, l) = q_cons_vf(i)%sf(j, n - k + 1, l)
                             end if
-                            if (end_bc == BC_GHOST_EXTRAP) then
+                            if (ext_end) then
                                 q_cons_vf(i)%sf(j, n + k, l) = q_cons_vf(i)%sf(j, n, l)
                             else if (end_bc == BC_PERIODIC) then
                                 q_cons_vf(i)%sf(j, n + k, l) = q_cons_vf(i)%sf(j, k - 1, l)
@@ -674,12 +704,12 @@ contains
                 do l = 1, buff_size
                     do k = 0, n
                         do j = 0, m
-                            if (beg_bc == BC_GHOST_EXTRAP) then
+                            if (ext_beg) then
                                 q_cons_vf(i)%sf(j, k, -l) = q_cons_vf(i)%sf(j, k, 0)
                             else if (beg_bc == BC_PERIODIC) then
                                 q_cons_vf(i)%sf(j, k, -l) = q_cons_vf(i)%sf(j, k, p - l + 1)
                             end if
-                            if (end_bc == BC_GHOST_EXTRAP) then
+                            if (ext_end) then
                                 q_cons_vf(i)%sf(j, k, p + l) = q_cons_vf(i)%sf(j, k, p)
                             else if (end_bc == BC_PERIODIC) then
                                 q_cons_vf(i)%sf(j, k, p + l) = q_cons_vf(i)%sf(j, k, l - 1)
@@ -1102,42 +1132,16 @@ contains
     end subroutine s_compute_lso_pp_stat_fields
 
     !> Apply the post_process LSO filter to the stat products in place (chunks of sys_size fields, the size of the shared MPI halo
-    !! buffers), through ghost-extended temporaries since q_lso_pp_stat_vf carries no halo.
+    !! buffers). Their ghosts come from no boundary routine, so every physical face is extrapolated.
     impure subroutine s_filter_lso_pp_stat_fields()
 
-        type(scalar_field), allocatable :: q_tmp_vf(:)
-        integer                         :: i, c, nc, j, k, l
+        integer :: c
 
-        allocate (q_tmp_vf(1:sys_size))
-        do i = 1, sys_size
-            allocate (q_tmp_vf(i)%sf(-buff_size:m + buff_size,-buff_size:n + buff_size,-buff_size:p + buff_size))
-        end do
         do c = 1, n_lso_stat, sys_size
-            nc = min(sys_size, n_lso_stat - c + 1)
-            do i = 1, nc
-                do l = 0, p
-                    do k = 0, n
-                        do j = 0, m
-                            q_tmp_vf(i)%sf(j, k, l) = q_lso_pp_stat_vf(c + i - 1)%sf(j, k, l)
-                        end do
-                    end do
-                end do
-            end do
-            call s_apply_lso_pp_filter(q_tmp_vf(1:nc))
-            do i = 1, nc
-                do l = 0, p
-                    do k = 0, n
-                        do j = 0, m
-                            q_lso_pp_stat_vf(c + i - 1)%sf(j, k, l) = q_tmp_vf(i)%sf(j, k, l)
-                        end do
-                    end do
-                end do
-            end do
+            call s_apply_lso_pp_filter(q_lso_pp_stat_vf(c:min(c + sys_size - 1, n_lso_stat)), walls=.true.)
         end do
-        do i = 1, sys_size
-            deallocate (q_tmp_vf(i)%sf)
-        end do
-        deallocate (q_tmp_vf)
+        ! The silo writer reads the ghosts at rank seams, which the filter passes leave stale.
+        call s_refresh_lso_pp_fields(q_lso_pp_stat_vf)
 
     end subroutine s_filter_lso_pp_stat_fields
 
