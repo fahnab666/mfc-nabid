@@ -4,38 +4,6 @@
 
 #:include 'macros.fpp'
 
-#! Stretched-x LSO filter: lso_n_passes_xp passes of the per-cell weights lso_wx over fields FLD(1:NV).
-#:def LSO_X_PHYS_PASSES(FLD, NV, REFRESH)
-    do ipass = 1, lso_n_passes_xp
-        do i = 1, ${NV}$
-            $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, sx, qs]')
-            do l = 0, p
-                do k = 0, n
-                    do j = 0, m
-                        qs = 0._wp
-                        $:GPU_LOOP(parallelism='[seq]')
-                        do sx = -4, 4
-                            qs = qs + lso_wx(sx, j)*real(${FLD}$(i)%sf(j + sx, k, l), wp)
-                        end do
-                        lso_tmp(j, k, l) = qs
-                    end do
-                end do
-            end do
-            $:END_GPU_PARALLEL_LOOP()
-            $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
-            do l = 0, p
-                do k = 0, n
-                    do j = 0, m
-                        ${FLD}$(i)%sf(j, k, l) = real(lso_tmp(j, k, l), stp)
-                    end do
-                end do
-            end do
-            $:END_GPU_PARALLEL_LOOP()
-        end do
-        if (ipass < lso_n_passes_xp) call ${REFRESH}$
-    end do
-#:enddef
-
 !> @brief LSO variable-weight Gaussian filter for conserved variables at save steps.
 !!
 !! 9-point symmetric FIR stencil
@@ -48,8 +16,6 @@ module m_lso_filter
     use m_global_parameters
     use m_mpi_common
     use m_constants
-    use m_eos, only: s_phase_temperature
-    use m_variables_conversion, only: s_convert_conservative_to_primitive_variables
     use m_ibm, only: ib_markers
     use m_nvtx
 
@@ -67,14 +33,6 @@ module m_lso_filter
     ! Scratch buffer for one directional pass (interior only).
     real(wp), allocatable, dimension(:,:,:) :: lso_tmp
     $:GPU_DECLARE(create='[lso_tmp]')
-
-    ! Stretched x: the designed weights assume uniform spacing, so x instead takes lso_n_passes_xp passes of per-cell 9-point
-    ! Gaussian quadrature weights whose physical moments are exact: sum 1, mean 0, variance filter_sigma**2/lso_n_passes_xp.
-    real(wp), parameter :: lso_xp_sigma_cells = 1.2_wp  !< per-pass sigma in finest cells; keeps the +-4 stencil at 3.3 sigma
-    logical :: lso_x_ready = .false., lso_x_phys = .false.
-    integer :: lso_n_passes_xp = 0
-    real(wp), allocatable, dimension(:,:) :: lso_wx
-    $:GPU_DECLARE(create='[lso_wx]')
 
     ! Filtered copy of the conserved variables (lso_filter_wrt = T).
     type(scalar_field), allocatable :: q_filt_vf(:)
@@ -99,7 +57,6 @@ module m_lso_filter
     ! Filtered statistical product fields (lso_stat_wrt = T).
     type(scalar_field), allocatable :: q_lso_stat_vf(:)
     type(scalar_field), allocatable :: q_lso_stat_ds_vf(:)
-    type(scalar_field), allocatable :: q_lso_T_vf(:)
 
     ! Host-side halo buffers for the stat exchange (n_lso_stat can exceed sys_size).
 #ifdef MFC_MPI
@@ -115,12 +72,12 @@ contains
         @:ALLOCATE(lso_tmp(0:m, 0:n, 0:p))
 
         if (lso_filter_wrt) then
-            @:ALLOCATE(q_filt_vf(1:sys_size + merge(1, 0, euler_lagrange)))
-            do i = 1, size(q_filt_vf)
+            @:ALLOCATE(q_filt_vf(1:sys_size))
+            do i = 1, sys_size
                 @:ALLOCATE(q_filt_vf(i)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                            & idwbuff(3)%beg:idwbuff(3)%end))
             end do
-            do i = 1, size(q_filt_vf)
+            do i = 1, sys_size
                 @:ACC_SETUP_SFs(q_filt_vf(i))
             end do
 
@@ -141,8 +98,8 @@ contains
                 if (p_lso_ds > 0) then
                     crs_lo(3) = -lso_crs_gw; crs_hi(3) = p_lso_ds + lso_crs_gw
                 end if
-                @:ALLOCATE(q_filt_ds_vf(1:size(q_filt_vf)))
-                do i = 1, size(q_filt_vf)
+                @:ALLOCATE(q_filt_ds_vf(1:sys_size))
+                do i = 1, sys_size
                     @:ALLOCATE(q_filt_ds_vf(i)%sf(crs_lo(1):crs_hi(1), crs_lo(2):crs_hi(2), crs_lo(3):crs_hi(3)))
                 end do
                 if (ib) then
@@ -154,7 +111,7 @@ contains
 #ifdef MFC_MPI
                     block
                         integer :: nv_max, face_max
-                        nv_max = max(size(q_filt_vf), max(n_lso_stat, 1))
+                        nv_max = max(sys_size, max(n_lso_stat, 1))
                         face_max = max((n_lso_ds + 1)*(p_lso_ds + 1), (m_lso_ds + 1)*(p_lso_ds + 1), (m_lso_ds + 1)*(n_lso_ds + 1))
                         allocate (buff_crs_send(0:nv_max*lso_crs_gw*face_max - 1))
                         allocate (buff_crs_recv(0:nv_max*lso_crs_gw*face_max - 1))
@@ -164,10 +121,6 @@ contains
             end if
 
             if (lso_stat_wrt .and. n_lso_stat > 0) then
-                @:ALLOCATE(q_lso_T_vf(1:1))
-                @:ALLOCATE(q_lso_T_vf(1)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
-                           & idwbuff(3)%beg:idwbuff(3)%end))
-                @:ACC_SETUP_SFs(q_lso_T_vf(1))
                 @:ALLOCATE(q_lso_stat_vf(1:n_lso_stat))
                 do i = 1, n_lso_stat
                     @:ALLOCATE(q_lso_stat_vf(i)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
@@ -205,55 +158,14 @@ contains
 
     end subroutine s_initialize_lso_filter_module
 
-    !> Detect a stretched x grid and build lso_wx. Called on first use: the grid ghosts are filled after module setup.
-    impure subroutine s_lso_setup_x_weights()
-
-        integer  :: j, s
-        real(wp) :: dx_lo, dx_hi, sig_p, var_p, a, b, r1, r2, cm, cp
-        real(wp) :: d(-4:4), w(-4:4)
-
-        lso_x_ready = .true.
-        dx_lo = minval(dx(0:m)); dx_hi = maxval(dx(0:m))
-#ifdef MFC_MPI
-        call s_mpi_allreduce_min(minval(dx(0:m)), dx_lo)
-        call s_mpi_allreduce_max(maxval(dx(0:m)), dx_hi)
-#endif
-        lso_x_phys = dx_hi - dx_lo > 1.e-6_wp*dx_lo
-        if (.not. lso_x_phys) return
-        if (lso2_n_passes_x > 0) call s_mpi_abort("LSO: the stage-2 coarse filter requires a uniform x grid")
-
-        lso_n_passes_xp = max(1, ceiling((filter_sigma/(lso_xp_sigma_cells*dx_lo))**2))
-        var_p = filter_sigma**2/real(lso_n_passes_xp, wp)
-        sig_p = sqrt(var_p)
-        @:ALLOCATE(lso_wx(-4:4, 0:m))
-        do j = 0, m
-            d = x_cc(j - 4:j + 4) - x_cc(j)
-            w = exp(-0.5_wp*(d/sig_p)**2)*dx(j - 4:j + 4)
-            w = w/sum(w)
-            ! Restore the exact mean and variance on the three central points (the missing variance where sig_p < dx).
-            a = -d(-1); b = d(1)
-            r1 = -sum(w*d); r2 = var_p - sum(w*d*d)
-            cm = (r2 - r1*b)/(a*(a + b)); cp = (r2 + r1*a)/(b*(a + b))
-            w(-1) = w(-1) + cm; w(1) = w(1) + cp; w(0) = w(0) - cm - cp
-            if (minval(w) < 0._wp) call s_mpi_abort("LSO: negative stretched-x filter weight; x grid varies too fast")
-            lso_wx(:,j) = w
-        end do
-        $:GPU_UPDATE(device='[lso_wx]')
-        if (proc_rank == 0) print '(A,I0,A,ES11.4)', ' LSO: stretched x, ', lso_n_passes_xp, ' moment-exact passes, sigma_p ', sig_p
-
-    end subroutine s_lso_setup_x_weights
-
     impure subroutine s_finalize_lso_filter_module()
 
         integer :: i
 
         @:DEALLOCATE(lso_tmp)
-        if (allocated(lso_wx)) then
-            @:DEALLOCATE(lso_wx)
-        end if
 
         if (lso_filter_wrt) then
-            do i = 1, size(q_filt_vf)
+            do i = 1, sys_size
                 @:DEALLOCATE(q_filt_vf(i)%sf)
             end do
             @:DEALLOCATE(q_filt_vf)
@@ -264,7 +176,7 @@ contains
             end if
 
             if (lso_down_sample_factor > 1) then
-                do i = 1, size(q_filt_ds_vf)
+                do i = 1, sys_size
                     @:DEALLOCATE(q_filt_ds_vf(i)%sf)
                 end do
                 @:DEALLOCATE(q_filt_ds_vf)
@@ -279,8 +191,6 @@ contains
             end if
 
             if (lso_stat_wrt .and. n_lso_stat > 0) then
-                @:DEALLOCATE(q_lso_T_vf(1)%sf)
-                @:DEALLOCATE(q_lso_T_vf)
                 if (lso_down_sample_factor > 1) then
                     do i = 1, n_lso_stat
                         @:DEALLOCATE(q_lso_stat_ds_vf(i)%sf)
@@ -306,89 +216,26 @@ contains
 
     !> Copy q_cons_vf into q_filt_vf on the device and filter in place, leaving the original conserved array untouched for the
     !! primary write.
-    impure subroutine s_copy_and_apply_lso_filter(q_cons_vf, q_T_sf, beta)
+    impure subroutine s_copy_and_apply_lso_filter(q_cons_vf)
 
-        type(scalar_field), intent(inout)        :: q_cons_vf(:)
-        type(scalar_field), intent(in)           :: q_T_sf
-        type(scalar_field), intent(in), optional :: beta
-        integer                                  :: i, j, k, l
-        real(wp)                                 :: T
+        type(scalar_field), intent(inout) :: q_cons_vf(:)
+        integer                           :: i, j, k, l
 
         call nvtxStartRange("LSO-FILTER")
 
-        if (lso_stat_wrt .and. n_lso_stat > 0) then
-            call nvtxStartRange("LSO-FILTER-STAT")
-            ! Reuse the filter workspace for saved-state primitives, never the live RK state.
-            if (chemistry) then
-                $:GPU_PARALLEL_LOOP(collapse=3)
-                do l = 0, p
-                    do k = 0, n
-                        do j = 0, m
-                            q_lso_T_vf(1)%sf(j, k, l) = q_T_sf%sf(j, k, l)
-                        end do
-                    end do
-                end do
-                $:END_GPU_PARALLEL_LOOP()
-            end if
-            call s_convert_conservative_to_primitive_variables(q_cons_vf, q_lso_T_vf(1), q_filt_vf, idwint)
-            if (.not. chemistry) then
-                $:GPU_PARALLEL_LOOP(collapse=3, private='[T]')
-                do l = 0, p
-                    do k = 0, n
-                        do j = 0, m
-                            call s_lso_temperature(q_cons_vf, q_filt_vf, j, k, l, T)
-                            q_lso_T_vf(1)%sf(j, k, l) = real(T, stp)
-                        end do
-                    end do
-                end do
-                $:END_GPU_PARALLEL_LOOP()
-            end if
-            if ((viscous .and. lso_mu > 0._wp) .or. fluid_k_therm(1) > 0._wp .or. lso_conductivity > 0._wp) then
-                do i = 1, num_dims
-                    call s_lso_filter_ghost_refresh(q_cons_vf, i)
-                    call s_lso_filter_ghost_refresh(q_lso_T_vf, i)
-                end do
-            end if
-            call s_compute_lso_stat_fields(q_cons_vf, q_lso_T_vf(1))
-            call s_apply_lso_stat_filter()
-            if (lso_down_sample_factor > 1) then
-                do i = 1, num_dims
-                    call s_lso_stat_ghost_refresh(i)
-                end do
-            end if
-#ifndef FRONTIER_UNIFIED
-            do i = 1, n_lso_stat
-                $:GPU_UPDATE(host='[q_lso_stat_vf(i)%sf]')
-            end do
-#endif
-            call nvtxEndRange
-        end if
-
         call nvtxStartRange("LSO-FILTER-COPY")
-        $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
         do i = 1, sys_size
-            do l = 0, p
-                do k = 0, n
-                    do j = 0, m
+            $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
+            do l = idwbuff(3)%beg, idwbuff(3)%end
+                do k = idwbuff(2)%beg, idwbuff(2)%end
+                    do j = idwbuff(1)%beg, idwbuff(1)%end
                         q_filt_vf(i)%sf(j, k, l) = q_cons_vf(i)%sf(j, k, l)
                     end do
                 end do
             end do
-        end do
-        $:END_GPU_PARALLEL_LOOP()
-        call nvtxEndRange
-
-        if (present(beta)) then
-            $:GPU_PARALLEL_LOOP(collapse=3)
-            do l = 0, p
-                do k = 0, n
-                    do j = 0, m
-                        q_filt_vf(sys_size + 1)%sf(j, k, l) = beta%sf(j, k, l)
-                    end do
-                end do
-            end do
             $:END_GPU_PARALLEL_LOOP()
-        end if
+        end do
+        call nvtxEndRange
 
         if (ib) then
             ! Normalized convolution q_filt = filter(m*q)/filter(m) with the gas mask m (1 in fluid, 0 in solid).
@@ -406,8 +253,8 @@ contains
                 end do
             end do
             $:END_GPU_PARALLEL_LOOP()
-            $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
             do i = 1, sys_size
+                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                 do l = 0, p
                     do k = 0, n
                         do j = 0, m
@@ -416,8 +263,8 @@ contains
                         end do
                     end do
                 end do
+                $:END_GPU_PARALLEL_LOOP()
             end do
-            $:END_GPU_PARALLEL_LOOP()
             call nvtxEndRange
 
             call s_apply_lso_filter(q_filt_vf)
@@ -426,8 +273,8 @@ contains
             ! Normalize everywhere (the solid interior takes the fluid average). Under the two-stage
             ! pyramid the numerator and denominator stay unnormalized until s_lso_filter_stage2.
             if (lso2_n_passes_x <= 0) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, sys_size
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 0, n
                             do j = 0, m
@@ -436,19 +283,29 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             end if
         else
             call s_apply_lso_filter(q_filt_vf)
         end if
 
-        ! Coarse samples of rank-edge cells read fine ghosts (s_lso_stride_sample).
-        if (lso_down_sample_factor > 1) then
-            do i = 1, num_dims
-                call s_lso_filter_ghost_refresh(q_filt_vf, i)
-                if (ib) call s_lso_filter_ghost_refresh(q_lso_mask_vf, i)
+        if (lso_stat_wrt .and. n_lso_stat > 0) then
+            call nvtxStartRange("LSO-FILTER-STAT")
+            ! Refresh q_cons_vf rank-boundary ghost cells before the Pass 2 centred differences:
+            ! ghosts may otherwise hold an intermediate RK sub-step rather than the updated interior.
+            call s_lso_filter_ghost_refresh(q_cons_vf, 1)
+            if (n > 0) call s_lso_filter_ghost_refresh(q_cons_vf, 2)
+            if (p > 0) call s_lso_filter_ghost_refresh(q_cons_vf, 3)
+            call s_compute_lso_stat_fields(q_cons_vf)
+            call s_apply_lso_stat_filter()
+#ifndef FRONTIER_UNIFIED
+            ! Pull filtered stat fields back to host for the file write.
+            do i = 1, n_lso_stat
+                $:GPU_UPDATE(host='[q_lso_stat_vf(i)%sf]')
             end do
+#endif
+            call nvtxEndRange
         end if
 
         call nvtxEndRange
@@ -463,18 +320,14 @@ contains
     impure subroutine s_apply_lso_filter(q_cons_vf)
 
         type(scalar_field), intent(inout) :: q_cons_vf(:)
-        integer                           :: i, ipass, j, k, l, nv, sx
-        real(wp)                          :: c0, c1, c2, c3, c4, qs
+        integer                           :: i, ipass, j, k, l, nv
+        real(wp)                          :: c0, c1, c2, c3, c4
 
         nv = size(q_cons_vf)
-        if (.not. lso_x_ready) call s_lso_setup_x_weights()
 
         call nvtxStartRange("LSO-FILTER-X")
         call s_lso_filter_ghost_refresh(q_cons_vf, 1)
-        if (lso_x_phys) then
-            $:LSO_X_PHYS_PASSES('q_cons_vf', 'nv', 's_lso_filter_ghost_refresh(q_cons_vf, 1)')
-        end if
-        do ipass = 1, merge(0, lso_n_passes_x, lso_x_phys)
+        do ipass = 1, lso_n_passes_x
             c0 = lso_a_x(1, ipass)
             c1 = lso_a_x(2, ipass)
             c2 = lso_a_x(3, ipass)
@@ -597,79 +450,66 @@ contains
     !> Resample q_src_vf into the (pre-allocated) q_dst_vf onto the coarsened grid using trilinear interpolation. Output cell j maps
     !! to source position j*m/m_lso_ds (uniformly spaced from 0 to m), so the first and last cells are always exact and the domain
     !! is fully preserved regardless of divisibility by the stride factor.
-    !> Local fine-index position of coarse cell c (local) in direction d: the index midpoint of its factor fine cells, or on a
-    !! stretched x grid the fine-cell pair around its physical centre, so samples sit at the centres post_process assigns.
-    function f_lso_fine_pos(d, c, sidx) result(pos)
-
-        integer, intent(in) :: d, c, sidx(3)
-        real(wp)            :: pos, xc
-        integer             :: f, i0, j
-
-        f = lso_down_sample_factor
-        i0 = f*(lso_ds_lo(d) + c) - sidx(d)
-        pos = real(i0, wp) + 0.5_wp*real(f - 1, wp)
-        if (d /= 1 .or. .not. lso_x_phys) return
-        xc = 0.5_wp*(x_cb(i0 - 1) + x_cb(i0 + f - 1))
-        j = i0
-        do while (j < i0 + f - 2 .and. x_cc(j + 1) <= xc)
-            j = j + 1
-        end do
-        pos = real(j, wp) + (xc - x_cc(j))/(x_cc(j + 1) - x_cc(j))
-
-    end function f_lso_fine_pos
-
-    !> Sample the filtered fine fields at the coarse cell centres (multilinear between the two nearest fine cells). A coarse cell
-    !! belongs to the rank holding its first fine cell, so samples may read up to factor - 1 refreshed ghost cells.
     impure subroutine s_lso_stride_sample(q_src_vf, q_dst_vf)
 
         type(scalar_field), intent(in)    :: q_src_vf(:)
         type(scalar_field), intent(inout) :: q_dst_vf(:)
-        integer                           :: i, j, k, l, sidx(3)
-        integer                           :: j0(0:m_lso_ds), k0(0:n_lso_ds), l0(0:p_lso_ds)
-        real(wp)                          :: wj(0:m_lso_ds), wk(0:n_lso_ds), wl(0:p_lso_ds), pos
+        integer                           :: i, j, k, l, nv
+        integer                           :: j0, j1, k0, k1, l0, l1
+        integer                           :: sidx(3)
+        real(wp)                          :: alpha, beta, gamma_pos, wj, wk, wl
+
+        ! Global offset of this rank's block (start_idx is only allocated with parallel_io).
 
         sidx = 0
         if (allocated(start_idx)) sidx(1:size(start_idx)) = start_idx
-        do j = 0, m_lso_ds
-            pos = f_lso_fine_pos(1, j, sidx); j0(j) = floor(pos); wj(j) = pos - real(j0(j), wp)
-        end do
-        k0 = 0; wk = 0._wp; l0 = 0; wl = 0._wp
-        do k = 0, merge(n_lso_ds, -1, n > 0)
-            pos = f_lso_fine_pos(2, k, sidx); k0(k) = floor(pos); wk(k) = pos - real(k0(k), wp)
-        end do
-        do l = 0, merge(p_lso_ds, -1, p > 0)
-            pos = f_lso_fine_pos(3, l, sidx); l0(l) = floor(pos); wl(l) = pos - real(l0(l), wp)
-        end do
 
-        do i = 1, size(q_src_vf)
+        nv = size(q_src_vf)
+        do i = 1, nv
             do l = 0, p_lso_ds
+                ! Sample at the coarse-cell centres: fine position (J + 1/2)(m_glb + 1)/(m_glb_ds + 1) - 1/2 for the
+                ! global coarse index J = start_idx/factor + j, so the sample spacing equals the coarse cell size
+                ! (interior-only reads for factor >= 2).
+                if (p_lso_ds > 0) then
+                    gamma_pos = (real(sidx(3)/lso_down_sample_factor + l, wp) + 0.5_wp)*real(p_glb + 1, &
+                                 & wp)/real(p_glb_lso_ds + 1, wp) - 0.5_wp - real(sidx(3), wp)
+                    l0 = floor(gamma_pos); l1 = l0 + 1; wl = gamma_pos - real(l0, wp)
+                else
+                    l0 = 0; l1 = 0; wl = 0._wp
+                end if
+
                 do k = 0, n_lso_ds
+                    if (n_lso_ds > 0) then
+                        beta = (real(sidx(2)/lso_down_sample_factor + k, wp) + 0.5_wp)*real(n_glb + 1, wp)/real(n_glb_lso_ds + 1, &
+                                & wp) - 0.5_wp - real(sidx(2), wp)
+                        k0 = floor(beta); k1 = k0 + 1; wk = beta - real(k0, wp)
+                    else
+                        k0 = 0; k1 = 0; wk = 0._wp
+                    end if
+
                     do j = 0, m_lso_ds
-                        q_dst_vf(i)%sf(j, k, l) = real(f_trilinear(q_src_vf(i), j0(j), k0(k), l0(l), wj(j), wk(k), wl(l)), stp)
+                        if (m_lso_ds > 0) then
+                            alpha = (real(sidx(1)/lso_down_sample_factor + j, wp) + 0.5_wp)*real(m_glb + 1, &
+                                     & wp)/real(m_glb_lso_ds + 1, wp) - 0.5_wp - real(sidx(1), wp)
+                            j0 = floor(alpha); j1 = j0 + 1; wj = alpha - real(j0, wp)
+                        else
+                            j0 = 0; j1 = 0; wj = 0._wp
+                        end if
+
+                        q_dst_vf(i)%sf(j, k, l) = real((1._wp - wj)*(1._wp - wk)*(1._wp - wl)*real(q_src_vf(i)%sf(j0, k0, l0), &
+                                 & wp) + wj*(1._wp - wk)*(1._wp - wl)*real(q_src_vf(i)%sf(j1, k0, l0), &
+                                 & wp) + (1._wp - wj)*wk*(1._wp - wl)*real(q_src_vf(i)%sf(j0, k1, l0), &
+                                 & wp) + wj*wk*(1._wp - wl)*real(q_src_vf(i)%sf(j1, k1, l0), &
+                                 & wp) + (1._wp - wj)*(1._wp - wk)*wl*real(q_src_vf(i)%sf(j0, k0, l1), &
+                                 & wp) + wj*(1._wp - wk)*wl*real(q_src_vf(i)%sf(j1, k0, l1), &
+                                 & wp) + (1._wp - wj)*wk*wl*real(q_src_vf(i)%sf(j0, k1, l1), &
+                                 & wp) + wj*wk*wl*real(q_src_vf(i)%sf(j1, k1, l1), wp), stp)
                     end do
                 end do
             end do
         end do
 
     end subroutine s_lso_stride_sample
-
-    !> Multilinear value between fine cells (a, b, c) and (a+1, b+1, c+1) with fractional weights; inactive directions have zero
-    !! weight and never read their + 1 neighbour.
-    function f_trilinear(q, a, b, c, wa, wb, wc) result(v)
-
-        type(scalar_field), intent(in) :: q
-        integer, intent(in)            :: a, b, c
-        real(wp), intent(in)           :: wa, wb, wc
-        real(wp)                       :: v
-        integer                        :: b1, c1
-
-        b1 = merge(b + 1, b, wb > 0._wp); c1 = merge(c + 1, c, wc > 0._wp)
-        v = (1._wp - wc)*((1._wp - wb)*((1._wp - wa)*real(q%sf(a, b, c), wp) + wa*real(q%sf(a + 1, b, c), &
-             & wp)) + wb*((1._wp - wa)*real(q%sf(a, b1, c), wp) + wa*real(q%sf(a + 1, b1, c), &
-             & wp))) + wc*((1._wp - wb)*((1._wp - wa)*real(q%sf(a, b, c1), wp) + wa*real(q%sf(a + 1, b, c1), &
-             & wp)) + wb*((1._wp - wa)*real(q%sf(a, b1, c1), wp) + wa*real(q%sf(a + 1, b1, c1), wp)))
-
-    end function f_trilinear
 
     !> Host halo refresh for the coarse (decimated) grid used by the stage-2 pyramid cascade: MPI exchange of lso_crs_gw layers on
     !! decomposed directions (sequential counter packing, identical nesting on pack and unpack), then periodic wrap or edge clamp
@@ -1013,9 +853,9 @@ contains
         ! BC_GHOST_EXTRAP: re-extrapolate from the filtered edge cell each pass.
         select case (mpi_dir)
         case (1)
-            if (beg_bc == BC_GHOST_EXTRAP .or. (beg_bc < 0 .and. beg_bc /= BC_PERIODIC)) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
+            if (beg_bc == BC_GHOST_EXTRAP) then
                 do i = 1, nv
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 0, n
                             do j = 1, buff_size
@@ -1023,11 +863,11 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             else if (beg_bc == BC_PERIODIC) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 0, n
                             do j = 1, buff_size
@@ -1035,12 +875,12 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             end if
-            if (end_bc == BC_GHOST_EXTRAP .or. (end_bc < 0 .and. end_bc /= BC_PERIODIC)) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
+            if (end_bc == BC_GHOST_EXTRAP) then
                 do i = 1, nv
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 0, n
                             do j = 1, buff_size
@@ -1048,11 +888,11 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             else if (end_bc == BC_PERIODIC) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 0, n
                             do j = 1, buff_size
@@ -1060,15 +900,15 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             end if
 #ifdef MFC_MPI
 #endif
         case (2)
-            if (beg_bc == BC_GHOST_EXTRAP .or. (beg_bc < 0 .and. beg_bc /= BC_PERIODIC)) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
+            if (beg_bc == BC_GHOST_EXTRAP) then
                 do i = 1, nv
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 1, buff_size
                             do j = 0, m
@@ -1076,11 +916,11 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             else if (beg_bc == BC_PERIODIC) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 1, buff_size
                             do j = 0, m
@@ -1088,12 +928,12 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             end if
-            if (end_bc == BC_GHOST_EXTRAP .or. (end_bc < 0 .and. end_bc /= BC_PERIODIC)) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
+            if (end_bc == BC_GHOST_EXTRAP) then
                 do i = 1, nv
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 1, buff_size
                             do j = 0, m
@@ -1101,11 +941,11 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             else if (end_bc == BC_PERIODIC) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
                         do k = 1, buff_size
                             do j = 0, m
@@ -1113,15 +953,15 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             end if
 #ifdef MFC_MPI
 #endif
         case (3)
-            if (beg_bc == BC_GHOST_EXTRAP .or. (beg_bc < 0 .and. beg_bc /= BC_PERIODIC)) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
+            if (beg_bc == BC_GHOST_EXTRAP) then
                 do i = 1, nv
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 1, buff_size
                         do k = 0, n
                             do j = 0, m
@@ -1129,11 +969,11 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             else if (beg_bc == BC_PERIODIC) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 1, buff_size
                         do k = 0, n
                             do j = 0, m
@@ -1141,12 +981,12 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             end if
-            if (end_bc == BC_GHOST_EXTRAP .or. (end_bc < 0 .and. end_bc /= BC_PERIODIC)) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
+            if (end_bc == BC_GHOST_EXTRAP) then
                 do i = 1, nv
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 1, buff_size
                         do k = 0, n
                             do j = 0, m
@@ -1154,11 +994,11 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             else if (end_bc == BC_PERIODIC) then
-                $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, nv
+                    $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 1, buff_size
                         do k = 0, n
                             do j = 0, m
@@ -1166,8 +1006,8 @@ contains
                             end do
                         end do
                     end do
+                    $:END_GPU_PARALLEL_LOOP()
                 end do
-                $:END_GPU_PARALLEL_LOOP()
             end if
 #ifdef MFC_MPI
 #endif
@@ -1175,37 +1015,12 @@ contains
 
     end subroutine s_lso_filter_ghost_refresh
 
-    !> Build the 9/19/31 stat product fields used by the LES closure. Pass 1 fills the algebraic moments (phi_p, u_p, rho*u,
-    !! rho*u*u, rho*u*|u|^2, rho*u*T). Pass 2 adds tau_ij, q_i, and (tau*u)_i from centred gradients when either viscosity or
-    !! conductivity is active. masked by gas_mask = 1 - phi_p. Both passes run on the GPU.
-    subroutine s_lso_temperature(q_cons_vf, q_prim_vf, j, k, l, T)
-
-        $:GPU_ROUTINE(parallelism='[seq]')
-
-        type(scalar_field), intent(in) :: q_cons_vf(:), q_prim_vf(:)
-        integer, intent(in)            :: j, k, l
-        real(wp), intent(out)          :: T
-        real(wp)                       :: alpha_phase, rho_phase, pres
-
-        pres = real(q_prim_vf(eqn_idx%E)%sf(j, k, l), wp)
-        if (model_eqns == model_eqns_gamma_law) then
-            alpha_phase = 1._wp
-        else
-            alpha_phase = max(real(q_cons_vf(eqn_idx%E + 1)%sf(j, k, l), wp), sgm_eps)
-        end if
-        rho_phase = real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l), wp)/alpha_phase
-        if (eoss(1) == eos_stiffened_gas .or. eoss(1) == eos_ideal_gas) then
-            T = (pres + isentrope_B(1))/(lso_R_gas*rho_phase)
-        else
-            call s_phase_temperature(rho_phase, pres, 1, T)
-        end if
-
-    end subroutine s_lso_temperature
-
-    impure subroutine s_compute_lso_stat_fields(q_cons_vf, q_T_sf)
+    !> Build the 12/23/36 stat product fields used by the LES closure. Pass 1 fills the algebraic moments (phi_p, u_p, rho*u,
+    !! rho*u*u, rho*u*|u|^2, rho*u*T, u). Pass 2 (viscous .and. lso_mu > 0) adds tau_ij, q_i, and (tau*u)_i from centred gradients,
+    !! masked by gas_mask = 1 - phi_p. Both passes run on the GPU.
+    impure subroutine s_compute_lso_stat_fields(q_cons_vf)
 
         type(scalar_field), intent(in) :: q_cons_vf(:)
-        type(scalar_field), intent(in) :: q_T_sf
         integer                        :: i, j, k, l, ib_id
         ! Pass 2 loop bounds (narrowed away from physical boundaries, same logic as s_apply_lso_stat_filter).
         integer  :: j_beg_x, j_end_x
@@ -1214,7 +1029,7 @@ contains
         real(wp) :: rho, rho_loc
         real(wp) :: mom1, mom2, mom3
         real(wp) :: u1, u2, u3
-        real(wp) :: T_loc
+        real(wp) :: E_loc, ke, e_int, T_loc
         real(wp) :: phi_p, gas_mask
         real(wp) :: up1, up2, up3
         ! Gradient quantities (viscous pass)
@@ -1235,26 +1050,17 @@ contains
 
         ! Pass 1: algebraic products.
 
-        $:GPU_PARALLEL_LOOP(collapse=3, private='[i, j, k, l, ib_id, phi_p, gas_mask, up1, up2, up3, rho, mom1, mom2, mom3, u1, &
-                            & u2, u3, T_loc]')
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
         do l = 0, p
             do k = 0, n
                 do j = 0, m
-                    if (ib) then
-                        if (ib_markers%sf(j, k, l) > 0) then
-                            ib_id = ib_markers%sf(j, k, l)
-                            phi_p = 1._wp
-                            gas_mask = 0._wp
-                            up1 = patch_ib(ib_id)%vel(1)
-                            up2 = patch_ib(ib_id)%vel(2)
-                            up3 = patch_ib(ib_id)%vel(3)
-                        else
-                            phi_p = 0._wp
-                            gas_mask = 1._wp
-                            up1 = 0._wp
-                            up2 = 0._wp
-                            up3 = 0._wp
-                        end if
+                    if (ib .and. ib_markers%sf(j, k, l) > 0) then
+                        ib_id = ib_markers%sf(j, k, l)
+                        phi_p = 1._wp
+                        gas_mask = 0._wp
+                        up1 = patch_ib(ib_id)%vel(1)
+                        up2 = patch_ib(ib_id)%vel(2)
+                        up3 = patch_ib(ib_id)%vel(3)
                     else
                         phi_p = 0._wp
                         gas_mask = 1._wp
@@ -1275,10 +1081,14 @@ contains
                     else
                         mom3 = 0._wp
                     end if
+                    E_loc = real(q_cons_vf(eqn_idx%E)%sf(j, k, l), wp)
+
                     u1 = mom1/rho
                     u2 = mom2/rho
                     u3 = mom3/rho
-                    T_loc = real(q_T_sf%sf(j, k, l), wp)
+                    ke = 0.5_wp*(mom1**2 + mom2**2 + mom3**2)/rho
+                    e_int = (E_loc - ke)/rho
+                    T_loc = e_int/(gammas(1)*lso_R_gas)
 
                     ! phi_p, rho scalar, rhoke scalar, u_p
                     q_lso_stat_vf(lso_stat_phi_p_beg)%sf(j, k, l) = real(phi_p, stp)
@@ -1317,6 +1127,7 @@ contains
                     if (n > 0) q_lso_stat_vf(lso_stat_rhouT_beg + 1)%sf(j, k, l) = real(gas_mask*mom2*T_loc, stp)
                     if (p > 0) q_lso_stat_vf(lso_stat_rhouT_beg + 2)%sf(j, k, l) = real(gas_mask*mom3*T_loc, stp)
 
+                    ! gas_mask*u: F[g u] + F[phi_p u_p] is the mixture velocity of the residual viscous stress
                     q_lso_stat_vf(lso_stat_gu_beg)%sf(j, k, l) = real(gas_mask*u1, stp)
                     if (n > 0) q_lso_stat_vf(lso_stat_gu_beg + 1)%sf(j, k, l) = real(gas_mask*u2, stp)
                     if (p > 0) q_lso_stat_vf(lso_stat_gu_beg + 2)%sf(j, k, l) = real(gas_mask*u3, stp)
@@ -1353,11 +1164,10 @@ contains
         if (bc_z%beg < 0 .and. bc_z%beg /= BC_PERIODIC) l_beg_z = buff_size
         if (bc_z%end < 0 .and. bc_z%end /= BC_PERIODIC) l_end_z = p - buff_size
 
-        if ((viscous .and. lso_mu > 0._wp) .or. fluid_k_therm(1) > 0._wp .or. lso_conductivity > 0._wp) then
+        if (viscous .and. lso_mu > 0._wp) then
             if (n == 0) then
                 ! 1D: x-gradients only.
-                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, rho_loc, gas_mask, rho_jm, rho_jp, u1_jm, u1_jp, T_jm, T_jp, &
-                                    & dx, du1dx, dTdx, tau11, q1, u1, fprop, mu_loc, k_loc]')
+                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                 do l = 0, p
                     do k = 0, n
                         do j = j_beg_x, j_end_x
@@ -1366,25 +1176,30 @@ contains
 
                             rho_jm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j - 1, 0, 0), wp), sgm_eps)
                             u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, 0, 0), wp)/rho_jm
-                            T_jm = real(q_T_sf%sf(j - 1, 0, 0), wp)
+                            T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, 0, 0), &
+                                    & wp) - 0.5_wp*u1_jm**2*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
 
                             rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, 0, 0), wp), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, 0, 0), wp)/rho_jp
-                            T_jp = real(q_T_sf%sf(j + 1, 0, 0), wp)
+                            T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, 0, 0), &
+                                    & wp) - 0.5_wp*u1_jp**2*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
 
                             dx = x_cc(j + 1) - x_cc(j - 1)
                             du1dx = (u1_jp - u1_jm)/dx
                             dTdx = (T_jp - T_jm)/dx
 
+                            u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, 0, 0), wp)/rho_loc
+                            ! mu(T), lambda(T) at the cell temperature (power law, constant Pr; 1 when lso_mu_T_exp = 0)
+                            T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, 0, 0), &
+                                     & wp) - 0.5_wp*(u1**2)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
                             fprop = 1._wp
-                            if (lso_mu_T_exp > 0._wp) fprop = (max(real(q_T_sf%sf(j, k, l), wp), &
-                                & sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
+                            if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
                             mu_loc = fprop*lso_mu
-                            k_loc = fprop*merge(lso_conductivity, fluid_k_therm(1), lso_conductivity > 0._wp)
+                            k_loc = fprop*lso_conductivity
+
+                            ! 1D: 2 du/dx - (2/3) div u = (4/3) du/dx, the same Stokes form as 2D/3D and the closure
                             tau11 = mu_loc*(4._wp/3._wp)*du1dx
                             q1 = -k_loc*dTdx
-
-                            u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, 0, 0), wp)/rho_loc
 
                             q_lso_stat_vf(lso_stat_tau_beg)%sf(j, 0, 0) = real(gas_mask*tau11, stp)
                             q_lso_stat_vf(lso_stat_q_beg)%sf(j, 0, 0) = real(gas_mask*q1, stp)
@@ -1395,9 +1210,7 @@ contains
                 $:END_GPU_PARALLEL_LOOP()
             else if (p == 0) then
                 ! 2D: x- and y-gradients.
-                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, rho_loc, gas_mask, rho_jm, rho_jp, rho_km, rho_kp, u1_jm, &
-                                    & u1_jp, u1_km, u1_kp, u2_jm, u2_jp, u2_km, u2_kp, T_jm, T_jp, T_km, T_kp, dx, dy, du1dx, &
-                                    & du1dy, du2dx, du2dy, dTdx, dTdy, div_u, tau11, tau12, tau22, q1, q2, u1, u2, fprop, mu_loc, k_loc]')
+                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                 do l = 0, p
                     do k = k_beg_y, k_end_y
                         do j = j_beg_x, j_end_x
@@ -1407,22 +1220,26 @@ contains
                             rho_jm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j - 1, k, 0), wp), sgm_eps)
                             u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, k, 0), wp)/rho_jm
                             u2_jm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j - 1, k, 0), wp)/rho_jm
-                            T_jm = real(q_T_sf%sf(j - 1, k, 0), wp)
+                            T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, k, 0), &
+                                    & wp) - 0.5_wp*(u1_jm**2 + u2_jm**2)*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
 
                             rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, k, 0), wp), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, k, 0), wp)/rho_jp
                             u2_jp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j + 1, k, 0), wp)/rho_jp
-                            T_jp = real(q_T_sf%sf(j + 1, k, 0), wp)
+                            T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, k, 0), &
+                                    & wp) - 0.5_wp*(u1_jp**2 + u2_jp**2)*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
 
                             rho_km = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k - 1, 0), wp), sgm_eps)
                             u1_km = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k - 1, 0), wp)/rho_km
                             u2_km = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k - 1, 0), wp)/rho_km
-                            T_km = real(q_T_sf%sf(j, k - 1, 0), wp)
+                            T_km = (real(q_cons_vf(eqn_idx%E)%sf(j, k - 1, 0), &
+                                    & wp) - 0.5_wp*(u1_km**2 + u2_km**2)*rho_km)/(rho_km*gammas(1)*lso_R_gas)
 
                             rho_kp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k + 1, 0), wp), sgm_eps)
                             u1_kp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k + 1, 0), wp)/rho_kp
                             u2_kp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k + 1, 0), wp)/rho_kp
-                            T_kp = real(q_T_sf%sf(j, k + 1, 0), wp)
+                            T_kp = (real(q_cons_vf(eqn_idx%E)%sf(j, k + 1, 0), &
+                                    & wp) - 0.5_wp*(u1_kp**2 + u2_kp**2)*rho_kp)/(rho_kp*gammas(1)*lso_R_gas)
 
                             dx = x_cc(j + 1) - x_cc(j - 1)
                             dy = y_cc(k + 1) - y_cc(k - 1)
@@ -1434,20 +1251,22 @@ contains
                             dTdx = (T_jp - T_jm)/dx
                             dTdy = (T_kp - T_km)/dy
 
-                            div_u = du1dx + du2dy
+                            u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, 0), wp)/rho_loc
+                            u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, 0), wp)/rho_loc
+                            ! mu(T), lambda(T) at the cell temperature (power law, constant Pr; 1 when lso_mu_T_exp = 0)
+                            T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, k, 0), &
+                                     & wp) - 0.5_wp*(u1**2 + u2**2)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
                             fprop = 1._wp
-                            if (lso_mu_T_exp > 0._wp) fprop = (max(real(q_T_sf%sf(j, k, l), wp), &
-                                & sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
+                            if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
                             mu_loc = fprop*lso_mu
-                            k_loc = fprop*merge(lso_conductivity, fluid_k_therm(1), lso_conductivity > 0._wp)
+                            k_loc = fprop*lso_conductivity
+
+                            div_u = du1dx + du2dy
                             tau11 = mu_loc*(2._wp*du1dx - (2._wp/3._wp)*div_u)
                             tau12 = mu_loc*(du1dy + du2dx)
                             tau22 = mu_loc*(2._wp*du2dy - (2._wp/3._wp)*div_u)
                             q1 = -k_loc*dTdx
                             q2 = -k_loc*dTdy
-
-                            u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, 0), wp)/rho_loc
-                            u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, 0), wp)/rho_loc
 
                             q_lso_stat_vf(lso_stat_tau_beg)%sf(j, k, 0) = real(gas_mask*tau11, stp)
                             q_lso_stat_vf(lso_stat_tau_beg + 1)%sf(j, k, 0) = real(gas_mask*tau12, stp)
@@ -1462,11 +1281,7 @@ contains
                 $:END_GPU_PARALLEL_LOOP()
             else
                 ! 3D: x-, y-, and z-gradients.
-                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l, rho_loc, gas_mask, rho_jm, rho_jp, rho_km, rho_kp, rho_lm, &
-                                    & rho_lp, u1_jm, u1_jp, u1_km, u1_kp, u1_lm, u1_lp, u2_jm, u2_jp, u2_km, u2_kp, u2_lm, u2_lp, &
-                                    & u3_jm, u3_jp, u3_km, u3_kp, u3_lm, u3_lp, T_jm, T_jp, T_km, T_kp, T_lm, T_lp, dx, dy, dz, &
-                                    & du1dx, du1dy, du1dz, du2dx, du2dy, du2dz, du3dx, du3dy, du3dz, dTdx, dTdy, dTdz, div_u, &
-                                    & tau11, tau12, tau13, tau22, tau23, tau33, q1, q2, q3, u1, u2, u3, fprop, mu_loc, k_loc]')
+                $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                 do l = l_beg_z, l_end_z
                     do k = k_beg_y, k_end_y
                         do j = j_beg_x, j_end_x
@@ -1477,37 +1292,43 @@ contains
                             u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, k, l), wp)/rho_jm
                             u2_jm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j - 1, k, l), wp)/rho_jm
                             u3_jm = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j - 1, k, l), wp)/rho_jm
-                            T_jm = real(q_T_sf%sf(j - 1, k, l), wp)
+                            T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, k, l), &
+                                    & wp) - 0.5_wp*(u1_jm**2 + u2_jm**2 + u3_jm**2)*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
 
                             rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, k, l), wp), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, k, l), wp)/rho_jp
                             u2_jp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j + 1, k, l), wp)/rho_jp
                             u3_jp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j + 1, k, l), wp)/rho_jp
-                            T_jp = real(q_T_sf%sf(j + 1, k, l), wp)
+                            T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, k, l), &
+                                    & wp) - 0.5_wp*(u1_jp**2 + u2_jp**2 + u3_jp**2)*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
 
                             rho_km = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k - 1, l), wp), sgm_eps)
                             u1_km = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k - 1, l), wp)/rho_km
                             u2_km = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k - 1, l), wp)/rho_km
                             u3_km = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k - 1, l), wp)/rho_km
-                            T_km = real(q_T_sf%sf(j, k - 1, l), wp)
+                            T_km = (real(q_cons_vf(eqn_idx%E)%sf(j, k - 1, l), &
+                                    & wp) - 0.5_wp*(u1_km**2 + u2_km**2 + u3_km**2)*rho_km)/(rho_km*gammas(1)*lso_R_gas)
 
                             rho_kp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k + 1, l), wp), sgm_eps)
                             u1_kp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k + 1, l), wp)/rho_kp
                             u2_kp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k + 1, l), wp)/rho_kp
                             u3_kp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k + 1, l), wp)/rho_kp
-                            T_kp = real(q_T_sf%sf(j, k + 1, l), wp)
+                            T_kp = (real(q_cons_vf(eqn_idx%E)%sf(j, k + 1, l), &
+                                    & wp) - 0.5_wp*(u1_kp**2 + u2_kp**2 + u3_kp**2)*rho_kp)/(rho_kp*gammas(1)*lso_R_gas)
 
                             rho_lm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l - 1), wp), sgm_eps)
                             u1_lm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l - 1), wp)/rho_lm
                             u2_lm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l - 1), wp)/rho_lm
                             u3_lm = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l - 1), wp)/rho_lm
-                            T_lm = real(q_T_sf%sf(j, k, l - 1), wp)
+                            T_lm = (real(q_cons_vf(eqn_idx%E)%sf(j, k, l - 1), &
+                                    & wp) - 0.5_wp*(u1_lm**2 + u2_lm**2 + u3_lm**2)*rho_lm)/(rho_lm*gammas(1)*lso_R_gas)
 
                             rho_lp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l + 1), wp), sgm_eps)
                             u1_lp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l + 1), wp)/rho_lp
                             u2_lp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l + 1), wp)/rho_lp
                             u3_lp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l + 1), wp)/rho_lp
-                            T_lp = real(q_T_sf%sf(j, k, l + 1), wp)
+                            T_lp = (real(q_cons_vf(eqn_idx%E)%sf(j, k, l + 1), &
+                                    & wp) - 0.5_wp*(u1_lp**2 + u2_lp**2 + u3_lp**2)*rho_lp)/(rho_lp*gammas(1)*lso_R_gas)
 
                             dx = x_cc(j + 1) - x_cc(j - 1)
                             dy = y_cc(k + 1) - y_cc(k - 1)
@@ -1526,12 +1347,18 @@ contains
                             dTdy = (T_kp - T_km)/dy
                             dTdz = (T_lp - T_lm)/dz
 
-                            div_u = du1dx + du2dy + du3dz
+                            u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l), wp)/rho_loc
+                            u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l), wp)/rho_loc
+                            u3 = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l), wp)/rho_loc
+                            ! mu(T), lambda(T) at the cell temperature (power law, constant Pr; 1 when lso_mu_T_exp = 0)
+                            T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, k, l), &
+                                     & wp) - 0.5_wp*(u1**2 + u2**2 + u3**2)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
                             fprop = 1._wp
-                            if (lso_mu_T_exp > 0._wp) fprop = (max(real(q_T_sf%sf(j, k, l), wp), &
-                                & sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
+                            if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
                             mu_loc = fprop*lso_mu
-                            k_loc = fprop*merge(lso_conductivity, fluid_k_therm(1), lso_conductivity > 0._wp)
+                            k_loc = fprop*lso_conductivity
+
+                            div_u = du1dx + du2dy + du3dz
                             tau11 = mu_loc*(2._wp*du1dx - (2._wp/3._wp)*div_u)
                             tau12 = mu_loc*(du1dy + du2dx)
                             tau13 = mu_loc*(du1dz + du3dx)
@@ -1541,10 +1368,6 @@ contains
                             q1 = -k_loc*dTdx
                             q2 = -k_loc*dTdy
                             q3 = -k_loc*dTdz
-
-                            u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l), wp)/rho_loc
-                            u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l), wp)/rho_loc
-                            u3 = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l), wp)/rho_loc
 
                             q_lso_stat_vf(lso_stat_tau_beg)%sf(j, k, l) = real(gas_mask*tau11, stp)
                             q_lso_stat_vf(lso_stat_tau_beg + 1)%sf(j, k, l) = real(gas_mask*tau12, stp)
@@ -1572,19 +1395,23 @@ contains
     end subroutine s_compute_lso_stat_fields
 
     !> LSO filter pass on q_lso_stat_vf (analogous to s_apply_lso_filter for q_cons_vf). Stencil runs on the GPU; the inter-pass
-    !! halo exchange goes through the host because n_lso_stat does not fit the global MPI buffers. Use the same interior extent and
-    !! physical-boundary extrapolation as the flow and mask filters to preserve complementary volume fractions.
+    !! halo exchange goes through the host because n_lso_stat does not fit the global MPI buffers. Cells within buff_size of a
+    !! physical (non-MPI) boundary are left at their original values.
     impure subroutine s_apply_lso_stat_filter()
 
-        integer  :: i, ipass, j, k, l, sx
-        real(wp) :: c0, c1, c2, c3, c4, qs
+        integer  :: i, ipass, j, k, l
+        real(wp) :: c0, c1, c2, c3, c4
+        ! Filter range per direction (shrinks at physical boundaries).
+        integer :: j_beg_x, j_end_x
+        integer :: k_beg_y, k_end_y
+        integer :: l_beg_z, l_end_z
 
-        if (.not. lso_x_ready) call s_lso_setup_x_weights()
+        j_beg_x = 0; j_end_x = m
+        if (bc_x%beg < 0 .and. bc_x%beg /= BC_PERIODIC) j_beg_x = buff_size
+        if (bc_x%end < 0 .and. bc_x%end /= BC_PERIODIC) j_end_x = m - buff_size
+
         call s_lso_stat_ghost_refresh(1)
-        if (lso_x_phys) then
-            $:LSO_X_PHYS_PASSES('q_lso_stat_vf', 'n_lso_stat', 's_lso_stat_ghost_refresh(1)')
-        end if
-        do ipass = 1, merge(0, lso_n_passes_x, lso_x_phys)
+        do ipass = 1, lso_n_passes_x
             c0 = lso_a_x(1, ipass)
             c1 = lso_a_x(2, ipass)
             c2 = lso_a_x(3, ipass)
@@ -1594,7 +1421,7 @@ contains
                 $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                 do l = 0, p
                     do k = 0, n
-                        do j = 0, m
+                        do j = j_beg_x, j_end_x
                             lso_tmp(j, k, l) = c0*real(q_lso_stat_vf(i)%sf(j, k, l), wp) + c1*(real(q_lso_stat_vf(i)%sf(j - 1, k, &
                                     & l), wp) + real(q_lso_stat_vf(i)%sf(j + 1, k, l), wp)) + c2*(real(q_lso_stat_vf(i)%sf(j - 2, &
                                     & k, l), wp) + real(q_lso_stat_vf(i)%sf(j + 2, k, l), &
@@ -1608,7 +1435,7 @@ contains
                 $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                 do l = 0, p
                     do k = 0, n
-                        do j = 0, m
+                        do j = j_beg_x, j_end_x
                             q_lso_stat_vf(i)%sf(j, k, l) = real(lso_tmp(j, k, l), stp)
                         end do
                     end do
@@ -1621,6 +1448,10 @@ contains
         end do
 
         if (n > 0) then
+            k_beg_y = 0; k_end_y = n
+            if (bc_y%beg < 0 .and. bc_y%beg /= BC_PERIODIC) k_beg_y = buff_size
+            if (bc_y%end < 0 .and. bc_y%end /= BC_PERIODIC) k_end_y = n - buff_size
+
             call s_lso_stat_ghost_refresh(2)
             do ipass = 1, lso_n_passes_y
                 c0 = lso_a_y(1, ipass)
@@ -1631,7 +1462,7 @@ contains
                 do i = 1, n_lso_stat
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
-                        do k = 0, n
+                        do k = k_beg_y, k_end_y
                             do j = 0, m
                                 lso_tmp(j, k, l) = c0*real(q_lso_stat_vf(i)%sf(j, k, l), wp) + c1*(real(q_lso_stat_vf(i)%sf(j, &
                                         & k - 1, l), wp) + real(q_lso_stat_vf(i)%sf(j, k + 1, l), &
@@ -1645,7 +1476,7 @@ contains
                     $:END_GPU_PARALLEL_LOOP()
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
                     do l = 0, p
-                        do k = 0, n
+                        do k = k_beg_y, k_end_y
                             do j = 0, m
                                 q_lso_stat_vf(i)%sf(j, k, l) = real(lso_tmp(j, k, l), stp)
                             end do
@@ -1660,6 +1491,10 @@ contains
         end if
 
         if (p > 0) then
+            l_beg_z = 0; l_end_z = p
+            if (bc_z%beg < 0 .and. bc_z%beg /= BC_PERIODIC) l_beg_z = buff_size
+            if (bc_z%end < 0 .and. bc_z%end /= BC_PERIODIC) l_end_z = p - buff_size
+
             call s_lso_stat_ghost_refresh(3)
             do ipass = 1, lso_n_passes_z
                 c0 = lso_a_z(1, ipass)
@@ -1669,7 +1504,7 @@ contains
                 c4 = lso_a_z(5, ipass)
                 do i = 1, n_lso_stat
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
-                    do l = 0, p
+                    do l = l_beg_z, l_end_z
                         do k = 0, n
                             do j = 0, m
                                 lso_tmp(j, k, l) = c0*real(q_lso_stat_vf(i)%sf(j, k, l), wp) + c1*(real(q_lso_stat_vf(i)%sf(j, k, &
@@ -1683,7 +1518,7 @@ contains
                     end do
                     $:END_GPU_PARALLEL_LOOP()
                     $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
-                    do l = 0, p
+                    do l = l_beg_z, l_end_z
                         do k = 0, n
                             do j = 0, m
                                 q_lso_stat_vf(i)%sf(j, k, l) = real(lso_tmp(j, k, l), stp)
@@ -1966,7 +1801,7 @@ contains
         ! BC_PERIODIC (single-rank, no MPI partner): wrap the local domain.
         select case (mpi_dir)
         case (1)
-            if (beg_bc == BC_GHOST_EXTRAP .or. (beg_bc < 0 .and. beg_bc /= BC_PERIODIC)) then
+            if (beg_bc == BC_GHOST_EXTRAP) then
                 $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, n_lso_stat
                     do l = 0, p
@@ -1991,7 +1826,7 @@ contains
                 end do
                 $:END_GPU_PARALLEL_LOOP()
             end if
-            if (end_bc == BC_GHOST_EXTRAP .or. (end_bc < 0 .and. end_bc /= BC_PERIODIC)) then
+            if (end_bc == BC_GHOST_EXTRAP) then
                 $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, n_lso_stat
                     do l = 0, p
@@ -2017,7 +1852,7 @@ contains
                 $:END_GPU_PARALLEL_LOOP()
             end if
         case (2)
-            if (beg_bc == BC_GHOST_EXTRAP .or. (beg_bc < 0 .and. beg_bc /= BC_PERIODIC)) then
+            if (beg_bc == BC_GHOST_EXTRAP) then
                 $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, n_lso_stat
                     do l = 0, p
@@ -2042,7 +1877,7 @@ contains
                 end do
                 $:END_GPU_PARALLEL_LOOP()
             end if
-            if (end_bc == BC_GHOST_EXTRAP .or. (end_bc < 0 .and. end_bc /= BC_PERIODIC)) then
+            if (end_bc == BC_GHOST_EXTRAP) then
                 $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, n_lso_stat
                     do l = 0, p
@@ -2068,7 +1903,7 @@ contains
                 $:END_GPU_PARALLEL_LOOP()
             end if
         case (3)
-            if (beg_bc == BC_GHOST_EXTRAP .or. (beg_bc < 0 .and. beg_bc /= BC_PERIODIC)) then
+            if (beg_bc == BC_GHOST_EXTRAP) then
                 $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, n_lso_stat
                     do l = 1, buff_size
@@ -2093,7 +1928,7 @@ contains
                 end do
                 $:END_GPU_PARALLEL_LOOP()
             end if
-            if (end_bc == BC_GHOST_EXTRAP .or. (end_bc < 0 .and. end_bc /= BC_PERIODIC)) then
+            if (end_bc == BC_GHOST_EXTRAP) then
                 $:GPU_PARALLEL_LOOP(collapse=4, private='[i, j, k, l]')
                 do i = 1, n_lso_stat
                     do l = 1, buff_size

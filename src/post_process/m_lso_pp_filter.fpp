@@ -6,11 +6,14 @@
 
 !> @brief Post_process-side additional Gaussian filter.
 !!
-!! Applies 9-point FIR passes with total width sigma_2 = sqrt(sigma_target^2 - sigma_in^2)
-!! using the lso_pp_a_* weights from the Python BCD design. Wide targets use the stage-2
-!! lso_pp2_a_* weights as a second equal-variance cascade.
+!! Applies 9-point FIR passes of total width sigma_2 = sqrt(sigma_target^2 - sigma_in^2)
+!! using the lso_pp_a_* weights from the Python BCD design. Wide targets are split across
+!! two cascades (lso_pp_a_* then lso_pp2_a_*), whose variances add to the requested width;
+!! a single cascade is only well conditioned up to ~40 cells. Stat product fields are
+!! computed afterwards from the filtered state.
 !!
-!! IB-aware normalization uses the original IB gas mask or the saved filtered mask, so that
+!! IB-aware normalization: q <- filter(w*q)/filter(w) with w the binary gas mask (original input)
+!! or the simulation-written filtered mask lso_mask_<t>.dat (pre-filtered input), so that
 !! filter2(w*qhat1)/filter2(w) = filter2(filter1(m*q))/filter2(filter1(m)).
 module m_lso_pp_filter
 
@@ -18,9 +21,9 @@ module m_lso_pp_filter
     use m_global_parameters
     use m_mpi_common
     use m_constants
-    use m_variables_conversion, only: gammas, pi_infs, qvs, s_convert_to_mixture_variables, s_compute_pressure
-    use m_eos, only: f_isentrope_pressure, s_phase_temperature
+    use m_variables_conversion, only: gammas
     use m_data_input, only: ib_markers
+
 #ifdef MFC_MPI
     use mpi
 #endif
@@ -31,17 +34,15 @@ module m_lso_pp_filter
 
     public :: s_initialize_lso_pp_filter_module, s_finalize_lso_pp_filter_module, s_apply_lso_pp_filter, &
         & s_compute_lso_pp_stat_fields, s_filter_lso_pp_stat_fields, q_lso_pp_stat_vf, s_apply_lso_pp_filter_masked, &
-        & s_compute_lso_closure_fields, f_lso_n_closure, q_lso_pp_w_vf, s_write_lso_pp_pyramid_files, s_lso_pp_mask_from_ib, &
-        & s_refresh_lso_pp_fields
+        & s_lso_pp_mask_from_ib, s_compute_lso_closure_fields, f_lso_n_closure, q_lso_pp_w_vf, s_write_lso_pp_pyramid_files
 
     ! Floor on the normalized-convolution denominator filter(w).
     real(wp), parameter :: lso_w_floor = 1.0e-3_wp
-    integer, parameter  :: lso_pp_filter_radius = 4
 
     ! Scratch buffer for one directional pass.
     real(wp), allocatable :: lso_pp_tmp(:,:,:)
 
-    ! Simulation-filtered statistical products, optionally widened in post-process.
+    ! Filtered stat fields (lso_stat_wrt = T).
     type(scalar_field), allocatable :: q_lso_pp_stat_vf(:)
 
     ! Post-filtered normalization weight w2 = filter2(w1) (interior only), used by the closure pass; 1 without a mask.
@@ -49,39 +50,21 @@ module m_lso_pp_filter
 
 contains
 
-    !> Build the gas mask used to normalize post-process filtering from the current immersed-boundary markers.
-    impure subroutine s_lso_pp_mask_from_ib(w_vf)
-
-        type(scalar_field), intent(inout) :: w_vf(1:1)
-        integer                           :: j, k, l
-
-        do l = 0, p
-            do k = 0, n
-                do j = 0, m
-                    w_vf(1)%sf(j, k, l) = merge(0._stp, 1._stp, ib_markers%sf(j, k, l) > 0)
-                end do
-            end do
-        end do
-
-    end subroutine s_lso_pp_mask_from_ib
-
     impure subroutine s_initialize_lso_pp_filter_module()
 
         integer :: i
 
-        if (lso_pp_filter) allocate (lso_pp_tmp(0:m,0:n,0:p))
+        allocate (lso_pp_tmp(0:m,0:n,0:p))
 
-        if (lso_pp_filter .or. lso_closure_wrt) then
-            allocate (q_lso_pp_w_vf(1)%sf(idwbuff(1)%beg:idwbuff(1)%end,idwbuff(2)%beg:idwbuff(2)%end, &
-                      & idwbuff(3)%beg:idwbuff(3)%end))
+        if (lso_pp_filter) then
+            allocate (q_lso_pp_w_vf(1)%sf(0:m,0:n,0:p))
             q_lso_pp_w_vf(1)%sf = 1._stp
         end if
 
         if (lso_stat_wrt .and. n_lso_stat > 0) then
             allocate (q_lso_pp_stat_vf(1:n_lso_stat))
             do i = 1, n_lso_stat
-                allocate (q_lso_pp_stat_vf(i)%sf(idwbuff(1)%beg:idwbuff(1)%end,idwbuff(2)%beg:idwbuff(2)%end, &
-                          & idwbuff(3)%beg:idwbuff(3)%end))
+                allocate (q_lso_pp_stat_vf(i)%sf(0:m,0:n,0:p))
             end do
         end if
 
@@ -103,179 +86,101 @@ contains
 
     end subroutine s_finalize_lso_pp_filter_module
 
-    !> Apply the post_process LSO filter to an interior-only field in place.
+    !> Apply the post_process LSO filter to q_cons_vf in place: the stage-1 pass set, followed by the stage-2 set when the toolchain
+    !! split a wide target across two cascades (a single cascade is only well conditioned up to ~40 cells).
     impure subroutine s_apply_lso_pp_filter(q_cons_vf)
 
         type(scalar_field), intent(inout) :: q_cons_vf(:)
-        type(scalar_field), allocatable   :: q_work_vf(:)
-        integer                           :: i, j, k, l, work_buff_size
 
-        work_buff_size = max(buff_size, lso_pp_filter_radius)
-        allocate (q_work_vf(1:size(q_cons_vf)))
-        do i = 1, size(q_cons_vf)
-            allocate (q_work_vf(i)%sf(-work_buff_size:m + work_buff_size,-work_buff_size:n + work_buff_size, &
-                      & -work_buff_size:p + work_buff_size))
-            do l = 0, p
-                do k = 0, n
-                    do j = 0, m
-                        q_work_vf(i)%sf(j, k, l) = q_cons_vf(i)%sf(j, k, l)
-                    end do
-                end do
-            end do
-        end do
+        call s_apply_lso_pp_passes(q_cons_vf, 1, lso_pp_n_passes_x, lso_pp_a_x)
+        if (n > 0) call s_apply_lso_pp_passes(q_cons_vf, 2, lso_pp_n_passes_y, lso_pp_a_y)
+        if (p > 0) call s_apply_lso_pp_passes(q_cons_vf, 3, lso_pp_n_passes_z, lso_pp_a_z)
 
-        call s_apply_lso_pp_filter_ghosted(q_work_vf)
-        if (lso_pp2_n_passes_x > 0 .or. lso_pp2_n_passes_y > 0 .or. lso_pp2_n_passes_z > 0) then
-            call s_apply_lso_pp_filter_ghosted(q_work_vf, 2)
-        end if
-
-        do i = 1, size(q_cons_vf)
-            do l = 0, p
-                do k = 0, n
-                    do j = 0, m
-                        q_cons_vf(i)%sf(j, k, l) = q_work_vf(i)%sf(j, k, l)
-                    end do
-                end do
-            end do
-            deallocate (q_work_vf(i)%sf)
-        end do
-        deallocate (q_work_vf)
-        call s_lso_pp_filter_ghost_refresh(q_cons_vf, 1)
-        if (n > 0) call s_lso_pp_filter_ghost_refresh(q_cons_vf, 2)
-        if (p > 0) call s_lso_pp_filter_ghost_refresh(q_cons_vf, 3)
+        call s_apply_lso_pp_passes(q_cons_vf, 1, lso_pp2_n_passes_x, lso_pp2_a_x)
+        if (n > 0) call s_apply_lso_pp_passes(q_cons_vf, 2, lso_pp2_n_passes_y, lso_pp2_a_y)
+        if (p > 0) call s_apply_lso_pp_passes(q_cons_vf, 3, lso_pp2_n_passes_z, lso_pp2_a_z)
 
     end subroutine s_apply_lso_pp_filter
 
-    !> Apply the post_process LSO filter to a ghosted work field.
-    impure subroutine s_apply_lso_pp_filter_ghosted(q_cons_vf, stage)
+    !> Apply n_passes of the symmetric 9-point stencil along one direction, refreshing the ghost cells before each pass. Gaussian
+    !! variances add, so several pass sets compose to a single wider Gaussian.
+    !! @param q_vf Fields to filter in place
+    !! @param dir Sweep direction (1 = x, 2 = y, 3 = z)
+    !! @param n_passes Number of passes; no-op when < 1
+    !! @param a Per-pass stencil coefficients a(1:5, pass)
+    impure subroutine s_apply_lso_pp_passes(q_vf, dir, n_passes, a)
 
-        type(scalar_field), intent(inout) :: q_cons_vf(:)
-        integer, intent(in), optional     :: stage
-        integer                           :: i, ipass, j, k, l, nv
-        integer                           :: stage_number, npasses_x, npasses_y, npasses_z
-        real(wp)                          :: a_x(5, lso_max_passes), a_y(5, lso_max_passes), a_z(5, lso_max_passes)
+        type(scalar_field), intent(inout) :: q_vf(:)
+        integer, intent(in)               :: dir, n_passes
+        real(wp), intent(in)              :: a(5, lso_max_passes)
+        integer                           :: i, ipass, j, k, l, nv, sj, sk, sl
         real(wp)                          :: c0, c1, c2, c3, c4
 
-        nv = size(q_cons_vf)
-        stage_number = 1
-        if (present(stage)) stage_number = stage
-        if (stage_number == 2) then
-            npasses_x = lso_pp2_n_passes_x
-            npasses_y = lso_pp2_n_passes_y
-            npasses_z = lso_pp2_n_passes_z
-            a_x = lso_pp2_a_x
-            a_y = lso_pp2_a_y
-            a_z = lso_pp2_a_z
-        else
-            npasses_x = lso_pp_n_passes_x
-            npasses_y = lso_pp_n_passes_y
-            npasses_z = lso_pp_n_passes_z
-            a_x = lso_pp_a_x
-            a_y = lso_pp_a_y
-            a_z = lso_pp_a_z
-        end if
+        if (n_passes < 1) return
 
-        ! x-direction
+        ! Unit stencil offset, so the pass body below is direction-independent
+        sj = 0; sk = 0; sl = 0
+        select case (dir)
+        case (1); sj = 1
+        case (2); sk = 1
+        case (3); sl = 1
+        end select
 
-        call s_lso_pp_filter_ghost_refresh(q_cons_vf, 1)
-        do ipass = 1, npasses_x
-            c0 = a_x(1, ipass)
-            c1 = a_x(2, ipass)
-            c2 = a_x(3, ipass)
-            c3 = a_x(4, ipass)
-            c4 = a_x(5, ipass)
+        nv = size(q_vf)
+
+        do ipass = 1, n_passes
+            call s_lso_pp_filter_ghost_refresh(q_vf, dir)
+            c0 = a(1, ipass)
+            c1 = a(2, ipass)
+            c2 = a(3, ipass)
+            c3 = a(4, ipass)
+            c4 = a(5, ipass)
             do i = 1, nv
                 do l = 0, p
                     do k = 0, n
                         do j = 0, m
-                            lso_pp_tmp(j, k, l) = c0*real(q_cons_vf(i)%sf(j, k, l), wp) + c1*(real(q_cons_vf(i)%sf(j - 1, k, l), &
-                                       & wp) + real(q_cons_vf(i)%sf(j + 1, k, l), wp)) + c2*(real(q_cons_vf(i)%sf(j - 2, k, l), &
-                                       & wp) + real(q_cons_vf(i)%sf(j + 2, k, l), wp)) + c3*(real(q_cons_vf(i)%sf(j - 3, k, l), &
-                                       & wp) + real(q_cons_vf(i)%sf(j + 3, k, l), wp)) + c4*(real(q_cons_vf(i)%sf(j - 4, k, l), &
-                                       & wp) + real(q_cons_vf(i)%sf(j + 4, k, l), wp))
+                            lso_pp_tmp(j, k, l) = c0*real(q_vf(i)%sf(j, k, l), wp) + c1*(real(q_vf(i)%sf(j - sj, k - sk, l - sl), &
+                                       & wp) + real(q_vf(i)%sf(j + sj, k + sk, l + sl), wp)) + c2*(real(q_vf(i)%sf(j - 2*sj, &
+                                       & k - 2*sk, l - 2*sl), wp) + real(q_vf(i)%sf(j + 2*sj, k + 2*sk, l + 2*sl), &
+                                       & wp)) + c3*(real(q_vf(i)%sf(j - 3*sj, k - 3*sk, l - 3*sl), &
+                                       & wp) + real(q_vf(i)%sf(j + 3*sj, k + 3*sk, l + 3*sl), &
+                                       & wp)) + c4*(real(q_vf(i)%sf(j - 4*sj, k - 4*sk, l - 4*sl), &
+                                       & wp) + real(q_vf(i)%sf(j + 4*sj, k + 4*sk, l + 4*sl), wp))
                         end do
                     end do
                 end do
                 do l = 0, p
                     do k = 0, n
                         do j = 0, m
-                            q_cons_vf(i)%sf(j, k, l) = real(lso_pp_tmp(j, k, l), stp)
+                            q_vf(i)%sf(j, k, l) = real(lso_pp_tmp(j, k, l), stp)
                         end do
                     end do
                 end do
             end do
-            if (ipass < npasses_x) call s_lso_pp_filter_ghost_refresh(q_cons_vf, 1)
         end do
 
-        ! y-direction (2D/3D)
-        if (n > 0) then
-            call s_lso_pp_filter_ghost_refresh(q_cons_vf, 2)
-            do ipass = 1, npasses_y
-                c0 = a_y(1, ipass)
-                c1 = a_y(2, ipass)
-                c2 = a_y(3, ipass)
-                c3 = a_y(4, ipass)
-                c4 = a_y(5, ipass)
-                do i = 1, nv
-                    do l = 0, p
-                        do k = 0, n
-                            do j = 0, m
-                                lso_pp_tmp(j, k, l) = c0*real(q_cons_vf(i)%sf(j, k, l), wp) + c1*(real(q_cons_vf(i)%sf(j, k - 1, &
-                                           & l), wp) + real(q_cons_vf(i)%sf(j, k + 1, l), wp)) + c2*(real(q_cons_vf(i)%sf(j, &
-                                           & k - 2, l), wp) + real(q_cons_vf(i)%sf(j, k + 2, l), &
-                                           & wp)) + c3*(real(q_cons_vf(i)%sf(j, k - 3, l), wp) + real(q_cons_vf(i)%sf(j, k + 3, &
-                                           & l), wp)) + c4*(real(q_cons_vf(i)%sf(j, k - 4, l), wp) + real(q_cons_vf(i)%sf(j, &
-                                           & k + 4, l), wp))
-                            end do
-                        end do
-                    end do
-                    do l = 0, p
-                        do k = 0, n
-                            do j = 0, m
-                                q_cons_vf(i)%sf(j, k, l) = real(lso_pp_tmp(j, k, l), stp)
-                            end do
-                        end do
-                    end do
-                end do
-                if (ipass < npasses_y) call s_lso_pp_filter_ghost_refresh(q_cons_vf, 2)
-            end do
-        end if
+    end subroutine s_apply_lso_pp_passes
 
-        ! z-direction (3D)
-        if (p > 0) then
-            call s_lso_pp_filter_ghost_refresh(q_cons_vf, 3)
-            do ipass = 1, npasses_z
-                c0 = a_z(1, ipass)
-                c1 = a_z(2, ipass)
-                c2 = a_z(3, ipass)
-                c3 = a_z(4, ipass)
-                c4 = a_z(5, ipass)
-                do i = 1, nv
-                    do l = 0, p
-                        do k = 0, n
-                            do j = 0, m
-                                lso_pp_tmp(j, k, l) = c0*real(q_cons_vf(i)%sf(j, k, l), wp) + c1*(real(q_cons_vf(i)%sf(j, k, &
-                                           & l - 1), wp) + real(q_cons_vf(i)%sf(j, k, l + 1), wp)) + c2*(real(q_cons_vf(i)%sf(j, &
-                                           & k, l - 2), wp) + real(q_cons_vf(i)%sf(j, k, l + 2), &
-                                           & wp)) + c3*(real(q_cons_vf(i)%sf(j, k, l - 3), wp) + real(q_cons_vf(i)%sf(j, k, &
-                                           & l + 3), wp)) + c4*(real(q_cons_vf(i)%sf(j, k, l - 4), wp) + real(q_cons_vf(i)%sf(j, &
-                                           & k, l + 4), wp))
-                            end do
-                        end do
-                    end do
-                    do l = 0, p
-                        do k = 0, n
-                            do j = 0, m
-                                q_cons_vf(i)%sf(j, k, l) = real(lso_pp_tmp(j, k, l), stp)
-                            end do
-                        end do
-                    end do
-                end do
-                if (ipass < npasses_z) call s_lso_pp_filter_ghost_refresh(q_cons_vf, 3)
-            end do
-        end if
+    !> Fill the interior of w_vf with the binary gas mask from ib_markers: 1 in fluid, 0 inside an immersed body. Used when
+    !! post_process filters ORIGINAL data.
+    impure subroutine s_lso_pp_mask_from_ib(w_vf)
 
-    end subroutine s_apply_lso_pp_filter_ghosted
+        type(scalar_field), intent(inout) :: w_vf(1:1)
+        integer                           :: j, k, l
+
+        do l = 0, p
+            do k = 0, n
+                do j = 0, m
+                    if (ib_markers%sf(j, k, l) > 0) then
+                        w_vf(1)%sf(j, k, l) = 0._stp
+                    else
+                        w_vf(1)%sf(j, k, l) = 1._stp
+                    end if
+                end do
+            end do
+        end do
+
+    end subroutine s_lso_pp_mask_from_ib
 
     !> Mask-normalized filtering: q <- filter(w*q)/filter(w), applied in place (the solid interior takes the fluid average).
     impure subroutine s_apply_lso_pp_filter_masked(q_cons_vf, w_vf)
@@ -376,8 +281,6 @@ contains
 
         if (proc_rank == 0) print '(A,I0,A,3(I0,1X),A)', 'LSO pyramid stage 1: wrote step ', t_step, ' on the coarse grid ', &
             & nglb(1) + 1, nglb(2) + 1, nglb(3) + 1, '(lso_ restart files)'
-#else
-        call s_mpi_abort('lso_pp_pyramid_wrt requires an MPI-enabled build.')
 #endif
 
     end subroutine s_write_lso_pp_pyramid_files
@@ -525,22 +428,23 @@ contains
     end function f_lso_n_closure
 
     !> Euler-Lagrange closure fields from the LSO stat products, with F[.] the phase-weighted filter, rho_b = F[rho], u~ = F[rho
-    !! u]/rho_b and T~ from the central EOS energy reconstruction, F[E] = E_lso*w: R_sg,ij = F[rho u_i u_j] - F[rho u_i] F[rho
+    !! u]/rho_b and T~ from F[rho T] = (F[E] - F[rho|u|^2]/2)/Cv, F[E] = E_lso*w: R_sg,ij = F[rho u_i u_j] - F[rho u_i] F[rho
     !! u_j]/rho_b Q_T,i = gamma Cv (F[rho u_i T] - T~ F[rho u_i]) E_ku,i = (F[rho u_i |u|^2] - F[rho u_i] F[rho |u|^2]/rho_b)/2
-    !! W_tau_u,i = (F[rho (tau.u)_i] - (tau_b . F[rho u])_i)/rho_b R_mu_sg = tau_b - mu [grad(u_m) + grad(u_m)^T - (2/3) div(u_m) I]
-    !! R_lam_sg = q_b + lambda grad(T~), with the intensive averages tau_b = F[g tau]/w and q_b = F[g q]/w. Gradients are centred
-    !! differences on the output grid with ghost-refreshed Favre fields; layout per f_lso_n_closure().
+    !! W_tau_u,i = (F[rho (tau.u)_i] - (tau_b . F[rho u])_i)/rho_b, and the residual viscous stress and conductive heat flux of the
+    !! team notes (Eqs. 1.7-1.10): R_mu_sg = tau_b - mu(T~) [grad(u_m) + grad(u_m)^T - (2/3) div(u_m) I], R_lam_sg = q_b -
+    !! (-lambda(T~) grad(T~)), with the intensive averages tau_b = F[g tau]/w and q_b = F[g q]/w, the mixture velocity u_m = F[g u]
+    !! + F[phi_p u_p], and mu, lambda from the lso_mu_T_exp power law at T~. Gradients are centred differences on the output grid
+    !! with ghost-refreshed fields; layout per f_lso_n_closure().
     impure subroutine s_compute_lso_closure_fields(q_stat_vf, q_cons_vf, w_vf, q_cls_vf)
 
         type(scalar_field), intent(in)    :: q_stat_vf(:), q_cons_vf(:), w_vf(1:1)
         type(scalar_field), intent(inout) :: q_cls_vf(:)
-        type(scalar_field)                :: uT_vf(1:7)
-        integer                           :: nd, nt, i, c, j, k, l, a, b, work_buff_size
+        type(scalar_field)                :: uT_vf(1:7)  !< u~ (nd), T~, u_m (nd)
+        integer                           :: nd, nt, i, c, j, k, l, a, b
         integer                           :: ti(6), tj(6)
         integer                           :: i_rsg, i_qt, i_eku, i_wtu, i_rmu, i_rlam, i_tt, i_uf
-        real(wp)                          :: Cv, gcv, rho_b, F_E, wloc, dsp(3), stiffness, dx2, fprop
-        logical                           :: x_nonuni
-        real(wp)                          :: rhou(3), tdotru(3), dumdx(3, 3), dT(3), div_m, tau_res, tb(3, 3)
+        real(wp)                          :: Cv, gcv, rho_b, F_E, wloc, dsp(3), fprop, div_m
+        real(wp)                          :: rhou(3), tdotru(3), dumdx(3, 3), dT(3), tau_res, tb(3, 3)
 
         nd = num_dims
         nt = nd*(nd + 1)/2
@@ -554,13 +458,11 @@ contains
 
         Cv = lso_R_gas*gammas(1)
         gcv = (1._wp + 1._wp/gammas(1))*Cv
-        stiffness = f_isentrope_pressure(pi_infs(1), gammas(1))
 
-        ! Favre velocity, temperature, and mixture velocity with ghost extents for MPI exchange and gradient stencils.
-        work_buff_size = max(buff_size, lso_pp_filter_radius)
+        ! Favre velocity, Favre temperature and mixture velocity with ghost extents for the gradient stencils.
         do i = 1, 2*nd + 1
-            allocate (uT_vf(i)%sf(-work_buff_size:m + work_buff_size,-work_buff_size:n + work_buff_size, &
-                      & -work_buff_size:p + work_buff_size))
+            allocate (uT_vf(i)%sf(lbound(q_cons_vf(1)%sf, 1):ubound(q_cons_vf(1)%sf, 1),lbound(q_cons_vf(1)%sf, &
+                      & 2):ubound(q_cons_vf(1)%sf, 2),lbound(q_cons_vf(1)%sf, 3):ubound(q_cons_vf(1)%sf, 3)))
         end do
         do l = 0, p
             do k = 0, n
@@ -569,10 +471,9 @@ contains
                     do a = 1, nd
                         uT_vf(a)%sf(j, k, l) = real(real(q_stat_vf(lso_stat_rhou_beg + a - 1)%sf(j, k, l), wp)/rho_b, stp)
                     end do
-                    wloc = max(real(w_vf(1)%sf(j, k, l), wp), lso_w_floor)
-                    F_E = real(q_cons_vf(eqn_idx%E)%sf(j, k, l), wp)*wloc
+                    F_E = real(q_cons_vf(eqn_idx%E)%sf(j, k, l), wp)*real(w_vf(1)%sf(j, k, l), wp)
                     uT_vf(nd + 1)%sf(j, k, l) = real((F_E - 0.5_wp*real(q_stat_vf(lso_stat_rhoke_beg)%sf(j, k, l), &
-                          & wp) - stiffness*wloc - qvs(1)*rho_b)/(Cv*rho_b), stp)
+                          & wp))/(Cv*rho_b), stp)
                     do a = 1, nd
                         uT_vf(nd + 1 + a)%sf(j, k, l) = real(real(q_stat_vf(lso_stat_gu_beg + a - 1)%sf(j, k, l), &
                               & wp) + real(q_stat_vf(lso_stat_up_beg + a - 1)%sf(j, k, l), wp), stp)
@@ -580,6 +481,7 @@ contains
                 end do
             end do
         end do
+        ! in chunks of at most sys_size fields, the size of the shared MPI halo buffers (2 nd + 1 = 7 > sys_size in 3D)
         do c = 1, 2*nd + 1, sys_size
             b = min(2*nd + 1, c + sys_size - 1)
             call s_lso_pp_filter_ghost_refresh(uT_vf(c:b), 1)
@@ -590,7 +492,6 @@ contains
         ! Quasi-uniform output-grid spacing (mean; exact for integer decimation).
         dsp = 1._wp
         dsp(1) = (x_cc(m) - x_cc(0))/real(max(m, 1), wp)
-        x_nonuni = maxval(dx(0:m)) - minval(dx(0:m)) > 1.e-6_wp*minval(dx(0:m))  ! stretched x: local centred spacing
         if (n > 0) dsp(2) = (y_cc(n) - y_cc(0))/real(n, wp)
         if (p > 0) dsp(3) = (z_cc(p) - z_cc(0))/real(p, wp)
 
@@ -611,19 +512,17 @@ contains
                         tb(tj(c), ti(c)) = tb(ti(c), tj(c))
                     end do
 
-                    ! Gradients of mixture velocity and Favre temperature, with refreshed halos.
+                    ! gradients of the mixture velocity and the Favre temperature (centred; ghosts filled above)
                     dumdx = 0._wp; dT = 0._wp
-                    dx2 = 2._wp*dsp(1)
-                    if (x_nonuni) dx2 = x_cc(j + 1) - x_cc(j - 1)
                     do a = 1, nd
                         i = nd + 1 + a
-                        dumdx(a, 1) = (real(uT_vf(i)%sf(j + 1, k, l), wp) - real(uT_vf(i)%sf(j - 1, k, l), wp))/dx2
+                        dumdx(a, 1) = (real(uT_vf(i)%sf(j + 1, k, l), wp) - real(uT_vf(i)%sf(j - 1, k, l), wp))/(2._wp*dsp(1))
                         if (n > 0) dumdx(a, 2) = (real(uT_vf(i)%sf(j, k + 1, l), wp) - real(uT_vf(i)%sf(j, k - 1, l), &
                             & wp))/(2._wp*dsp(2))
                         if (p > 0) dumdx(a, 3) = (real(uT_vf(i)%sf(j, k, l + 1), wp) - real(uT_vf(i)%sf(j, k, l - 1), &
                             & wp))/(2._wp*dsp(3))
                     end do
-                    dT(1) = (real(uT_vf(nd + 1)%sf(j + 1, k, l), wp) - real(uT_vf(nd + 1)%sf(j - 1, k, l), wp))/dx2
+                    dT(1) = (real(uT_vf(nd + 1)%sf(j + 1, k, l), wp) - real(uT_vf(nd + 1)%sf(j - 1, k, l), wp))/(2._wp*dsp(1))
                     if (n > 0) dT(2) = (real(uT_vf(nd + 1)%sf(j, k + 1, l), wp) - real(uT_vf(nd + 1)%sf(j, k - 1, l), &
                         & wp))/(2._wp*dsp(2))
                     if (p > 0) dT(3) = (real(uT_vf(nd + 1)%sf(j, k, l + 1), wp) - real(uT_vf(nd + 1)%sf(j, k, l - 1), &
@@ -657,17 +556,16 @@ contains
                         q_cls_vf(i_wtu + a)%sf(j, k, l) = real((real(q_stat_vf(lso_stat_rhotau_u_beg + a - 1)%sf(j, k, l), &
                                  & wp) - tdotru(a))/rho_b, stp)
                     end do
-                    ! R_mu_sg (filtered minus resolved, same tau convention as the solver)
+                    ! R_mu_sg = tau_b - tau(mu(T~), u_m) (notes Eqs. 1.7, 1.9)
                     do c = 1, nt
                         tau_res = fprop*lso_mu*(dumdx(ti(c), tj(c)) + dumdx(tj(c), ti(c)))
                         if (ti(c) == tj(c)) tau_res = tau_res - (2._wp/3._wp)*fprop*lso_mu*div_m
                         q_cls_vf(i_rmu + c)%sf(j, k, l) = real(tb(ti(c), tj(c)) - tau_res, stp)
                     end do
-                    ! R_lam_sg (stored q = -lambda grad T; resolved uses the same sign)
+                    ! R_lam_sg = q_b - q(lambda(T~), T~) with q = -lambda grad T, as the stored q (notes Eqs. 1.8, 1.10)
                     do a = 1, nd
                         q_cls_vf(i_rlam + a)%sf(j, k, l) = real(real(q_stat_vf(lso_stat_q_beg + a - 1)%sf(j, k, l), &
-                                 & wp)/wloc - (-fprop*merge(lso_conductivity, fluid_k_therm(1), lso_conductivity > 0._wp)*dT(a)), &
-                                 & stp)
+                                 & wp)/wloc - (-fprop*lso_conductivity*dT(a)), stp)
                     end do
                     ! T_tilde, u_favre
                     q_cls_vf(i_tt + 1)%sf(j, k, l) = uT_vf(nd + 1)%sf(j, k, l)
@@ -681,7 +579,6 @@ contains
         do i = 1, 2*nd + 1
             deallocate (uT_vf(i)%sf)
         end do
-        call s_refresh_lso_pp_fields(q_cls_vf)
 
     end subroutine s_compute_lso_closure_fields
 
@@ -717,13 +614,13 @@ contains
             do i = 1, nv
                 do l = 0, p
                     do k = 0, n
-                        do j = 1, lso_pp_filter_radius
-                            if (beg_bc == BC_GHOST_EXTRAP .or. (beg_bc < 0 .and. beg_bc /= BC_PERIODIC)) then
+                        do j = 1, buff_size
+                            if (beg_bc == BC_GHOST_EXTRAP) then
                                 q_cons_vf(i)%sf(-j, k, l) = q_cons_vf(i)%sf(0, k, l)
                             else if (beg_bc == BC_PERIODIC) then
                                 q_cons_vf(i)%sf(-j, k, l) = q_cons_vf(i)%sf(m - j + 1, k, l)
                             end if
-                            if (end_bc == BC_GHOST_EXTRAP .or. (end_bc < 0 .and. end_bc /= BC_PERIODIC)) then
+                            if (end_bc == BC_GHOST_EXTRAP) then
                                 q_cons_vf(i)%sf(m + j, k, l) = q_cons_vf(i)%sf(m, k, l)
                             else if (end_bc == BC_PERIODIC) then
                                 q_cons_vf(i)%sf(m + j, k, l) = q_cons_vf(i)%sf(j - 1, k, l)
@@ -735,14 +632,14 @@ contains
         case (2)
             do i = 1, nv
                 do l = 0, p
-                    do k = 1, lso_pp_filter_radius
+                    do k = 1, buff_size
                         do j = 0, m
-                            if (beg_bc == BC_GHOST_EXTRAP .or. (beg_bc < 0 .and. beg_bc /= BC_PERIODIC)) then
+                            if (beg_bc == BC_GHOST_EXTRAP) then
                                 q_cons_vf(i)%sf(j, -k, l) = q_cons_vf(i)%sf(j, 0, l)
                             else if (beg_bc == BC_PERIODIC) then
                                 q_cons_vf(i)%sf(j, -k, l) = q_cons_vf(i)%sf(j, n - k + 1, l)
                             end if
-                            if (end_bc == BC_GHOST_EXTRAP .or. (end_bc < 0 .and. end_bc /= BC_PERIODIC)) then
+                            if (end_bc == BC_GHOST_EXTRAP) then
                                 q_cons_vf(i)%sf(j, n + k, l) = q_cons_vf(i)%sf(j, n, l)
                             else if (end_bc == BC_PERIODIC) then
                                 q_cons_vf(i)%sf(j, n + k, l) = q_cons_vf(i)%sf(j, k - 1, l)
@@ -753,15 +650,15 @@ contains
             end do
         case (3)
             do i = 1, nv
-                do l = 1, lso_pp_filter_radius
+                do l = 1, buff_size
                     do k = 0, n
                         do j = 0, m
-                            if (beg_bc == BC_GHOST_EXTRAP .or. (beg_bc < 0 .and. beg_bc /= BC_PERIODIC)) then
+                            if (beg_bc == BC_GHOST_EXTRAP) then
                                 q_cons_vf(i)%sf(j, k, -l) = q_cons_vf(i)%sf(j, k, 0)
                             else if (beg_bc == BC_PERIODIC) then
                                 q_cons_vf(i)%sf(j, k, -l) = q_cons_vf(i)%sf(j, k, p - l + 1)
                             end if
-                            if (end_bc == BC_GHOST_EXTRAP .or. (end_bc < 0 .and. end_bc /= BC_PERIODIC)) then
+                            if (end_bc == BC_GHOST_EXTRAP) then
                                 q_cons_vf(i)%sf(j, k, p + l) = q_cons_vf(i)%sf(j, k, p)
                             else if (end_bc == BC_PERIODIC) then
                                 q_cons_vf(i)%sf(j, k, p + l) = q_cons_vf(i)%sf(j, k, l - 1)
@@ -774,56 +671,8 @@ contains
 
     end subroutine s_lso_pp_filter_ghost_refresh
 
-    !> Statistical and closure vectors can exceed the shared MPI buffers' sys_size capacity.
-    impure subroutine s_refresh_lso_pp_fields(q_vf)
-
-        type(scalar_field), intent(inout) :: q_vf(:)
-        integer                           :: c, last
-
-        do c = 1, size(q_vf), sys_size
-            last = min(c + sys_size - 1, size(q_vf))
-            call s_lso_pp_filter_ghost_refresh(q_vf(c:last), 1)
-            if (n > 0) call s_lso_pp_filter_ghost_refresh(q_vf(c:last), 2)
-            if (p > 0) call s_lso_pp_filter_ghost_refresh(q_vf(c:last), 3)
-        end do
-
-    end subroutine s_refresh_lso_pp_fields
-
     !> Build the LSO stat product fields from the post_process-filtered conserved state. No IB markers in post_process, so phi_p = 0
     !! and gas_mask = 1 everywhere. CPU loops.
-    !> Recover temperature from the saved EOS state, using the same gas constant as the in-situ statistics.
-    function f_lso_pp_temperature(q_cons_vf, j, k, l) result(T)
-
-        type(scalar_field), intent(in) :: q_cons_vf(:)
-        integer, intent(in)            :: j, k, l
-        real(wp)                       :: T, rho, gamma, pi_inf, qv, dyn_p, pres
-        real(wp)                       :: rhoYks(num_species)
-        integer                        :: i
-
-        call s_convert_to_mixture_variables(q_cons_vf, j, k, l, rho, gamma, pi_inf, qv)
-        dyn_p = 0._wp
-        do i = eqn_idx%mom%beg, eqn_idx%mom%end
-            dyn_p = dyn_p + 0.5_wp*real(q_cons_vf(i)%sf(j, k, l), wp)**2/rho
-        end do
-        rhoYks = 0._wp
-        if (chemistry) then
-            do i = 1, num_species
-                rhoYks(i) = real(q_cons_vf(eqn_idx%species%beg + i - 1)%sf(j, k, l), wp)
-            end do
-        end if
-        T = dflt_T_guess
-        call s_compute_pressure(q_cons_vf(eqn_idx%E)%sf(j, k, l), q_cons_vf(eqn_idx%alf)%sf(j, k, l), dyn_p, pi_inf, gamma, rho, &
-                                & qv, rhoYks, pres, T)
-        if (.not. chemistry) then
-            if (eoss(1) == eos_ideal_gas .or. eoss(1) == eos_stiffened_gas) then
-                T = (pres + isentrope_B(1))/(lso_R_gas*rho)
-            else
-                call s_phase_temperature(rho, pres, 1, T)
-            end if
-        end if
-
-    end function f_lso_pp_temperature
-
     impure subroutine s_compute_lso_pp_stat_fields(q_cons_vf, w_vf)
 
         type(scalar_field), intent(in) :: q_cons_vf(:)
@@ -834,7 +683,7 @@ contains
         real(wp)                                 :: rho, rho_loc
         real(wp)                                 :: mom1, mom2, mom3
         real(wp)                                 :: u1, u2, u3
-        real(wp)                                 :: T_loc
+        real(wp)                                 :: E_loc, ke, e_int, T_loc
         ! Gradient quantities (viscous pass)
         real(wp) :: rho_jm, rho_jp, rho_km, rho_kp, rho_lm, rho_lp
         real(wp) :: u1_jm, u1_jp, u1_km, u1_kp, u1_lm, u1_lp
@@ -851,7 +700,7 @@ contains
         real(wp) :: q1, q2, q3
         real(wp) :: fprop, mu_loc, k_loc
 
-        ! Pass 1: original-state products; apply the gas mask below.
+        ! Pass 1: algebraic products. gas_mask = 1 everywhere (no IB).
 
         do l = 0, p
             do k = 0, n
@@ -868,12 +717,16 @@ contains
                     else
                         mom3 = 0._wp
                     end if
+                    E_loc = real(q_cons_vf(eqn_idx%E)%sf(j, k, l), wp)
+
                     u1 = mom1/rho
                     u2 = mom2/rho
                     u3 = mom3/rho
-                    T_loc = f_lso_pp_temperature(q_cons_vf, j, k, l)
+                    ke = 0.5_wp*(mom1**2 + mom2**2 + mom3**2)/rho
+                    e_int = (E_loc - ke)/rho
+                    T_loc = e_int/(gammas(1)*lso_R_gas)
 
-                    ! phi_p, rho, rhoke, and zero solid velocity for original stationary-body data.
+                    ! phi_p, rho scalar, rhoke scalar, u_p (no IB in post_process filter)
                     q_lso_pp_stat_vf(lso_stat_phi_p_beg)%sf(j, k, l) = 0._stp
                     q_lso_pp_stat_vf(lso_stat_rho_beg)%sf(j, k, l) = real(rho, stp)
                     q_lso_pp_stat_vf(lso_stat_rhoke_beg)%sf(j, k, l) = real((mom1**2 + mom2**2 + mom3**2)/rho, stp)
@@ -910,6 +763,7 @@ contains
                     if (n > 0) q_lso_pp_stat_vf(lso_stat_rhouT_beg + 1)%sf(j, k, l) = real(mom2*T_loc, stp)
                     if (p > 0) q_lso_pp_stat_vf(lso_stat_rhouT_beg + 2)%sf(j, k, l) = real(mom3*T_loc, stp)
 
+                    ! u (gas-masked below): F[g u] + F[phi_p u_p] is the mixture velocity of the residual viscous stress
                     q_lso_pp_stat_vf(lso_stat_gu_beg)%sf(j, k, l) = real(u1, stp)
                     if (n > 0) q_lso_pp_stat_vf(lso_stat_gu_beg + 1)%sf(j, k, l) = real(u2, stp)
                     if (p > 0) q_lso_pp_stat_vf(lso_stat_gu_beg + 2)%sf(j, k, l) = real(u3, stp)
@@ -929,7 +783,7 @@ contains
         end do
 
         ! Pass 2: viscous stress, heat flux, viscous power flux from centred diffs.
-        if (lso_mu > 0._wp .or. fluid_k_therm(1) > 0._wp .or. lso_conductivity > 0._wp) then
+        if (lso_mu > 0._wp) then
             if (n == 0) then
                 ! 1D: x-gradients only.
                 do j = 0, m
@@ -937,22 +791,25 @@ contains
 
                     rho_jm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j - 1, 0, 0), wp), sgm_eps)
                     u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, 0, 0), wp)/rho_jm
-                    T_jm = f_lso_pp_temperature(q_cons_vf, j - 1, 0, 0)
+                    T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, 0, 0), wp) - 0.5_wp*u1_jm**2*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
 
                     rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, 0, 0), wp), sgm_eps)
                     u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, 0, 0), wp)/rho_jp
-                    T_jp = f_lso_pp_temperature(q_cons_vf, j + 1, 0, 0)
+                    T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, 0, 0), wp) - 0.5_wp*u1_jp**2*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
 
                     ddx = x_cc(j + 1) - x_cc(j - 1)
                     du1dx = (u1_jp - u1_jm)/ddx
                     dTdx = (T_jp - T_jm)/ddx
 
                     u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, 0, 0), wp)/rho_loc
-                    T_loc = f_lso_pp_temperature(q_cons_vf, j, 0, 0)
+                    ! mu(T), lambda(T) at the cell temperature (power law, constant Pr; 1 when lso_mu_T_exp = 0)
+                    T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, 0, 0), wp) - 0.5_wp*(u1**2)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
                     fprop = 1._wp
                     if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
                     mu_loc = fprop*lso_mu
-                    k_loc = fprop*merge(lso_conductivity, fluid_k_therm(1), lso_conductivity > 0._wp)
+                    k_loc = fprop*lso_conductivity
+
+                    ! 1D: 2 du/dx - (2/3) div u = (4/3) du/dx, the same Stokes form as 2D/3D and the closure
                     tau11 = mu_loc*(4._wp/3._wp)*du1dx
                     q1 = -k_loc*dTdx
 
@@ -969,22 +826,26 @@ contains
                         rho_jm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j - 1, k, 0), wp), sgm_eps)
                         u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, k, 0), wp)/rho_jm
                         u2_jm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j - 1, k, 0), wp)/rho_jm
-                        T_jm = f_lso_pp_temperature(q_cons_vf, j - 1, k, 0)
+                        T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, k, 0), &
+                                & wp) - 0.5_wp*(u1_jm**2 + u2_jm**2)*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
 
                         rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, k, 0), wp), sgm_eps)
                         u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, k, 0), wp)/rho_jp
                         u2_jp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j + 1, k, 0), wp)/rho_jp
-                        T_jp = f_lso_pp_temperature(q_cons_vf, j + 1, k, 0)
+                        T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, k, 0), &
+                                & wp) - 0.5_wp*(u1_jp**2 + u2_jp**2)*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
 
                         rho_km = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k - 1, 0), wp), sgm_eps)
                         u1_km = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k - 1, 0), wp)/rho_km
                         u2_km = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k - 1, 0), wp)/rho_km
-                        T_km = f_lso_pp_temperature(q_cons_vf, j, k - 1, 0)
+                        T_km = (real(q_cons_vf(eqn_idx%E)%sf(j, k - 1, 0), &
+                                & wp) - 0.5_wp*(u1_km**2 + u2_km**2)*rho_km)/(rho_km*gammas(1)*lso_R_gas)
 
                         rho_kp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k + 1, 0), wp), sgm_eps)
                         u1_kp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k + 1, 0), wp)/rho_kp
                         u2_kp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k + 1, 0), wp)/rho_kp
-                        T_kp = f_lso_pp_temperature(q_cons_vf, j, k + 1, 0)
+                        T_kp = (real(q_cons_vf(eqn_idx%E)%sf(j, k + 1, 0), &
+                                & wp) - 0.5_wp*(u1_kp**2 + u2_kp**2)*rho_kp)/(rho_kp*gammas(1)*lso_R_gas)
 
                         ddx = x_cc(j + 1) - x_cc(j - 1)
                         ddy = y_cc(k + 1) - y_cc(k - 1)
@@ -998,11 +859,14 @@ contains
 
                         u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, 0), wp)/rho_loc
                         u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, 0), wp)/rho_loc
-                        T_loc = f_lso_pp_temperature(q_cons_vf, j, k, 0)
+                        ! mu(T), lambda(T) at the cell temperature (power law, constant Pr; 1 when lso_mu_T_exp = 0)
+                        T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, k, 0), &
+                                 & wp) - 0.5_wp*(u1**2 + u2**2)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
                         fprop = 1._wp
                         if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
                         mu_loc = fprop*lso_mu
-                        k_loc = fprop*merge(lso_conductivity, fluid_k_therm(1), lso_conductivity > 0._wp)
+                        k_loc = fprop*lso_conductivity
+
                         div_u = du1dx + du2dy
                         tau11 = mu_loc*(2._wp*du1dx - (2._wp/3._wp)*div_u)
                         tau12 = mu_loc*(du1dy + du2dx)
@@ -1030,37 +894,43 @@ contains
                             u1_jm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j - 1, k, l), wp)/rho_jm
                             u2_jm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j - 1, k, l), wp)/rho_jm
                             u3_jm = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j - 1, k, l), wp)/rho_jm
-                            T_jm = f_lso_pp_temperature(q_cons_vf, j - 1, k, l)
+                            T_jm = (real(q_cons_vf(eqn_idx%E)%sf(j - 1, k, l), &
+                                    & wp) - 0.5_wp*(u1_jm**2 + u2_jm**2 + u3_jm**2)*rho_jm)/(rho_jm*gammas(1)*lso_R_gas)
 
                             rho_jp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j + 1, k, l), wp), sgm_eps)
                             u1_jp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j + 1, k, l), wp)/rho_jp
                             u2_jp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j + 1, k, l), wp)/rho_jp
                             u3_jp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j + 1, k, l), wp)/rho_jp
-                            T_jp = f_lso_pp_temperature(q_cons_vf, j + 1, k, l)
+                            T_jp = (real(q_cons_vf(eqn_idx%E)%sf(j + 1, k, l), &
+                                    & wp) - 0.5_wp*(u1_jp**2 + u2_jp**2 + u3_jp**2)*rho_jp)/(rho_jp*gammas(1)*lso_R_gas)
 
                             rho_km = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k - 1, l), wp), sgm_eps)
                             u1_km = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k - 1, l), wp)/rho_km
                             u2_km = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k - 1, l), wp)/rho_km
                             u3_km = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k - 1, l), wp)/rho_km
-                            T_km = f_lso_pp_temperature(q_cons_vf, j, k - 1, l)
+                            T_km = (real(q_cons_vf(eqn_idx%E)%sf(j, k - 1, l), &
+                                    & wp) - 0.5_wp*(u1_km**2 + u2_km**2 + u3_km**2)*rho_km)/(rho_km*gammas(1)*lso_R_gas)
 
                             rho_kp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k + 1, l), wp), sgm_eps)
                             u1_kp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k + 1, l), wp)/rho_kp
                             u2_kp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k + 1, l), wp)/rho_kp
                             u3_kp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k + 1, l), wp)/rho_kp
-                            T_kp = f_lso_pp_temperature(q_cons_vf, j, k + 1, l)
+                            T_kp = (real(q_cons_vf(eqn_idx%E)%sf(j, k + 1, l), &
+                                    & wp) - 0.5_wp*(u1_kp**2 + u2_kp**2 + u3_kp**2)*rho_kp)/(rho_kp*gammas(1)*lso_R_gas)
 
                             rho_lm = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l - 1), wp), sgm_eps)
                             u1_lm = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l - 1), wp)/rho_lm
                             u2_lm = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l - 1), wp)/rho_lm
                             u3_lm = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l - 1), wp)/rho_lm
-                            T_lm = f_lso_pp_temperature(q_cons_vf, j, k, l - 1)
+                            T_lm = (real(q_cons_vf(eqn_idx%E)%sf(j, k, l - 1), &
+                                    & wp) - 0.5_wp*(u1_lm**2 + u2_lm**2 + u3_lm**2)*rho_lm)/(rho_lm*gammas(1)*lso_R_gas)
 
                             rho_lp = max(real(q_cons_vf(eqn_idx%cont%beg)%sf(j, k, l + 1), wp), sgm_eps)
                             u1_lp = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l + 1), wp)/rho_lp
                             u2_lp = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l + 1), wp)/rho_lp
                             u3_lp = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l + 1), wp)/rho_lp
-                            T_lp = f_lso_pp_temperature(q_cons_vf, j, k, l + 1)
+                            T_lp = (real(q_cons_vf(eqn_idx%E)%sf(j, k, l + 1), &
+                                    & wp) - 0.5_wp*(u1_lp**2 + u2_lp**2 + u3_lp**2)*rho_lp)/(rho_lp*gammas(1)*lso_R_gas)
 
                             ddx = x_cc(j + 1) - x_cc(j - 1)
                             ddy = y_cc(k + 1) - y_cc(k - 1)
@@ -1082,11 +952,14 @@ contains
                             u1 = real(q_cons_vf(eqn_idx%mom%beg)%sf(j, k, l), wp)/rho_loc
                             u2 = real(q_cons_vf(eqn_idx%mom%beg + 1)%sf(j, k, l), wp)/rho_loc
                             u3 = real(q_cons_vf(eqn_idx%mom%beg + 2)%sf(j, k, l), wp)/rho_loc
-                            T_loc = f_lso_pp_temperature(q_cons_vf, j, k, l)
+                            ! mu(T), lambda(T) at the cell temperature (power law, constant Pr; 1 when lso_mu_T_exp = 0)
+                            T_loc = (real(q_cons_vf(eqn_idx%E)%sf(j, k, l), &
+                                     & wp) - 0.5_wp*(u1**2 + u2**2 + u3**2)*rho_loc)/(rho_loc*gammas(1)*lso_R_gas)
                             fprop = 1._wp
                             if (lso_mu_T_exp > 0._wp) fprop = (max(T_loc, sgm_eps)/lso_mu_T_ref)**lso_mu_T_exp
                             mu_loc = fprop*lso_mu
-                            k_loc = fprop*merge(lso_conductivity, fluid_k_therm(1), lso_conductivity > 0._wp)
+                            k_loc = fprop*lso_conductivity
+
                             div_u = du1dx + du2dy + du3dz
                             tau11 = mu_loc*(2._wp*du1dx - (2._wp/3._wp)*div_u)
                             tau12 = mu_loc*(du1dy + du2dx)
@@ -1169,7 +1042,6 @@ contains
                 end do
             end do
         end do
-        call s_refresh_lso_pp_fields(q_lso_pp_stat_vf)
         do i = 1, sys_size
             deallocate (q_tmp_vf(i)%sf)
         end do
