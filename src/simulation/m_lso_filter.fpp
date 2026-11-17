@@ -112,12 +112,12 @@ contains
         @:ALLOCATE(lso_tmp(0:m, 0:n, 0:p))
 
         if (lso_filter_wrt) then
-            @:ALLOCATE(q_filt_vf(1:sys_size))
-            do i = 1, sys_size
+            @:ALLOCATE(q_filt_vf(1:sys_size + merge(1, 0, euler_lagrange)))
+            do i = 1, size(q_filt_vf)
                 @:ALLOCATE(q_filt_vf(i)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                            & idwbuff(3)%beg:idwbuff(3)%end))
             end do
-            do i = 1, sys_size
+            do i = 1, size(q_filt_vf)
                 @:ACC_SETUP_SFs(q_filt_vf(i))
             end do
 
@@ -138,8 +138,8 @@ contains
                 if (p_lso_ds > 0) then
                     crs_lo(3) = -lso_crs_gw; crs_hi(3) = p_lso_ds + lso_crs_gw
                 end if
-                @:ALLOCATE(q_filt_ds_vf(1:sys_size))
-                do i = 1, sys_size
+                @:ALLOCATE(q_filt_ds_vf(1:size(q_filt_vf)))
+                do i = 1, size(q_filt_vf)
                     @:ALLOCATE(q_filt_ds_vf(i)%sf(crs_lo(1):crs_hi(1), crs_lo(2):crs_hi(2), crs_lo(3):crs_hi(3)))
                 end do
                 if (ib) then
@@ -151,7 +151,7 @@ contains
 #ifdef MFC_MPI
                     block
                         integer :: nv_max, face_max
-                        nv_max = max(sys_size, max(n_lso_stat, 1))
+                        nv_max = max(size(q_filt_vf), max(n_lso_stat, 1))
                         face_max = max((n_lso_ds + 1)*(p_lso_ds + 1), (m_lso_ds + 1)*(p_lso_ds + 1), (m_lso_ds + 1)*(n_lso_ds + 1))
                         allocate (buff_crs_send(0:nv_max*lso_crs_gw*face_max - 1))
                         allocate (buff_crs_recv(0:nv_max*lso_crs_gw*face_max - 1))
@@ -246,7 +246,7 @@ contains
         end if
 
         if (lso_filter_wrt) then
-            do i = 1, sys_size
+            do i = 1, size(q_filt_vf)
                 @:DEALLOCATE(q_filt_vf(i)%sf)
             end do
             @:DEALLOCATE(q_filt_vf)
@@ -257,7 +257,7 @@ contains
             end if
 
             if (lso_down_sample_factor > 1) then
-                do i = 1, sys_size
+                do i = 1, size(q_filt_ds_vf)
                     @:DEALLOCATE(q_filt_ds_vf(i)%sf)
                 end do
                 @:DEALLOCATE(q_filt_ds_vf)
@@ -297,10 +297,12 @@ contains
 
     !> Copy q_cons_vf into q_filt_vf on the device and filter in place, leaving the original conserved array untouched for the
     !! primary write.
-    impure subroutine s_copy_and_apply_lso_filter(q_cons_vf)
+    impure subroutine s_copy_and_apply_lso_filter(q_cons_vf, beta)
 
-        type(scalar_field), intent(inout) :: q_cons_vf(:)
-        integer                           :: i, j, k, l
+        type(scalar_field), intent(inout)        :: q_cons_vf(:)
+        type(scalar_field), intent(in), optional :: beta
+        integer                                  :: i, j, k, l
+        real(wp)                                 :: T
 
         call nvtxStartRange("LSO-FILTER")
 
@@ -316,6 +318,17 @@ contains
             end do
             $:END_GPU_PARALLEL_LOOP()
         end do
+        if (present(beta)) then
+            $:GPU_PARALLEL_LOOP(collapse=3, private='[j, k, l]')
+            do l = idwbuff(3)%beg, idwbuff(3)%end
+                do k = idwbuff(2)%beg, idwbuff(2)%end
+                    do j = idwbuff(1)%beg, idwbuff(1)%end
+                        q_filt_vf(sys_size + 1)%sf(j, k, l) = beta%sf(j, k, l)
+                    end do
+                end do
+            end do
+            $:END_GPU_PARALLEL_LOOP()
+        end if
         call nvtxEndRange
 
         if (ib) then
@@ -933,7 +946,7 @@ contains
 
         type(scalar_field), intent(inout) :: q_cons_vf(:)
         integer, intent(in)               :: mpi_dir
-        integer                           :: i, j, k, l, beg_bc, end_bc, nv
+        integer                           :: i, j, k, l, beg_bc, end_bc, nv, c, b
 
         nv = size(q_cons_vf)
 
@@ -949,10 +962,13 @@ contains
             end_bc = bc_z%end
         end select
 
-        ! MPI rank boundaries
+        ! MPI rank boundaries, in chunks of at most sys_size fields to fit the shared halo buffers (EL beta makes sys_size + 1)
 #ifdef MFC_MPI
-        if (beg_bc >= 0) call s_mpi_sendrecv_variables_buffers(q_cons_vf, mpi_dir, -1, nv)
-        if (end_bc >= 0) call s_mpi_sendrecv_variables_buffers(q_cons_vf, mpi_dir, 1, nv)
+        do c = 1, nv, sys_size
+            b = min(nv, c + sys_size - 1)
+            if (beg_bc >= 0) call s_mpi_sendrecv_variables_buffers(q_cons_vf(c:b), mpi_dir, -1, b - c + 1)
+            if (end_bc >= 0) call s_mpi_sendrecv_variables_buffers(q_cons_vf(c:b), mpi_dir, 1, b - c + 1)
+        end do
 #endif
 
         ! BC_GHOST_EXTRAP: re-extrapolate from the filtered edge cell each pass.
