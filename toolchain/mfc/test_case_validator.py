@@ -652,6 +652,14 @@ class TestAmrDefaults(unittest.TestCase):
             with self.assertRaises(CaseConstraintError, msg=k):
                 validate_case_constraints({**self.AMR, k: "T"}, "simulation")
 
+    def test_tag_var(self):
+        validate_case_constraints({**self.AMR, "amr_tag_var": 2}, "simulation")
+        validate_case_constraints({**self.AMR, "amr_tag_var": 3, "amr_tag_abs": "T"}, "simulation")
+        for bad, msg in (({"amr_tag_var": 4}, "amr_tag_var must be"), ({"amr_tag_var": 3}, "requires amr_tag_abs = T")):
+            with self.assertRaises(CaseConstraintError) as ctx:
+                validate_case_constraints({**self.AMR, **bad}, "simulation")
+            self.assertIn(msg, str(ctx.exception))
+
     def test_subcycle_needs_a_step_start_state(self):
         sub = {**self.AMR, "amr_subcycle": "T"}
         validate_case_constraints({**sub, "time_stepper": 2}, "simulation")
@@ -974,7 +982,15 @@ class TestImmersedBoundarySurfaceChemistry(ConstraintTestCase):
         self.assertRejects({**body, "chemistry": "F"}, "ib_heat_wrt requires ib and chemistry")
         self.assertRejects({**body, "igr": "T"}, "IGR does not support the immersed boundary method")
         self.assertRejects({**body, "cyl_coord": "T"}, "require Cartesian coordinates")
-        self.assertRejects({**body, "patch_ib(1)%moving_ibm": 1}, "ib_heat_wrt requires every immersed boundary to be fixed")
+        self.assertAccepts({**body, "patch_ib(1)%moving_ibm": 1})
+        self.assertRejects({**body, "patch_ib(1)%moving_ibm": 1, "amr": "T"}, "ib_heat_wrt with a moving immersed boundary is not supported with amr")
+
+    def test_uncover_fill_needs_hllc_cartesian_two_equation_no_amr(self):
+        body = {**self.case(), "ib_uncover_fill": "T", "patch_ib(1)%moving_ibm": 1}
+        self.assertAccepts(body)
+        self.assertRejects({**body, "amr": "T"}, "ib_uncover_fill is not supported with amr")
+        self.assertRejects({**body, "cyl_coord": "T"}, "ib_uncover_fill requires Cartesian coordinates")
+        self.assertRejects({**body, "riemann_solver": 1}, "ib_uncover_fill requires riemann_solver = 2")
 
     def test_ib_forces_are_accepted_with_dual_pass_hypoelastic_hlld(self):
         """Its two anchored flux sets are both read by the IB force, so state output and moving bodies are legal."""

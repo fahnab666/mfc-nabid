@@ -35,7 +35,7 @@ module m_data_output
         & s_write_ib_data_file, s_write_probe_files, s_write_ib_state_file, s_write_ib_history, s_close_ib_history, &
         & s_close_run_time_information_file, s_close_probe_files, s_finalize_data_output_module, s_initialize_lag_output, &
         & s_write_lag_particle_evol_if_due, s_write_lag_step_output, s_write_lag_save_data, s_initialize_viz_output, f_viz_due, &
-        & s_write_viz_data
+        & s_write_viz_data, s_create_D_dir
 
     !> @name In-situ visualization output (viz_wrt): float32 primitive fields on a box of cells
     !> @{
