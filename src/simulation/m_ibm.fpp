@@ -62,6 +62,7 @@ module m_ibm
     use m_phase_timing, only: s_mem_note, MEM_IB, MEM_IBHOST
     use m_patch_geometries
     use m_collisions
+    use m_jwl_pt, only: jwl_pt_parameters, s_jwl_wall_density
     use m_riemann_state, only: flux_rsx_vf, flux_src_rsx_vf, flux_hatR_rsx_vf
     use m_thermochem, only: num_species, gas_constant, molecular_weights, get_mixture_molecular_weight, get_mixture_energy_mass, &
         & get_mixture_thermal_conductivity_mixavg, get_species_mass_diffusivities_mixavg
@@ -595,7 +596,9 @@ contains
             real(wp), dimension(nb*nnode)   :: presb_IP, massv_IP
         #:endif
         real(wp), dimension(${NUM_SPECIES}$) :: Ys_IP, Ys_g, Ys_s, W_species
-        real(wp) :: alpha_q, alpha_rho_q, e_q
+        real(wp) :: alpha_q, alpha_rho_q, e_q, rho_IP_q, rho_GP_q
+        logical :: density_ok
+        type(jwl_pt_parameters) :: mat
         real(wp) :: T_IP, mw_IP, e_IP  !< Image-point temperature, mixture MW, and mass-specific internal energy (chemistry)
         real(wp) :: T_s, T_g, mw_s, mw_g, rho_s, rho_g, mdot_s, v_stefan, d
         real(wp) :: T_adv  !< Temperature of the advected ghost state: T_s, or the windowed mirror T_g on a moving wall
@@ -669,9 +672,10 @@ contains
                                 & vel_IP, vel_g, r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, &
                                 & G_K, Gs, gp, norm, buf, radial_vector, j, k, l, q, qv_K, c_IP, nbub, patch_id, Ys_IP, &
                                 & W_species, T_IP, mw_IP, e_IP, Ys_g, Ys_s, T_s, T_g, T_adv, mw_s, mw_g, rho_s, rho_g, mdot_s, &
-                                & v_stefan, d, surface_converged, vel_sum_g, E_ghost, alpha_q, alpha_rho_q, e_q, mdot_k, h_w, &
-                                & e_s, nrm_l, wf, h_IP, dh_ccst, p_ratio, use_ccst]', reduction='[[n_not_converged, n_ill_posed, &
-                                & nf1, nf2, nf3]]', reductionOp='[+]', present='[ghost_points]', firstprivate='[Re_size_loc1, Re_size_loc2]')
+                                & v_stefan, d, surface_converged, vel_sum_g, E_ghost, alpha_q, alpha_rho_q, e_q, rho_IP_q, &
+                                & rho_GP_q, density_ok, mat, mdot_k, h_w, e_s, nrm_l, wf, h_IP, dh_ccst, p_ratio, use_ccst]', &
+                                & reduction='[[n_not_converged, n_ill_posed, nf1, nf2, nf3]]', reductionOp='[+]', &
+                                & present='[ghost_points]', firstprivate='[Re_size_loc1, Re_size_loc2]')
             do i = 1, num_gps
                 if (record_surface) then
                     $:GPU_LOOP(parallelism='[seq]')
@@ -858,6 +862,17 @@ contains
                     do q = 1, num_fluids
                         p_ratio = (pres_GP + isentrope_B(q))/(pres_IP + isentrope_B(q))
                         alpha_rho_GP(q) = alpha_rho_IP(q)*p_ratio
+                        ! A JWL phase does not carry the pressure ratio at one temperature: its ghost density is the isothermal
+                        ! inverse of its own EOS where that has a root, else the ratio above (a cold trace phase has none)
+                        if (eoss(q) == eos_jwl .and. alpha_IP(q) > 0._wp .and. alpha_rho_IP(q) > 0._wp) then
+                            mat%a = eos_coeffs(q)%a; mat%b = eos_coeffs(q)%b
+                            mat%r1 = eos_coeffs(q)%r1; mat%r2 = eos_coeffs(q)%r2
+                            mat%omega = eos_coeffs(q)%gruneisen0; mat%rho0 = eos_coeffs(q)%rho0
+                            mat%t0 = eos_coeffs(q)%t0; mat%cv_j = cvs(q)
+                            rho_IP_q = alpha_rho_IP(q)/alpha_IP(q)
+                            call s_jwl_wall_density(rho_IP_q, pres_IP, pres_GP, mat, rho_GP_q, density_ok)
+                            if (density_ok) alpha_rho_GP(q) = alpha_IP(q)*rho_GP_q
+                        end if
                         ! Slip wall, ib_slip_ccst: the ghost density follows the isentrope instead; a non-positive p + B (a gap
                         ! closing towards vacuum) keeps the pressure scaling and the copied tangential speed
                         if (use_ccst .and. p_ratio > 0._wp) then
