@@ -1099,6 +1099,11 @@ contains
             end if
         end if
 
+        ! The uniform-grid IBM markers include the halo needed to identify a gap across a rank boundary.
+        if (ib .and. .not. amr .and. relax .and. any_state_dependent_eos .and. (relax_model == 5 .or. relax_model == 7) &
+            & .and. recon_type == recon_type_weno .and. weno_order == 3) then
+            call s_reconstruct_ib_gap_faces(id)
+        end if
         if (chemistry) call s_bound_species_faces(q_prim_qp%vf, qL_rsx_vf, qR_rsx_vf, id)
         if (face_bound == 1) call s_bound_face_states(q_prim_qp%vf, qL_rsx_vf, qR_rsx_vf, id)
 
@@ -1127,6 +1132,44 @@ contains
         call nvtxEndRange
 
     end subroutine s_reconstruct_riemann_states
+
+    !> At either face of a one-cell fluid gap, use the adjacent fluid and ghost states as the Riemann inputs. WENO3 can extrapolate
+    !! a negative pressure from the ghost side or read the opposite wall from the fluid side.
+    subroutine s_reconstruct_ib_gap_faces(id)
+
+        integer, intent(in) :: id
+        integer             :: di, dj, dk, i, j, k, l, jr, kr, lr
+        logical             :: left_solid, right_solid
+
+        di = merge(1, 0, id == 1)
+        dj = merge(1, 0, id == 2)
+        dk = merge(1, 0, id == 3)
+
+        $:GPU_PARALLEL_LOOP(collapse=3, private='[i, j, k, l, jr, kr, lr, left_solid, right_solid]', firstprivate='[di, dj, dk]')
+        do l = -dk, p
+            do k = -dj, n
+                do j = -di, m
+                    jr = j + di; kr = k + dj; lr = l + dk
+                    left_solid = ib_markers%sf(j, k, l) /= 0
+                    right_solid = ib_markers%sf(jr, kr, lr) /= 0
+                    if (left_solid .eqv. right_solid) cycle
+                    if (left_solid) then
+                        if (ib_markers%sf(jr + di, kr + dj, lr + dk) == 0) cycle
+                    else
+                        if (ib_markers%sf(j - di, k - dj, l - dk) == 0) cycle
+                    end if
+
+                    $:GPU_LOOP(parallelism='[seq]')
+                    do i = 1, sys_size
+                        qR_rsx_vf(j, k, l, i) = q_prim_qp%vf(i)%sf(j, k, l)
+                        qL_rsx_vf(jr, kr, lr, i) = q_prim_qp%vf(i)%sf(jr, kr, lr)
+                    end do
+                end do
+            end do
+        end do
+        $:END_GPU_PARALLEL_LOOP()
+
+    end subroutine s_reconstruct_ib_gap_faces
 
     !> Computes one sweep direction's contribution to the RHS: the Riemann solve on the reconstructed cell-boundary states followed
     !! by the advection source term. For dual-pass HLLD the fused solve computes BOTH anchored flux sets in one call; this routine
