@@ -134,7 +134,22 @@ module m_global_parameters
 
     ! alpha_rho_wrt, mom_wrt, vel_wrt, flux_wrt, alpha_rho_e_wrt, alpha_wrt,
     ! omega_wrt, chem_wrt_Y, schlieren_alpha: auto-generated in generated_decls.fpp
-    integer                    :: fd_number  !< Finite-difference half-stencil size: MAX(1, fd_order/2)
+    integer :: fd_number  !< Finite-difference half-stencil size: MAX(1, fd_order/2)
+
+    ! LSO filter and stat inputs are declared in generated_decls.fpp
+    integer :: n_lso_stat                                    !< Total number of LSO statistical variables (11/21/33 for 1D/2D/3D)
+    integer :: lso_stat_phi_p_beg, lso_stat_phi_p_end        !< phi_p: particle indicator
+    integer :: lso_stat_rho_beg, lso_stat_rho_end            !< gas rho scalar: gas_mask*rho (1 component)
+    integer :: lso_stat_rhoke_beg, lso_stat_rhoke_end        !< gas KE scalar: gas_mask*(mom1^2+mom2^2+mom3^2)/rho (1 component)
+    integer :: lso_stat_up_beg, lso_stat_up_end              !< phi_p * u_p: particle velocity flux
+    integer :: lso_stat_rhou_beg, lso_stat_rhou_end          !< gas rho*u
+    integer :: lso_stat_rhouu_beg, lso_stat_rhouu_end        !< gas rho*u*u symmetric tensor
+    integer :: lso_stat_rhouke_beg, lso_stat_rhouke_end      !< gas rho*u*|u|^2
+    integer :: lso_stat_rhouT_beg, lso_stat_rhouT_end        !< gas rho*u*T
+    integer :: lso_stat_tau_beg, lso_stat_tau_end            !< viscous stress tau_ij
+    integer :: lso_stat_q_beg, lso_stat_q_end                !< heat flux q_i
+    integer :: lso_stat_rhotau_u_beg, lso_stat_rhotau_u_end  !< viscous power flux (tau*u)_i
+    integer :: lso_stat_gu_beg, lso_stat_gu_end              !< gas_mask*u (mixture velocity)
     type(chemistry_parameters) :: chem_params
     !> @name Bubble modeling variables and parameters
     !> @{
@@ -324,6 +339,42 @@ contains
         sim_data = .false.
         cf_wrt = .false.
         ib_state_wrt = .false.
+        lso_filter_wrt = .false.
+        lso_down_sample_factor = 1
+        lso_stat_wrt = .false.
+        n_lso_stat = 0
+        lso_stat_phi_p_beg = 0; lso_stat_phi_p_end = 0
+        lso_stat_rho_beg = 0; lso_stat_rho_end = 0
+        lso_stat_rhoke_beg = 0; lso_stat_rhoke_end = 0
+        lso_stat_up_beg = 0; lso_stat_up_end = 0
+        lso_stat_rhou_beg = 0; lso_stat_rhou_end = 0
+        lso_stat_rhouu_beg = 0; lso_stat_rhouu_end = 0
+        lso_stat_rhouke_beg = 0; lso_stat_rhouke_end = 0
+        lso_stat_rhouT_beg = 0; lso_stat_rhouT_end = 0
+        lso_stat_tau_beg = 0; lso_stat_tau_end = 0
+        lso_stat_q_beg = 0; lso_stat_q_end = 0
+        lso_stat_rhotau_u_beg = 0; lso_stat_rhotau_u_end = 0
+        lso_stat_gu_beg = 0; lso_stat_gu_end = 0
+        lso_pp_filter = .false.
+        lso_closure_wrt = .false.
+        lso_pp_pyramid_wrt = .false.
+        lso_pp_n_passes_x = 0
+        lso_pp_n_passes_y = 0
+        lso_pp_n_passes_z = 0
+        lso_pp_a_x = 0.0_wp
+        lso_pp_a_y = 0.0_wp
+        lso_pp_a_z = 0.0_wp
+        lso_pp2_n_passes_x = 0
+        lso_pp2_n_passes_y = 0
+        lso_pp2_n_passes_z = 0
+        lso_pp2_a_x = 0.0_wp
+        lso_pp2_a_y = 0.0_wp
+        lso_pp2_a_z = 0.0_wp
+        lso_R_gas = 287.0_wp
+        lso_mu = 0.0_wp
+        lso_conductivity = 0.0_wp
+        lso_mu_T_exp = 0.0_wp
+        lso_mu_T_ref = 0.0_wp
         lag_txt_wrt = .false.
         lag_header = .true.
         lag_db_wrt = .false.
@@ -495,6 +546,9 @@ contains
             fd_number = max(1, fd_order/2)
             buff_size = buff_size + fd_number
         end if
+
+        ! The LSO post filter (9-point stencil) and the closure gradients need at least 4 ghost layers.
+        if (lso_pp_filter .or. lso_closure_wrt) buff_size = max(buff_size, 4)
 
         ! Configuring Coordinate Direction Indexes
         idwint(1)%beg = 0; idwint(2)%beg = 0; idwint(3)%beg = 0

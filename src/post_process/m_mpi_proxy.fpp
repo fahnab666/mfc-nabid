@@ -75,6 +75,17 @@ contains
         call MPI_BCAST(n_glb, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
         call MPI_BCAST(p_glb, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
 
+        ! manual: LSO stat block indices (computed in s_read_input_file, not namelist-bound)
+        #:for VAR in [ 'n_lso_stat', 'lso_stat_phi_p_beg', 'lso_stat_phi_p_end',        &
+            & 'lso_stat_rho_beg', 'lso_stat_rho_end', 'lso_stat_rhoke_beg', 'lso_stat_rhoke_end', &
+            & 'lso_stat_up_beg', 'lso_stat_up_end', 'lso_stat_rhou_beg', 'lso_stat_rhou_end',     &
+            & 'lso_stat_rhouu_beg', 'lso_stat_rhouu_end', 'lso_stat_rhouke_beg',                 &
+            & 'lso_stat_rhouke_end', 'lso_stat_rhouT_beg', 'lso_stat_rhouT_end',                 &
+            & 'lso_stat_tau_beg', 'lso_stat_tau_end', 'lso_stat_q_beg', 'lso_stat_q_end',        &
+            & 'lso_stat_rhotau_u_beg', 'lso_stat_rhotau_u_end', 'lso_stat_gu_beg', 'lso_stat_gu_end']
+            call MPI_BCAST(${VAR}$, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
+        #:endfor
+
         ! manual: bc_x/y/z member broadcasts (struct members not in NAMELIST_VARS)
         #:for VAR in [ 'bc_x%beg', 'bc_x%end', 'bc_y%beg', 'bc_y%end', 'bc_z%beg', 'bc_z%end']
             call MPI_BCAST(${VAR}$, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
@@ -116,6 +127,14 @@ contains
             & 'bc_y%Twall_out','bc_z%Twall_in', 'bc_z%Twall_out']
             call MPI_BCAST(${VAR}$, 1, mpi_p, 0, MPI_COMM_WORLD, ierr)
         #:endfor
+
+        ! LSO pp filter coefficient arrays (5 coefficients * lso_max_passes passes per direction)
+        call MPI_BCAST(lso_pp_a_x(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso_pp_a_y(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso_pp_a_z(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso_pp2_a_x(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso_pp2_a_y(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso_pp2_a_z(1, 1), 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
 #endif
 
     end subroutine s_mpi_bcast_user_inputs

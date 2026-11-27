@@ -299,6 +299,14 @@ contains
         call MPI_BCAST(synth_amp_shell, num_synth_shells_max, mpi_p, 0, MPI_COMM_WORLD, ierr)
         call MPI_BCAST(turb_pos, num_turb_sources_max*3, mpi_p, 0, MPI_COMM_WORLD, ierr)
         call MPI_BCAST(synth_L, num_turb_sources_max*3, mpi_p, 0, MPI_COMM_WORLD, ierr)
+
+        ! LSO filter coefficient arrays (shape: 5 x lso_max_passes, column-major)
+        call MPI_BCAST(lso_a_x, 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso_a_y, 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso_a_z, 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso2_a_x, 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso2_a_y, 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
+        call MPI_BCAST(lso2_a_z, 5*lso_max_passes, mpi_p, 0, MPI_COMM_WORLD, ierr)
 #endif
 
     end subroutine s_mpi_bcast_user_inputs

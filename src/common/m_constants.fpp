@@ -157,6 +157,7 @@ module m_constants
     ! Synthetic turbulence array size limits
     integer, parameter :: num_synth_shells_max = 50  !< Max energy shells for synthetic turbulence
     integer, parameter :: num_turb_sources_max = 10  !< Max Gaussian forcing zones for synthetic turbulence
+    integer, parameter :: lso_max_passes = 60        !< Max LSO filter passes per direction (must match Python LSO_MAX_PASSES)
 
     ! Named values for enumerated case parameters (e.g. riemann_solver_hllc).
     ! AUTO-GENERATED from "names" in toolchain/mfc/params/definitions.py.

@@ -1481,12 +1481,14 @@ contains
     !> The purpose of this procedure is to optimally decompose the computational domain among the available processors. This is
     !! performed by attempting to award each processor, in each of the coordinate directions, approximately the same number of
     !! cells, and then recomputing the affected global parameters.
-    subroutine s_mpi_decompose_computational_domain(write_silo_ghost_offsets, adjust_local_domains, output_offsets, local_domains)
+    subroutine s_mpi_decompose_computational_domain(write_silo_ghost_offsets, adjust_local_domains, output_offsets, &
+        & local_domains, stencil_free)
 
         logical, intent(in)                                          :: write_silo_ghost_offsets
         logical, intent(in)                                          :: adjust_local_domains
         type(int_bounds_info), dimension(3), intent(inout), optional :: output_offsets
         type(bounds_info), dimension(3), intent(inout), optional     :: local_domains
+        logical, intent(in), optional                                :: stencil_free  !< Grid is never reconstructed on
 
 #ifdef MFC_MPI
         !> Non-optimal number of processors in the x-, y- and z-directions
@@ -1524,6 +1526,11 @@ contains
 
         if (igr) then
             recon_order = igr_order
+        end if
+
+        ! A grid that is never reconstructed on (the LSO coarsened output) needs only the minimum stencil count per rank.
+        if (present(stencil_free)) then
+            if (stencil_free) recon_order = 1
         end if
 
         ! 3D Cartesian Processor Topology

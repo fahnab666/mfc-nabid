@@ -377,6 +377,13 @@ PHYSICS_DOCS = {
         "category": "Post-Processing",
         "explanation": ("Requires 3D with all periodic boundaries. Global dimensions must be even. Incompatible with cylindrical coordinates."),
     },
+    "check_lso_pp_pyramid": {
+        "title": "LSO Pyramid Stage 1",
+        "category": "Post-Processing",
+        "explanation": "lso_pp_pyramid_wrt filters the original data (lso_pp_filter = T, lso_filter_wrt = F) and decimates it by "
+        "lso_down_sample_factor >= 2, so every global dimension plus one must be divisible by the factor. It writes shared "
+        "MPI-IO files and needs parallel_io = T with file_per_process = F.",
+    },
 }
 
 
@@ -1385,6 +1392,10 @@ class CaseValidator:
                     )
             elif model_id is not None and model_id > 0:
                 self.prohibit(True, f"patch_icpp({i})%model_id is set but geometry ({geometry}) is not an STL model (21)")
+        self.prohibit(
+            self.get("lso_mu_T_exp", 0) > 0 and self.get("lso_mu_T_ref", 0) <= 0,
+            "lso_mu_T_exp > 0 requires lso_mu_T_ref > 0 (reference temperature of the LSO power-law viscosity)",
+        )
 
     def _eos_coefficient_args(self, i, family):
         """Fluid i's arguments to family.coefficients_fn, after rho, in registry order. An optional
@@ -3392,6 +3403,24 @@ class CaseValidator:
             if alpha_wrt:
                 self.prohibit(model_eqns == 1, f"alpha_wrt({i}) is not supported for model_eqns = 1")
 
+    def check_lso_pp_pyramid(self):
+        """Checks constraints on the post_process LSO pyramid stage 1 (lso_pp_pyramid_wrt)"""
+        if self.get("lso_pp_pyramid_wrt", "F") != "T":
+            return
+        fac = int(self.get("lso_down_sample_factor", 1))
+        self.prohibit(
+            self.get("lso_pp_filter", "F") != "T" or self.get("lso_filter_wrt", "F") == "T",
+            "lso_pp_pyramid_wrt filters the original data: it needs lso_pp_filter = T and lso_filter_wrt = F",
+        )
+        self.prohibit(fac < 2, "lso_pp_pyramid_wrt needs lso_down_sample_factor >= 2 (the decimation factor)")
+        self.prohibit(
+            self.get("parallel_io", "F") != "T" or self.get("file_per_process", "F") == "T",
+            "lso_pp_pyramid_wrt writes shared MPI-IO lso_ files: it needs parallel_io = T and file_per_process = F",
+        )
+        for d in ("m", "n", "p"):
+            v = int(self.get(d, 0) or 0)
+            self.prohibit(v > 0 and fac >= 2 and (v + 1) % fac != 0, f"lso_pp_pyramid_wrt needs {d} + 1 divisible by lso_down_sample_factor")
+
     def check_fft(self):
         """Checks FFT output constraints (post-process)"""
         fft_wrt = self.get("fft_wrt", "F") == "T"
@@ -3896,6 +3925,7 @@ class CaseValidator:
         self.check_surface_tension_post()
         self.check_sim_data()
         self.check_no_flow_variables()
+        self.check_lso_pp_pyramid()
 
     def validate(self, stage: str = "simulation"):
         """Main validation method

@@ -765,6 +765,41 @@ def _load():
     _r("amr_cluster_eff", REAL)
     _r("amr_blocking_factor", INT)
     _r("amr_ref_ratio", INT)
+
+    # LSO variable-weight filter
+    _r("lso_filter", LOG, {"filter"})
+    _r("lso_filter_wrt", LOG, {"filter"})
+    _r("filter_sigma", REAL, {"filter"})
+    _r("lso_down_sample_factor", INT, {"filter"})
+    _r("lso_stat_wrt", LOG, {"filter"})
+    _r("lso_R_gas", REAL, {"filter"})
+    _r("lso_filter_sigma_in", REAL, {"filter"})
+    _r("lso_filter_sigma_target", REAL, {"filter"})
+    for n in ["lso_n_passes_x", "lso_n_passes_y", "lso_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso_a_x", "lso_a_y", "lso_a_z"]:
+        _r(n, REAL, {"filter"})
+    # In-situ two-stage (pyramid) coarse-grid pass set (auto-computed)
+    for n in ["lso2_n_passes_x", "lso2_n_passes_y", "lso2_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso2_a_x", "lso2_a_y", "lso2_a_z"]:
+        _r(n, REAL, {"filter"})
+    # LSO post-process filter params (post_process target only)
+    _r("lso_pp_filter", LOG, {"filter"})
+    for n in ["lso_pp2_n_passes_x", "lso_pp2_n_passes_y", "lso_pp2_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso_pp2_a_x", "lso_pp2_a_y", "lso_pp2_a_z"]:
+        _r(n, REAL, {"filter"})
+    for n in ["lso_pp_n_passes_x", "lso_pp_n_passes_y", "lso_pp_n_passes_z"]:
+        _r(n, INT, {"filter"})
+    for n in ["lso_pp_a_x", "lso_pp_a_y", "lso_pp_a_z"]:
+        _r(n, REAL, {"filter"})
+    _r("lso_closure_wrt", LOG, {"filter"})
+    _r("lso_pp_pyramid_wrt", LOG, {"filter"})
+    _r("lso_mu", REAL, {"filter"})
+    _r("lso_conductivity", REAL, {"filter"})
+    _r("lso_mu_T_exp", REAL, {"filter"})
+    _r("lso_mu_T_ref", REAL, {"filter"})
     for n in [
         "schlieren_wrt",
         "alpha_wrt",
@@ -1635,6 +1670,49 @@ _nv(
 # post_process reads the `amr` flag (only) to overlay the refined fine blocks on the coarse
 # mesh; the fine-block geometry is recovered from the AMR restart file, not from these params.
 _nv(_SIM_POST, "amr")
+# LSO filter: the in-situ filter reads its pass sets in simulation, the post_process filter reads its own.
+_LSO_STENCILS_SIM = ("lso_a_x", "lso_a_y", "lso_a_z", "lso2_a_x", "lso2_a_y", "lso2_a_z")
+_LSO_STENCILS_POST = ("lso_pp_a_x", "lso_pp_a_y", "lso_pp_a_z", "lso_pp2_a_x", "lso_pp2_a_y", "lso_pp2_a_z")
+_nv(
+    _SIM_POST,
+    "lso_filter_wrt",
+    "lso_down_sample_factor",
+    "lso_stat_wrt",
+    "lso_R_gas",
+    "lso_mu",
+    "lso_conductivity",
+    "lso_mu_T_exp",
+    "lso_mu_T_ref",
+)
+_nv(
+    _SIM,
+    "lso_filter",
+    "filter_sigma",
+    "lso_n_passes_x",
+    "lso_n_passes_y",
+    "lso_n_passes_z",
+    "lso2_n_passes_x",
+    "lso2_n_passes_y",
+    "lso2_n_passes_z",
+    *_LSO_STENCILS_SIM,
+)
+_nv(
+    _POST,
+    "lso_pp_filter",
+    "lso_closure_wrt",
+    "lso_pp_pyramid_wrt",
+    "lso_pp_n_passes_x",
+    "lso_pp_n_passes_y",
+    "lso_pp_n_passes_z",
+    "lso_pp2_n_passes_x",
+    "lso_pp2_n_passes_y",
+    "lso_pp2_n_passes_z",
+    *_LSO_STENCILS_POST,
+)
+for _v in _LSO_STENCILS_SIM + _LSO_STENCILS_POST:
+    _stage2 = _v.startswith(("lso2_", "lso_pp2_"))
+    _desc = f"{'Stage-2 per-pass' if _stage2 else 'Per-pass'} stencil coefficients in {_v[-1]}"
+    TYPED_DECLS[_v] = ("real(wp)", "5, lso_max_passes", _v in _LSO_STENCILS_SIM[:3], _desc)
 _nv(
     _PRE,
     "x_domain",

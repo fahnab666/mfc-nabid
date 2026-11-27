@@ -29,6 +29,7 @@ module m_start_up
     use m_finite_differences
     use m_constants, only: model_eqns_gamma_law, model_eqns_5eq, model_eqns_6eq, format_silo
     use m_chemistry
+    use m_lso_pp_filter
 
 #ifdef MFC_MPI
     use mpi
@@ -85,6 +86,89 @@ contains
                 m = int((m + 1)/3) - 1
                 n = int((n + 1)/3) - 1
                 p = int((p + 1)/3) - 1
+            end if
+
+            ! LSO-filtered output saved on a coarser grid: shrink m/n/p to match the file.
+            if (lso_filter_wrt .and. lso_down_sample_factor > 1) then
+                m = int((m + 1)/lso_down_sample_factor) - 1
+                if (n > 0) n = int((n + 1)/lso_down_sample_factor) - 1
+                if (p > 0) p = int((p + 1)/lso_down_sample_factor) - 1
+            end if
+
+            ! LSO stat index layout (same as simulation). num_dims is not set yet, so derive a local dim count from m/n/p.
+            if (lso_filter_wrt .and. lso_stat_wrt) then
+                block
+                    integer :: loc_num_dims
+                    loc_num_dims = 1 + min(1, n) + min(1, p)
+                    lso_stat_phi_p_beg = 1; lso_stat_phi_p_end = 1
+                    lso_stat_rho_beg = lso_stat_phi_p_end + 1
+                    lso_stat_rho_end = lso_stat_rho_beg
+                    lso_stat_rhoke_beg = lso_stat_rho_end + 1
+                    lso_stat_rhoke_end = lso_stat_rhoke_beg
+                    lso_stat_up_beg = lso_stat_rhoke_end + 1
+                    lso_stat_up_end = lso_stat_up_beg + loc_num_dims - 1
+                    lso_stat_rhou_beg = lso_stat_up_end + 1
+                    lso_stat_rhou_end = lso_stat_rhou_beg + loc_num_dims - 1
+                    lso_stat_rhouu_beg = lso_stat_rhou_end + 1
+                    if (loc_num_dims == 1) then
+                        lso_stat_rhouu_end = lso_stat_rhouu_beg
+                    else if (loc_num_dims == 2) then
+                        lso_stat_rhouu_end = lso_stat_rhouu_beg + 2
+                    else
+                        lso_stat_rhouu_end = lso_stat_rhouu_beg + 5
+                    end if
+                    lso_stat_rhouke_beg = lso_stat_rhouu_end + 1
+                    lso_stat_rhouke_end = lso_stat_rhouke_beg + loc_num_dims - 1
+                    lso_stat_rhouT_beg = lso_stat_rhouke_end + 1
+                    lso_stat_rhouT_end = lso_stat_rhouT_beg + loc_num_dims - 1
+                    lso_stat_tau_beg = lso_stat_rhouT_end + 1
+                    lso_stat_tau_end = lso_stat_tau_beg + (lso_stat_rhouu_end - lso_stat_rhouu_beg)
+                    lso_stat_q_beg = lso_stat_tau_end + 1
+                    lso_stat_q_end = lso_stat_q_beg + loc_num_dims - 1
+                    lso_stat_rhotau_u_beg = lso_stat_q_end + 1
+                    lso_stat_rhotau_u_end = lso_stat_rhotau_u_beg + loc_num_dims - 1
+                    lso_stat_gu_beg = lso_stat_rhotau_u_end + 1
+                    lso_stat_gu_end = lso_stat_gu_beg + loc_num_dims - 1
+                    n_lso_stat = lso_stat_gu_end
+                end block
+            end if
+
+            ! Same layout for the post_process filter path.
+            if (lso_pp_filter .and. lso_stat_wrt) then
+                block
+                    integer :: loc_num_dims
+                    loc_num_dims = 1 + min(1, n) + min(1, p)
+                    lso_stat_phi_p_beg = 1; lso_stat_phi_p_end = 1
+                    lso_stat_rho_beg = lso_stat_phi_p_end + 1
+                    lso_stat_rho_end = lso_stat_rho_beg
+                    lso_stat_rhoke_beg = lso_stat_rho_end + 1
+                    lso_stat_rhoke_end = lso_stat_rhoke_beg
+                    lso_stat_up_beg = lso_stat_rhoke_end + 1
+                    lso_stat_up_end = lso_stat_up_beg + loc_num_dims - 1
+                    lso_stat_rhou_beg = lso_stat_up_end + 1
+                    lso_stat_rhou_end = lso_stat_rhou_beg + loc_num_dims - 1
+                    lso_stat_rhouu_beg = lso_stat_rhou_end + 1
+                    if (loc_num_dims == 1) then
+                        lso_stat_rhouu_end = lso_stat_rhouu_beg
+                    else if (loc_num_dims == 2) then
+                        lso_stat_rhouu_end = lso_stat_rhouu_beg + 2
+                    else
+                        lso_stat_rhouu_end = lso_stat_rhouu_beg + 5
+                    end if
+                    lso_stat_rhouke_beg = lso_stat_rhouu_end + 1
+                    lso_stat_rhouke_end = lso_stat_rhouke_beg + loc_num_dims - 1
+                    lso_stat_rhouT_beg = lso_stat_rhouke_end + 1
+                    lso_stat_rhouT_end = lso_stat_rhouT_beg + loc_num_dims - 1
+                    lso_stat_tau_beg = lso_stat_rhouT_end + 1
+                    lso_stat_tau_end = lso_stat_tau_beg + (lso_stat_rhouu_end - lso_stat_rhouu_beg)
+                    lso_stat_q_beg = lso_stat_tau_end + 1
+                    lso_stat_q_end = lso_stat_q_beg + loc_num_dims - 1
+                    lso_stat_rhotau_u_beg = lso_stat_q_end + 1
+                    lso_stat_rhotau_u_end = lso_stat_rhotau_u_beg + loc_num_dims - 1
+                    lso_stat_gu_beg = lso_stat_rhotau_u_end + 1
+                    lso_stat_gu_end = lso_stat_gu_beg + loc_num_dims - 1
+                    n_lso_stat = lso_stat_gu_end
+                end block
             end if
 
             m_glb = m
@@ -154,7 +238,9 @@ contains
             end if
         end if
 
+        lso_step_found = .true.
         call s_read_data_files(t_step)
+        if (lso_filter_wrt .and. .not. lso_step_found) return
 
         if (amr) call s_read_amr_data(t_step)
 
@@ -202,6 +288,46 @@ contains
         deallocate (ib_sf(1)%sf)
 
     end subroutine s_exchange_ib_markers_halo
+
+    !> Reload conservative variable data for a time step and reconvert to primitive variables, WITHOUT printing the progress bar.
+    !! Used for the LSO two-pass write: after the normal filtered pass the caller toggles lso_filter_wrt=.false., calls
+    !! s_reload_data to read the unfiltered conservative data, then writes a second Silo database to silo_hdf5/. Grid file reads are
+    !! skipped automatically (grid_loaded flag in m_data_input).
+    impure subroutine s_reload_data(t_step)
+
+        integer, intent(in) :: t_step
+
+        call s_read_data_files(t_step)
+
+        if (chemistry) call s_compute_q_T_sf(q_T_sf, q_cons_vf, idwint)
+
+        if (buff_size > 0) then
+            if (n == 0) then
+                call s_populate_grid_variables_buffers(x_cb, x_cc, dx, offset_x, offset_y, offset_z)
+            else if (p == 0) then
+                call s_populate_grid_variables_buffers(x_cb, x_cc, dx, offset_x, offset_y, offset_z, y_cb, y_cc, dy)
+            else
+                call s_populate_grid_variables_buffers(x_cb, x_cc, dx, offset_x, offset_y, offset_z, y_cb, y_cc, dy, z_cb, z_cc, dz)
+            end if
+            call s_populate_variables_buffers(bc_type, q_cons_vf, q_T_sf=q_T_sf)
+        end if
+
+        call s_convert_conservative_to_primitive_variables(q_cons_vf, q_T_sf, q_prim_vf, idwbuff)
+
+    end subroutine s_reload_data
+
+    !> Reconvert q_cons_vf to q_prim_vf after the post_process LSO filter modified it in place (same sequence as s_reload_data).
+    impure subroutine s_reconvert_filtered_to_primitive()
+
+        if (chemistry) call s_compute_q_T_sf(q_T_sf, q_cons_vf, idwint)
+
+        if (buff_size > 0) then
+            call s_populate_variables_buffers(bc_type, q_cons_vf, q_T_sf=q_T_sf)
+        end if
+
+        call s_convert_conservative_to_primitive_variables(q_cons_vf, q_T_sf, q_prim_vf, idwbuff)
+
+    end subroutine s_reconvert_filtered_to_primitive
 
     !> Derive requested flow quantities from primitive variables and write them to the formatted database files.
     impure subroutine s_save_data(t_step, varname, pres, c)
@@ -721,6 +847,551 @@ contains
 
     end subroutine s_write_field
 
+    !> Read lso_stat_<t_step>.dat (n_stat MPI-IO subarrays back-to-back) into q_stat_vf. Sets found = .false. when the file is
+    !! missing.
+    impure subroutine s_read_lso_stat_file(q_stat_vf, n_stat, t_step, found, fname)
+
+        type(scalar_field), intent(inout)      :: q_stat_vf(:)
+        integer, intent(in)                    :: n_stat, t_step
+        logical, intent(out)                   :: found
+        character(LEN=*), intent(in), optional :: fname  !< file basename prefix (default 'lso_stat_')
+
+#ifdef MFC_MPI
+        integer                              :: ifile, ierr, data_size, i
+        integer, dimension(MPI_STATUS_SIZE)  :: status
+        integer(kind=MPI_OFFSET_KIND)        :: disp
+        integer(kind=MPI_OFFSET_KIND)        :: m_MOK, n_MOK, p_MOK
+        integer(kind=MPI_OFFSET_KIND)        :: WP_MOK, var_MOK, MOK, fsize
+        integer, dimension(num_dims)         :: sizes_glb, sizes_loc, start_stat
+        integer                              :: mpi_view
+        character(LEN=path_len + 2*name_len) :: file_loc
+        logical                              :: file_exist
+
+        found = .true.
+
+        sizes_glb(1) = m_glb + 1; sizes_loc(1) = m + 1; start_stat(1) = start_idx(1)
+        if (num_dims >= 2) then
+            sizes_glb(2) = n_glb + 1; sizes_loc(2) = n + 1; start_stat(2) = start_idx(2)
+        end if
+        if (num_dims == 3) then
+            sizes_glb(3) = p_glb + 1; sizes_loc(3) = p + 1; start_stat(3) = start_idx(3)
+        end if
+        data_size = (m + 1)*(n + 1)*(p + 1)
+        m_MOK = int(m_glb + 1, MPI_OFFSET_KIND)
+        n_MOK = int(n_glb + 1, MPI_OFFSET_KIND)
+        p_MOK = int(p_glb + 1, MPI_OFFSET_KIND)
+        WP_MOK = int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
+        MOK = int(1._wp, MPI_OFFSET_KIND)
+
+        if (present(fname)) then
+            write (file_loc, '(A,I0,A)') trim(fname), t_step, '.dat'
+        else
+            write (file_loc, '(A,I0,A)') 'lso_stat_', t_step, '.dat'
+        end if
+        file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
+        inquire (FILE=trim(file_loc), EXIST=file_exist)
+        if (.not. file_exist) then
+            found = .false.
+            return
+        end if
+        ! MPI_COMM_SELF so ranks open independently (collective open would deadlock if some ranks skip this path).
+        call MPI_FILE_OPEN(MPI_COMM_SELF, file_loc, MPI_MODE_RDONLY, MPI_INFO_NULL, ifile, ierr)
+        call MPI_FILE_GET_SIZE(ifile, fsize, ierr)
+        @:PROHIBIT(fsize < m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*int(n_stat, MPI_OFFSET_KIND), &
+                   & "LSO stat file holds fewer fields than expected (written by an older simulation build?)")
+
+        do i = 1, n_stat
+            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_stat, MPI_ORDER_FORTRAN, mpi_p, mpi_view, ierr)
+            call MPI_TYPE_COMMIT(mpi_view, ierr)
+
+            var_MOK = int(i, MPI_OFFSET_KIND)
+            disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1)
+
+            call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, mpi_view, 'native', MPI_INFO_NULL, ierr)
+            call MPI_FILE_READ(ifile, q_stat_vf(i)%sf, data_size*mpi_io_type, mpi_io_p, status, ierr)
+
+            call MPI_TYPE_FREE(mpi_view, ierr)
+        end do
+
+        call MPI_FILE_CLOSE(ifile, ierr)
+#else
+        found = .true.
+#endif
+
+    end subroutine s_read_lso_stat_file
+
+    !> Read the simulation-written stage-1 filtered gas-mask (lso_mask_<t>.dat) into the INTERIOR of w_vf (caller allocates
+    !! w_vf(1)%sf with ghost bounds). found is made collectively consistent so all ranks agree on whether to take the masked path.
+    impure subroutine s_lso_sync_found(found)
+
+        logical, intent(inout) :: found
+
+#ifdef MFC_MPI
+        integer :: found_int, found_min, ierr
+
+        found_int = merge(1, 0, found)
+        call MPI_ALLREDUCE(found_int, found_min, 1, MPI_INTEGER, MPI_MIN, MPI_COMM_WORLD, ierr)
+        found = (found_min == 1)
+#endif
+
+    end subroutine s_lso_sync_found
+
+    impure subroutine s_read_lso_mask(w_vf, t_step, found)
+
+        type(scalar_field), intent(inout) :: w_vf(1:1)
+        integer, intent(in)               :: t_step
+        logical, intent(out)              :: found
+        type(scalar_field)                :: w_io(1:1)
+        integer                           :: j, k, l
+
+        allocate (w_io(1)%sf(0:m,0:n,0:p))
+        call s_read_lso_stat_file(w_io, 1, t_step, found, 'lso_mask_')
+
+        call s_lso_sync_found(found)
+
+        if (found) then
+            do l = 0, p
+                do k = 0, n
+                    do j = 0, m
+                        w_vf(1)%sf(j, k, l) = w_io(1)%sf(j, k, l)
+                    end do
+                end do
+            end do
+        end if
+        deallocate (w_io(1)%sf)
+
+    end subroutine s_read_lso_mask
+
+    !> Read the lso_stat binary for t_step and emit each variable into silo_hdf5_lso_stat/. No-op when the file is missing (e.g.
+    !! step 0 in cfl_dt mode).
+    impure subroutine s_save_lso_stat_data(t_step)
+
+        integer, intent(in)             :: t_step
+        type(scalar_field), allocatable :: q_stat_vf(:)
+        logical                         :: found
+        integer                         :: i
+
+        if (n_lso_stat <= 0) return
+
+        allocate (q_stat_vf(1:n_lso_stat))
+        do i = 1, n_lso_stat
+            allocate (q_stat_vf(i)%sf(0:m,0:n,0:p))
+        end do
+
+        call s_read_lso_stat_file(q_stat_vf, n_lso_stat, t_step, found)
+
+        call s_lso_sync_found(found)
+
+        if (found) call s_write_lso_stat_fields(q_stat_vf, t_step)
+
+        do i = 1, n_lso_stat
+            deallocate (q_stat_vf(i)%sf)
+        end do
+        deallocate (q_stat_vf)
+
+    end subroutine s_save_lso_stat_data
+
+    !> Compute the Euler-Lagrange closure fields from the simulation-written LSO stat binary (+ filtered conserved data and mask)
+    !! and write them to silo_hdf5_lso_closure/. No-op when the stat file is missing.
+    impure subroutine s_save_lso_closure_data(t_step)
+
+        integer, intent(in)             :: t_step
+        type(scalar_field), allocatable :: q_stat_vf(:), q_cls_vf(:)
+        type(scalar_field)              :: w_vf(1:1)
+        logical                         :: found, found_w
+        integer                         :: i, n_cls
+
+        if (n_lso_stat <= 0) return
+
+        allocate (q_stat_vf(1:n_lso_stat))
+        do i = 1, n_lso_stat
+            allocate (q_stat_vf(i)%sf(0:m,0:n,0:p))
+        end do
+        call s_read_lso_stat_file(q_stat_vf, n_lso_stat, t_step, found)
+        call s_lso_sync_found(found)
+
+        if (found) then
+            allocate (w_vf(1)%sf(0:m,0:n,0:p))
+            call s_read_lso_mask(w_vf, t_step, found_w)
+            if (.not. found_w) w_vf(1)%sf = 1._stp
+
+            n_cls = f_lso_n_closure()
+            allocate (q_cls_vf(1:n_cls))
+            do i = 1, n_cls
+                allocate (q_cls_vf(i)%sf(0:m,0:n,0:p))
+            end do
+
+            call s_compute_lso_closure_fields(q_stat_vf, q_cons_vf, w_vf, q_cls_vf)
+            call s_write_lso_closure_fields(q_cls_vf, t_step)
+
+            do i = 1, n_cls
+                deallocate (q_cls_vf(i)%sf)
+            end do
+            deallocate (q_cls_vf)
+            deallocate (w_vf(1)%sf)
+        end if
+
+        do i = 1, n_lso_stat
+            deallocate (q_stat_vf(i)%sf)
+        end do
+        deallocate (q_stat_vf)
+
+    end subroutine s_save_lso_closure_data
+
+    !> Closure fields for the post-widened data (lso_pp_filter = T): apply the sigma2 pass to every stat product, then compute the
+    !! closures against the post-filtered conserved state and weight w2 = filter2(w1).
+    impure subroutine s_save_lso_pp_closure_data(t_step)
+
+        integer, intent(in)             :: t_step
+        type(scalar_field), allocatable :: q_io_vf(:), q_stat_vf(:), q_cls_vf(:)
+        logical                         :: found
+        integer                         :: i, c, j, k, l, n_cls
+
+        if (n_lso_stat <= 0) return
+
+        ! Read into interior-sized temporaries, then move into ghost-extended fields (the pp filter needs halo cells).
+        allocate (q_io_vf(1:n_lso_stat), q_stat_vf(1:n_lso_stat))
+        do i = 1, n_lso_stat
+            allocate (q_io_vf(i)%sf(0:m,0:n,0:p))
+            allocate (q_stat_vf(i)%sf(lbound(q_cons_vf(1)%sf, 1):ubound(q_cons_vf(1)%sf, 1),lbound(q_cons_vf(1)%sf, &
+                      & 2):ubound(q_cons_vf(1)%sf, 2),lbound(q_cons_vf(1)%sf, 3):ubound(q_cons_vf(1)%sf, 3)))
+        end do
+        call s_read_lso_stat_file(q_io_vf, n_lso_stat, t_step, found)
+        call s_lso_sync_found(found)
+
+        if (found) then
+            do i = 1, n_lso_stat
+                do l = 0, p
+                    do k = 0, n
+                        do j = 0, m
+                            q_stat_vf(i)%sf(j, k, l) = q_io_vf(i)%sf(j, k, l)
+                        end do
+                    end do
+                end do
+            end do
+
+            ! sigma2 pass over all stat products, in chunks of sys_size fields so the
+            ! shared MPI halo buffers (sized for sys_size) are never exceeded.
+            do c = 1, n_lso_stat, sys_size
+                call s_apply_lso_pp_filter(q_stat_vf(c:min(c + sys_size - 1, n_lso_stat)))
+            end do
+
+            n_cls = f_lso_n_closure()
+            allocate (q_cls_vf(1:n_cls))
+            do i = 1, n_cls
+                allocate (q_cls_vf(i)%sf(0:m,0:n,0:p))
+            end do
+            call s_compute_lso_closure_fields(q_stat_vf, q_cons_vf, q_lso_pp_w_vf, q_cls_vf)
+            call s_write_lso_closure_fields(q_cls_vf, t_step)
+            do i = 1, n_cls
+                deallocate (q_cls_vf(i)%sf)
+            end do
+            deallocate (q_cls_vf)
+        end if
+
+        do i = 1, n_lso_stat
+            deallocate (q_io_vf(i)%sf, q_stat_vf(i)%sf)
+        end do
+        deallocate (q_io_vf, q_stat_vf)
+
+    end subroutine s_save_lso_pp_closure_data
+
+    !> Closure fields for original data filtered in post_process (lso_pp_filter = T, lso_filter_wrt = F): the stat products in
+    !! q_lso_pp_stat_vf were formed from the unfiltered state and filtered (p_main), the weight is the filtered gas mask.
+    impure subroutine s_save_lso_pp_raw_closure_data(t_step)
+
+        integer, intent(in)             :: t_step
+        type(scalar_field), allocatable :: q_stat_vf(:), q_cls_vf(:)
+        integer                         :: i, j, k, l, n_cls
+
+        if (n_lso_stat <= 0) return
+
+        allocate (q_stat_vf(1:n_lso_stat))
+        do i = 1, n_lso_stat
+            allocate (q_stat_vf(i)%sf(lbound(q_cons_vf(1)%sf, 1):ubound(q_cons_vf(1)%sf, 1),lbound(q_cons_vf(1)%sf, &
+                      & 2):ubound(q_cons_vf(1)%sf, 2),lbound(q_cons_vf(1)%sf, 3):ubound(q_cons_vf(1)%sf, 3)))
+            q_stat_vf(i)%sf = 0._stp
+            do l = 0, p
+                do k = 0, n
+                    do j = 0, m
+                        q_stat_vf(i)%sf(j, k, l) = q_lso_pp_stat_vf(i)%sf(j, k, l)
+                    end do
+                end do
+            end do
+        end do
+        n_cls = f_lso_n_closure()
+        allocate (q_cls_vf(1:n_cls))
+        do i = 1, n_cls
+            allocate (q_cls_vf(i)%sf(0:m,0:n,0:p))
+        end do
+        call s_compute_lso_closure_fields(q_stat_vf, q_cons_vf, q_lso_pp_w_vf, q_cls_vf)
+        call s_write_lso_closure_fields(q_cls_vf, t_step)
+        do i = 1, n_cls
+            deallocate (q_cls_vf(i)%sf)
+        end do
+        do i = 1, n_lso_stat
+            deallocate (q_stat_vf(i)%sf)
+        end do
+        deallocate (q_cls_vf, q_stat_vf)
+
+    end subroutine s_save_lso_pp_raw_closure_data
+
+    !> Emit the closure fields into silo_hdf5_lso_closure/ with ParaView-friendly names. Field order must match
+    !! s_compute_lso_closure_fields / f_lso_n_closure.
+    impure subroutine s_write_lso_closure_fields(q_cls_vf, t_step)
+
+        type(scalar_field), intent(in) :: q_cls_vf(:)
+        integer, intent(in)            :: t_step
+        character(LEN=name_len)        :: varname
+        character(LEN=2)               :: tc(6)
+        character(LEN=1)               :: dc(3)
+        integer                        :: nd, nt, c, a, idx
+
+        nd = num_dims
+        nt = nd*(nd + 1)/2
+        dc = (/'x', 'y', 'z'/)
+        if (nd == 3) then
+            tc(1:6) = (/'11', '12', '13', '22', '23', '33'/)
+        else
+            tc(1:3) = (/'11', '12', '22'/)
+        end if
+
+        call s_switch_to_lso_stat_dir('silo_hdf5_lso_closure')
+        call s_open_formatted_database_file(t_step)
+        call s_write_grid_to_formatted_database_file(t_step)
+
+        idx = 0
+        do c = 1, nt
+            call put_next('R_sg_' // tc(c))
+        end do
+        do a = 1, nd
+            call put_next('Q_T_' // dc(a))
+        end do
+        do a = 1, nd
+            call put_next('E_ku_' // dc(a))
+        end do
+        do a = 1, nd
+            call put_next('W_tau_u_' // dc(a))
+        end do
+        do c = 1, nt
+            call put_next('R_mu_sg_' // tc(c))
+        end do
+        do a = 1, nd
+            call put_next('R_lam_sg_' // dc(a))
+        end do
+        call put_next('T_tilde')
+        do a = 1, nd
+            call put_next('u_favre_' // dc(a))
+        end do
+
+        call s_close_formatted_database_file()
+        call s_switch_output_dirs(.true.)
+
+    contains
+
+        impure subroutine put_next(name)
+
+            character(LEN=*), intent(in) :: name
+
+            idx = idx + 1
+            varname = name
+            call s_put_lso_var(q_cls_vf(idx))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+
+        end subroutine put_next
+
+    end subroutine s_write_lso_closure_fields
+
+    !> Write the post_process-computed LSO stat fields (q_lso_pp_stat_vf from m_lso_pp_filter) to silo_hdf5_lso_stat/. The fields
+    !! are computed in-process by s_compute_lso_pp_stat_fields from the post_process-filtered conserved state, so no binary file
+    !! read is required (unlike s_save_lso_stat_data).
+    impure subroutine s_save_lso_pp_stat_data(t_step)
+
+        integer, intent(in) :: t_step
+
+        if (n_lso_stat <= 0) return
+
+        call s_write_lso_stat_fields(q_lso_pp_stat_vf, t_step)
+
+    end subroutine s_save_lso_pp_stat_data
+
+    !> Copy a ghost-less LSO field into q_sf, replicating edge cells into the Silo pad region.
+    impure subroutine s_put_lso_var(fld)
+
+        type(scalar_field), intent(in) :: fld
+        integer                        :: j, k, l
+
+        do l = lbound(out%q_sf, 3), ubound(out%q_sf, 3)
+            do k = lbound(out%q_sf, 2), ubound(out%q_sf, 2)
+                do j = lbound(out%q_sf, 1), ubound(out%q_sf, 1)
+                    out%q_sf(j, k, l) = real(fld%sf(min(max(j, 0), m), min(max(k, 0), n), min(max(l, 0), p)), wp)
+                end do
+            end do
+        end do
+
+    end subroutine s_put_lso_var
+
+    !> Write the LSO statistical product fields in q_stat_vf to silo_hdf5_lso_stat/ and restore the LSO output directory.
+    impure subroutine s_write_lso_stat_fields(q_stat_vf, t_step)
+
+        type(scalar_field), intent(in) :: q_stat_vf(:)
+        integer, intent(in)            :: t_step
+        character(LEN=name_len)        :: varname
+        character(LEN=2)               :: tc(6)
+        integer                        :: c, nt
+
+        nt = num_dims*(num_dims + 1)/2
+        if (num_dims == 3) then
+            tc(1:6) = (/'11', '12', '13', '22', '23', '33'/)
+        else
+            tc(1:3) = (/'11', '12', '22'/)
+        end if
+
+        call s_switch_to_lso_stat_dir()
+        call s_open_formatted_database_file(t_step)
+        call s_write_grid_to_formatted_database_file(t_step)
+
+        ! phi_p
+        varname = 'phi_p'
+        call s_put_lso_var(q_stat_vf(lso_stat_phi_p_beg))
+        call s_write_variable_to_formatted_database_file(varname, t_step)
+
+        ! rho scalar (gas_mask * rho)
+        varname = 'rho'
+        call s_put_lso_var(q_stat_vf(lso_stat_rho_beg))
+        call s_write_variable_to_formatted_database_file(varname, t_step)
+
+        ! rhoke scalar (gas_mask * (mom1^2+mom2^2+mom3^2)/rho)
+        varname = 'rho_ke'
+        call s_put_lso_var(q_stat_vf(lso_stat_rhoke_beg))
+        call s_write_variable_to_formatted_database_file(varname, t_step)
+
+        ! phi_p * u_p
+        varname = 'phi_p_up_x'
+        call s_put_lso_var(q_stat_vf(lso_stat_up_beg))
+        call s_write_variable_to_formatted_database_file(varname, t_step)
+        if (num_dims >= 2) then
+            varname = 'phi_p_up_y'
+            call s_put_lso_var(q_stat_vf(lso_stat_up_beg + 1))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+        if (num_dims == 3) then
+            varname = 'phi_p_up_z'
+            call s_put_lso_var(q_stat_vf(lso_stat_up_beg + 2))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+
+        ! rho*u
+        varname = 'rho_u_x'
+        call s_put_lso_var(q_stat_vf(lso_stat_rhou_beg))
+        call s_write_variable_to_formatted_database_file(varname, t_step)
+        if (num_dims >= 2) then
+            varname = 'rho_u_y'
+            call s_put_lso_var(q_stat_vf(lso_stat_rhou_beg + 1))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+        if (num_dims == 3) then
+            varname = 'rho_u_z'
+            call s_put_lso_var(q_stat_vf(lso_stat_rhou_beg + 2))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+
+        ! rho*u*u upper triangle
+        do c = 1, nt
+            varname = 'rho_uu_' // tc(c)
+            call s_put_lso_var(q_stat_vf(lso_stat_rhouu_beg + c - 1))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end do
+
+        ! rho*u*|u|^2
+        varname = 'rho_uke_x'
+        call s_put_lso_var(q_stat_vf(lso_stat_rhouke_beg))
+        call s_write_variable_to_formatted_database_file(varname, t_step)
+        if (num_dims >= 2) then
+            varname = 'rho_uke_y'
+            call s_put_lso_var(q_stat_vf(lso_stat_rhouke_beg + 1))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+        if (num_dims == 3) then
+            varname = 'rho_uke_z'
+            call s_put_lso_var(q_stat_vf(lso_stat_rhouke_beg + 2))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+
+        ! rho*u*T
+        varname = 'rho_uT_x'
+        call s_put_lso_var(q_stat_vf(lso_stat_rhouT_beg))
+        call s_write_variable_to_formatted_database_file(varname, t_step)
+        if (num_dims >= 2) then
+            varname = 'rho_uT_y'
+            call s_put_lso_var(q_stat_vf(lso_stat_rhouT_beg + 1))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+        if (num_dims == 3) then
+            varname = 'rho_uT_z'
+            call s_put_lso_var(q_stat_vf(lso_stat_rhouT_beg + 2))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+
+        ! tau (same layout as rho_uu)
+        do c = 1, nt
+            varname = 'tau_' // tc(c)
+            call s_put_lso_var(q_stat_vf(lso_stat_tau_beg + c - 1))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end do
+
+        ! q_i
+        varname = 'q_x'
+        call s_put_lso_var(q_stat_vf(lso_stat_q_beg))
+        call s_write_variable_to_formatted_database_file(varname, t_step)
+        if (num_dims >= 2) then
+            varname = 'q_y'
+            call s_put_lso_var(q_stat_vf(lso_stat_q_beg + 1))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+        if (num_dims == 3) then
+            varname = 'q_z'
+            call s_put_lso_var(q_stat_vf(lso_stat_q_beg + 2))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+
+        ! (tau u)_i
+        varname = 'rho_tau_u_x'
+        call s_put_lso_var(q_stat_vf(lso_stat_rhotau_u_beg))
+        call s_write_variable_to_formatted_database_file(varname, t_step)
+        if (num_dims >= 2) then
+            varname = 'rho_tau_u_y'
+            call s_put_lso_var(q_stat_vf(lso_stat_rhotau_u_beg + 1))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+        if (num_dims == 3) then
+            varname = 'rho_tau_u_z'
+            call s_put_lso_var(q_stat_vf(lso_stat_rhotau_u_beg + 2))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+
+        ! gas_mask*u
+        varname = 'g_u_x'
+        call s_put_lso_var(q_stat_vf(lso_stat_gu_beg))
+        call s_write_variable_to_formatted_database_file(varname, t_step)
+        if (num_dims >= 2) then
+            varname = 'g_u_y'
+            call s_put_lso_var(q_stat_vf(lso_stat_gu_beg + 1))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+        if (num_dims == 3) then
+            varname = 'g_u_z'
+            call s_put_lso_var(q_stat_vf(lso_stat_gu_beg + 2))
+            call s_write_variable_to_formatted_database_file(varname, t_step)
+        end if
+
+        call s_close_formatted_database_file()
+
+        ! Restore LSO directory for subsequent passes
+        call s_switch_output_dirs(.true.)
+
+    end subroutine s_write_lso_stat_fields
+
     !> Transpose 3-D complex data from x-pencil to y-pencil layout via MPI_Alltoall.
     subroutine s_mpi_transpose_x2y
 
@@ -826,6 +1497,7 @@ contains
         call s_initialize_data_input_module()
         call s_initialize_derived_variables_module()
         call s_initialize_data_output_module()
+        if (lso_pp_filter) call s_initialize_lso_pp_filter_module()
 
         if (parallel_io .neqv. .true.) then
             s_read_data_files => s_read_serial_data_files
@@ -991,7 +1663,7 @@ contains
         call s_initialize_parallel_io()
         output_offsets = (/offset_x, offset_y, offset_z/)
         call s_mpi_decompose_computational_domain(write_silo_ghost_offsets=format == format_silo, adjust_local_domains=.false., &
-            & output_offsets=output_offsets)
+            & output_offsets=output_offsets, stencil_free=lso_filter_wrt .and. lso_down_sample_factor > 1)
         offset_x = output_offsets(1)
         offset_y = output_offsets(2)
         offset_z = output_offsets(3)
@@ -1028,6 +1700,7 @@ contains
         end if
 #endif
 
+        if (lso_pp_filter) call s_finalize_lso_pp_filter_module()
         call s_finalize_data_output_module()
         call s_finalize_derived_variables_module()
         call s_finalize_data_input_module()

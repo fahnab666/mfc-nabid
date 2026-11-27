@@ -139,6 +139,10 @@ module m_global_parameters
     ! proc_coords, start_idx, mpiiofs, mpi_info_int: in m_global_parameters_common
     ! down_sample: GPU-declared via generated_decls.fpp (registered param)
 
+    !> Coarsened-grid dimensions for LSO downsampled output (valid when lso_filter_wrt .and. lso_down_sample_factor > 1)
+    integer :: m_lso_ds, n_lso_ds, p_lso_ds
+    integer :: m_glb_lso_ds, n_glb_lso_ds, p_glb_lso_ds
+
     !> @name MPI domain-decomposition state for Lagrangian-bubble exchange (#1290)
     !> @{
     type(bounds_info), allocatable, dimension(:) :: pcomm_coords    !< Local rank physical domain bounds
@@ -242,6 +246,26 @@ module m_global_parameters
     type(ib_airfoil_grid), dimension(num_ib_airfoils_max) :: ib_airfoil_grids  !< Per-airfoil computed surface grids
 
     $:GPU_DECLARE(create='[ib_airfoil_grids]')
+    !> @}
+
+    ! LSO filter and stat inputs are declared in generated_decls.fpp
+
+    !> @name LSO statistical product fields for LES subgrid modeling
+    !> @{
+    integer :: n_lso_stat  !< Total number of statistical variables (12 in 1D, 23 in 2D, 36 in 3D)
+    !> Block begin/end indices into q_lso_stat_vf(1:n_lso_stat)
+    integer :: lso_stat_phi_p_beg, lso_stat_phi_p_end        !< phi_p: particle indicator (1 component)
+    integer :: lso_stat_rho_beg, lso_stat_rho_end            !< gas rho scalar: gas_mask*rho (1 component)
+    integer :: lso_stat_rhoke_beg, lso_stat_rhoke_end        !< gas KE scalar: gas_mask*(mom1^2+mom2^2+mom3^2)/rho (1 component)
+    integer :: lso_stat_up_beg, lso_stat_up_end              !< phi_p * u_p: particle velocity flux (num_dims components)
+    integer :: lso_stat_rhou_beg, lso_stat_rhou_end          !< gas rho*u (num_dims components)
+    integer :: lso_stat_rhouu_beg, lso_stat_rhouu_end        !< gas rho*u*u symmetric tensor (1/3/6 components)
+    integer :: lso_stat_rhouke_beg, lso_stat_rhouke_end      !< gas rho*u*|u|^2 (num_dims components)
+    integer :: lso_stat_rhouT_beg, lso_stat_rhouT_end        !< gas rho*u*T temperature flux (num_dims components)
+    integer :: lso_stat_tau_beg, lso_stat_tau_end            !< viscous stress tau_ij (1/3/6 components)
+    integer :: lso_stat_q_beg, lso_stat_q_end                !< heat flux q_i (num_dims components)
+    integer :: lso_stat_rhotau_u_beg, lso_stat_rhotau_u_end  !< viscous power flux (tau*u)_i (num_dims components)
+    integer :: lso_stat_gu_beg, lso_stat_gu_end              !< gas_mask*u, for the mixture velocity (num_dims components)
     !> @}
 
     !> @name Bubble modeling
@@ -722,6 +746,45 @@ contains
         wall_column_dt_frac = 0.1_wp
         ib_visc_compact = .true.
         ib_uncover_fill = .false.
+
+        ! LSO variable-weight Gaussian filter
+        lso_filter = .false.
+        lso_filter_wrt = .false.
+        filter_sigma = dflt_real
+        lso_down_sample_factor = 1
+        lso_n_passes_x = 0
+        lso_n_passes_y = 0
+        lso_n_passes_z = 0
+        lso_a_x = 0.0_wp
+        lso_a_y = 0.0_wp
+        lso_a_z = 0.0_wp
+        lso2_n_passes_x = 0
+        lso2_n_passes_y = 0
+        lso2_n_passes_z = 0
+        lso2_a_x = 0.0_wp
+        lso2_a_y = 0.0_wp
+        lso2_a_z = 0.0_wp
+
+        ! LSO statistical product fields
+        lso_stat_wrt = .false.
+        n_lso_stat = 0
+        lso_stat_phi_p_beg = 0; lso_stat_phi_p_end = 0
+        lso_stat_rho_beg = 0; lso_stat_rho_end = 0
+        lso_stat_rhoke_beg = 0; lso_stat_rhoke_end = 0
+        lso_stat_up_beg = 0; lso_stat_up_end = 0
+        lso_stat_rhou_beg = 0; lso_stat_rhou_end = 0
+        lso_stat_rhouu_beg = 0; lso_stat_rhouu_end = 0
+        lso_stat_rhouke_beg = 0; lso_stat_rhouke_end = 0
+        lso_stat_rhouT_beg = 0; lso_stat_rhouT_end = 0
+        lso_R_gas = 287.0_wp
+        lso_mu = 0.0_wp
+        lso_conductivity = 0.0_wp
+        lso_mu_T_exp = 0.0_wp
+        lso_mu_T_ref = 0.0_wp
+        lso_stat_tau_beg = 0; lso_stat_tau_end = 0
+        lso_stat_q_beg = 0; lso_stat_q_end = 0
+        lso_stat_rhotau_u_beg = 0; lso_stat_rhotau_u_end = 0
+        lso_stat_gu_beg = 0; lso_stat_gu_end = 0
 
         ! Bubble modeling (sim-specific)
         bubble_model = 1

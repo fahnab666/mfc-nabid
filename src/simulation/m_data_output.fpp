@@ -35,7 +35,7 @@ module m_data_output
         & s_write_run_time_information, s_write_data_files, s_write_serial_data_files, s_write_parallel_data_files, &
         & s_write_ib_data_file, s_write_probe_files, s_write_ib_state_file, s_write_ib_history, s_close_ib_history, &
         & s_close_run_time_information_file, s_close_probe_files, s_finalize_data_output_module, s_initialize_lag_output, &
-        & s_write_lag_particle_evol_if_due, s_write_lag_step_output, s_write_lag_save_data, s_create_D_dir
+        & s_write_lag_particle_evol_if_due, s_write_lag_step_output, s_write_lag_save_data, s_create_D_dir, s_write_lso_stat_file
 
     !> @name ICFL, VCFL, CCFL, TCFL, and Rc stability criteria extrema over all the time-steps
     !> @{
@@ -59,6 +59,9 @@ module m_data_output
     integer, parameter  :: LAG_VOID_ID = 13           !< D/voidfraction.dat
     real(wp), parameter :: void_stat_min = 5.e-11_wp  !< Volume fraction above which a cell counts in the void statistics
     real(wp)            :: next_write_time            !< Time of the next particle evolution write
+
+    !> Optional filename prefix for LSO-filtered output (set to 'lso_' before writing filtered fields, '' otherwise)
+    character(LEN=8), public :: lso_file_prefix = ''
 
 contains
 
@@ -488,55 +491,118 @@ contains
         logical :: file_exist                               !< Logical used to check existence of current time-step directory
         character(LEN=15) :: FMT
         integer :: i, j, k, l, r
+        integer :: m_out, n_out, p_out                      !< Effective output bounds (coarser for LSO downsampled, full otherwise)
+        real(wp) :: alpha_cb, w_cb                          !< Interpolation position/weight for coarsened coordinates
+        integer :: cb0, cb1                                 !< Bracketing indices for coordinate interpolation
+        real(wp), allocatable :: cb_tmp(:)                  !< Temporary array for interpolated cell-boundary coordinates
+
+        ! Use coarsened bounds when writing LSO downsampled data, otherwise use full domain.
+
+        if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+            m_out = m_lso_ds; n_out = n_lso_ds; p_out = p_lso_ds
+        else
+            m_out = m; n_out = n; p_out = p
+        end if
 
         write (t_step_dir, '(A,I0,A,I0)') trim(case_dir) // '/p_all'
         write (t_step_dir, '(a,i0,a,i0)') trim(case_dir) // '/p_all/p', proc_rank, '/', t_step
 
-        file_path = trim(t_step_dir) // '/.'
-        call my_inquire(file_path, file_exist)
-        if (file_exist) call s_delete_directory(trim(t_step_dir))
-        call s_create_directory(trim(t_step_dir))
-        ! Serial readers (post_process, restart) need bc_type.dat and bc_buffers.dat in every step directory, not just step 0.
-        if (bc_io) call s_write_serial_boundary_condition_files(bc_type, t_step_dir)
+        ! When writing the primary (unfiltered) output: delete any stale directory and recreate it cleanly. When writing
+        ! LSO-filtered output (lso_file_prefix /= ''), the directory was already created by the primary write and must not be
+        ! deleted - doing so would erase the unfiltered files. Full-resolution coordinate files (x_cb.dat, etc.) are written only on
+        ! the primary pass. When LSO downsampling is active, stride-sampled coordinate files (lso_x_cb.dat, etc.) are written on the
+        ! LSO pass so that post_process can reconstruct the correct physical domain extent on the coarser grid.
+        if (lso_file_prefix == '') then
+            file_path = trim(t_step_dir) // '/.'
+            call my_inquire(file_path, file_exist)
+            if (file_exist) call s_delete_directory(trim(t_step_dir))
+            call s_create_directory(trim(t_step_dir))
+            ! Serial readers (post_process, restart) need bc_type.dat and bc_buffers.dat in every step directory, not just step 0.
+            if (bc_io) call s_write_serial_boundary_condition_files(bc_type, t_step_dir)
 
-        file_path = trim(t_step_dir) // '/x_cb.dat'
-
-        open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
-        write (2) x_cb(-1:m); close (2)
-
-        if (n > 0) then
-            file_path = trim(t_step_dir) // '/y_cb.dat'
-
+            file_path = trim(t_step_dir) // '/x_cb.dat'
             open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
-            write (2) y_cb(-1:n); close (2)
+            write (2) x_cb(-1:m); close (2)
 
-            if (p > 0) then
-                file_path = trim(t_step_dir) // '/z_cb.dat'
-
+            if (n > 0) then
+                file_path = trim(t_step_dir) // '/y_cb.dat'
                 open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
-                write (2) z_cb(-1:p); close (2)
+                write (2) y_cb(-1:n); close (2)
+
+                if (p > 0) then
+                    file_path = trim(t_step_dir) // '/z_cb.dat'
+                    open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
+                    write (2) z_cb(-1:p); close (2)
+                end if
+            end if
+        else if (lso_down_sample_factor > 1) then
+            ! Write interpolated coordinate files for the coarsened LSO output.
+            ! Coarsened boundary j maps to original position (j+1)*(m+1)/(m_lso_ds+1) - 1, so j=-1 always gives
+            ! x_cb(-1) and j=m_lso_ds always gives x_cb(m), preserving domain boundaries exactly for any m.
+            allocate (cb_tmp(-1:m_lso_ds))
+            do j = -1, m_lso_ds
+                alpha_cb = real(j + 1, wp)*real(m + 1, wp)/real(m_lso_ds + 1, wp) - 1._wp
+                cb0 = int(alpha_cb); cb0 = max(cb0, -1)
+                cb1 = min(cb0 + 1, m)
+                w_cb = alpha_cb - real(cb0, wp)
+                cb_tmp(j) = (1._wp - w_cb)*x_cb(cb0) + w_cb*x_cb(cb1)
+            end do
+            file_path = trim(t_step_dir) // '/lso_x_cb.dat'
+            open (2, FILE=trim(file_path), form='unformatted', STATUS='replace')
+            write (2) cb_tmp; close (2)
+            deallocate (cb_tmp)
+
+            if (n > 0) then
+                allocate (cb_tmp(-1:n_lso_ds))
+                do j = -1, n_lso_ds
+                    alpha_cb = real(j + 1, wp)*real(n + 1, wp)/real(n_lso_ds + 1, wp) - 1._wp
+                    cb0 = int(alpha_cb); cb0 = max(cb0, -1)
+                    cb1 = min(cb0 + 1, n)
+                    w_cb = alpha_cb - real(cb0, wp)
+                    cb_tmp(j) = (1._wp - w_cb)*y_cb(cb0) + w_cb*y_cb(cb1)
+                end do
+                file_path = trim(t_step_dir) // '/lso_y_cb.dat'
+                open (2, FILE=trim(file_path), form='unformatted', STATUS='replace')
+                write (2) cb_tmp; close (2)
+                deallocate (cb_tmp)
+
+                if (p > 0) then
+                    allocate (cb_tmp(-1:p_lso_ds))
+                    do j = -1, p_lso_ds
+                        alpha_cb = real(j + 1, wp)*real(p + 1, wp)/real(p_lso_ds + 1, wp) - 1._wp
+                        cb0 = int(alpha_cb); cb0 = max(cb0, -1)
+                        cb1 = min(cb0 + 1, p)
+                        w_cb = alpha_cb - real(cb0, wp)
+                        cb_tmp(j) = (1._wp - w_cb)*z_cb(cb0) + w_cb*z_cb(cb1)
+                    end do
+                    file_path = trim(t_step_dir) // '/lso_z_cb.dat'
+                    open (2, FILE=trim(file_path), form='unformatted', STATUS='replace')
+                    write (2) cb_tmp; close (2)
+                    deallocate (cb_tmp)
+                end if
             end if
         end if
 
         do i = 1, sys_size
-            write (file_path, '(A,I0,A)') trim(t_step_dir) // '/q_cons_vf', i, '.dat'
+            write (file_path, '(A,I0,A)') trim(t_step_dir) // '/' // trim(lso_file_prefix) // 'q_cons_vf', i, '.dat'
 
             open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
 
-            write (2) q_cons_vf(i)%sf(0:m,0:n,0:p); close (2)
+            write (2) q_cons_vf(i)%sf(0:m_out,0:n_out,0:p_out); close (2)
         end do
 
         ! Lagrangian beta (void fraction) written as q_cons_vf(sys_size+1) to match the parallel I/O path and allow post_process to
         ! read it.
         if (euler_lagrange) then
-            write (file_path, '(A,I0,A)') trim(t_step_dir) // '/q_cons_vf', sys_size + 1, '.dat'
+            write (file_path, '(A,I0,A)') trim(t_step_dir) // '/' // trim(lso_file_prefix) // 'q_cons_vf', sys_size + 1, '.dat'
 
             open (2, FILE=trim(file_path), form='unformatted', STATUS='new')
 
-            write (2) beta%sf(0:m,0:n,0:p); close (2)
+            write (2) beta%sf(0:m_out,0:n_out,0:p_out); close (2)
         end if
 
-        if (qbmm .and. .not. polytropic) then
+        ! QBMM pb/mv fields are not filtered by LSO; write only on the primary pass.
+        if ((qbmm .and. .not. polytropic) .and. lso_file_prefix == '') then
             do i = 1, nb
                 do r = 1, nnode
                     write (file_path, '(A,I0,A)') trim(t_step_dir) // '/pb', sys_size + (i - 1)*nnode + r, '.dat'
@@ -558,8 +624,8 @@ contains
             end do
         end if
 
-        ! Writing the IB markers
-        if (ib) then
+        ! Writing the IB markers - only on the primary (unfiltered) pass; IB state is unchanged by the LSO filter.
+        if (ib .and. lso_file_prefix == '') then
             call s_write_serial_ib_data(t_step)
         end if
 
@@ -568,6 +634,10 @@ contains
         else
             FMT = "(2F40.14)"
         end if
+
+        ! D/ diagnostic text files (prim/cons/probe outputs) are only written on the primary pass; the LSO-filtered pass writes only
+        ! the prefixed q_cons_vf binary files.
+        if (lso_file_prefix /= '') return
 
         write (t_step_dir, '(A,I0,A,I0)') trim(case_dir) // '/D'
         file_path = trim(t_step_dir) // '/.'
@@ -828,6 +898,47 @@ contains
 
     end subroutine s_write_serial_data_files
 
+    !> Set up MPI I/O data views for LSO stride-downsampled parallel file output.
+    !!
+    !! Points MPI_IO_DATA%var(i) at q_filt_ds_vf(i)%sf(0:m_lso_ds, 0:n_lso_ds, 0:p_lso_ds) and creates subarray types with the
+    !! coarsened global/local dimensions so that each MPI rank writes its correct portion of the coarser global file. The coarsened
+    !! starting index is start_idx(d)/factor.
+    impure subroutine s_initialize_mpi_data_lso_ds(q_filt_ds_vf)
+
+        type(scalar_field), dimension(sys_size), intent(in) :: q_filt_ds_vf
+
+#ifdef MFC_MPI
+        integer, dimension(num_dims) :: sizes_glb, sizes_loc, start_lso
+        integer                      :: i, ierr
+
+        do i = 1, sys_size
+            MPI_IO_DATA%var(i)%sf => q_filt_ds_vf(i)%sf(0:m_lso_ds,0:n_lso_ds,0:p_lso_ds)
+        end do
+
+        sizes_glb(1) = m_glb_lso_ds + 1
+        sizes_loc(1) = m_lso_ds + 1
+        start_lso(1) = start_idx(1)/lso_down_sample_factor
+
+        if (num_dims >= 2) then
+            sizes_glb(2) = n_glb_lso_ds + 1
+            sizes_loc(2) = n_lso_ds + 1
+            start_lso(2) = start_idx(2)/lso_down_sample_factor
+        end if
+        if (num_dims == 3) then
+            sizes_glb(3) = p_glb_lso_ds + 1
+            sizes_loc(3) = p_lso_ds + 1
+            start_lso(3) = start_idx(3)/lso_down_sample_factor
+        end if
+
+        do i = 1, sys_size
+            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_lso, MPI_ORDER_FORTRAN, mpi_p, &
+                                          & MPI_IO_DATA%view(i), ierr)
+            call MPI_TYPE_COMMIT(MPI_IO_DATA%view(i), ierr)
+        end do
+#endif
+
+    end subroutine s_initialize_mpi_data_lso_ds
+
     !> Write grid and conservative variable data files in parallel via MPI I/O
     impure subroutine s_write_parallel_data_files(q_cons_vf, t_step, beta, q_T_sf)
 
@@ -889,7 +1000,8 @@ contains
             call s_delay_file_access(proc_rank)
 
             write (file_loc, '(I0,A,i7.7,A)') t_step, '_', proc_rank, '.dat'
-            file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(file_loc)
+            file_loc = trim(case_dir) // '/restart_data/lustre_' // trim(t_step_string) // trim(mpiiofs) // trim(lso_file_prefix) &
+                            & // trim(file_loc)
             inquire (FILE=trim(file_loc), EXIST=file_exist)
             if (file_exist .and. proc_rank == 0) then
                 call MPI_FILE_DELETE(file_loc, mpi_info_int, ierr)
@@ -952,7 +1064,12 @@ contains
                 call s_write_parallel_ib_data(t_step)
             end if
         else
-            if (ib) then
+            ! For the LSO-filtered pass (lso_file_prefix /= ''), IB marker data is not written, so skip the ib_markers setup to
+            ! avoid re-committing already-committed MPI type handles from the primary pass. When lso_down_sample_factor > 1, use the
+            ! coarsened MPI views and dimensions.
+            if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+                call s_initialize_mpi_data_lso_ds(q_cons_vf)
+            else if (ib .and. lso_file_prefix == '') then
                 call s_initialize_mpi_data(q_cons_vf, ib_markers=ib_markers, ib_mpi_data=MPI_IO_IB_DATA, qbmm_pb=pb_ts(1), &
                                            & qbmm_mv=mv_ts(1))
             else if (present(beta)) then
@@ -962,7 +1079,7 @@ contains
             end if
 
             write (file_loc, '(I0,A)') t_step, '.dat'
-            file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
+            file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(lso_file_prefix) // trim(file_loc)
             inquire (FILE=trim(file_loc), EXIST=file_exist)
             if (file_exist .and. proc_rank == 0) then
                 call MPI_FILE_DELETE(file_loc, mpi_info_int, ierr)
@@ -970,11 +1087,17 @@ contains
             call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
             call s_check_mpi_file_open(ierr, file_loc)
 
-            data_size = (m + 1)*(n + 1)*(p + 1)
-
-            m_MOK = int(m_glb + 1, MPI_OFFSET_KIND)
-            n_MOK = int(n_glb + 1, MPI_OFFSET_KIND)
-            p_MOK = int(p_glb + 1, MPI_OFFSET_KIND)
+            if (lso_file_prefix /= '' .and. lso_down_sample_factor > 1) then
+                data_size = (m_lso_ds + 1)*(n_lso_ds + 1)*(p_lso_ds + 1)
+                m_MOK = int(m_glb_lso_ds + 1, MPI_OFFSET_KIND)
+                n_MOK = int(n_glb_lso_ds + 1, MPI_OFFSET_KIND)
+                p_MOK = int(p_glb_lso_ds + 1, MPI_OFFSET_KIND)
+            else
+                data_size = (m + 1)*(n + 1)*(p + 1)
+                m_MOK = int(m_glb + 1, MPI_OFFSET_KIND)
+                n_MOK = int(n_glb + 1, MPI_OFFSET_KIND)
+                p_MOK = int(p_glb + 1, MPI_OFFSET_KIND)
+            end if
             WP_MOK = int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
             MOK = int(1._wp, MPI_OFFSET_KIND)
             str_MOK = int(name_len, MPI_OFFSET_KIND)
@@ -1022,7 +1145,8 @@ contains
 
             call MPI_FILE_CLOSE(ifile, ierr)
 
-            if (ib) then
+            ! IB marker data is not filtered; write only on the primary (unfiltered) pass.
+            if (ib .and. lso_file_prefix == '') then
                 call s_write_parallel_ib_data(t_step)
             end if
         end if
@@ -2484,5 +2608,113 @@ contains
         f_probe_owned = v <= hi .and. (v > lo .or. (first .and. v >= lo))
 
     end function f_probe_owned
+
+    !> Write n_stat LSO stat fields to lso_stat_<t_step>.dat via MPI-IO. Caller passes either q_lso_stat_vf or its stride-sampled
+    !! twin q_lso_stat_ds_vf.
+    impure subroutine s_write_lso_stat_file(q_stat_vf, n_stat, t_step, fname)
+
+        type(scalar_field), intent(in)         :: q_stat_vf(:)
+        integer, intent(in)                    :: n_stat, t_step
+        character(LEN=*), intent(in), optional :: fname  !< file basename prefix (default 'lso_stat_')
+
+#ifdef MFC_MPI
+        integer                              :: ifile, ierr, data_size, i, j, k, l
+        integer, dimension(MPI_STATUS_SIZE)  :: status
+        integer(kind=MPI_OFFSET_kind)        :: disp
+        integer(kind=MPI_OFFSET_kind)        :: m_MOK, n_MOK, p_MOK
+        integer(kind=MPI_OFFSET_kind)        :: WP_MOK, var_MOK, MOK
+        integer, dimension(num_dims)         :: sizes_glb, sizes_loc, start_stat
+        integer                              :: mpi_view
+        integer                              :: m_loc, n_loc, p_loc
+        real(stp), allocatable               :: stat_io_buf(:,:,:)
+        character(LEN=path_len + 2*name_len) :: file_loc
+        logical                              :: file_exist
+
+        if (lso_down_sample_factor > 1) then
+            m_loc = m_lso_ds; n_loc = n_lso_ds; p_loc = p_lso_ds
+            sizes_glb(1) = m_glb_lso_ds + 1
+            sizes_loc(1) = m_lso_ds + 1
+            start_stat(1) = start_idx(1)/lso_down_sample_factor
+            if (num_dims >= 2) then
+                sizes_glb(2) = n_glb_lso_ds + 1
+                sizes_loc(2) = n_lso_ds + 1
+                start_stat(2) = start_idx(2)/lso_down_sample_factor
+            end if
+            if (num_dims == 3) then
+                sizes_glb(3) = p_glb_lso_ds + 1
+                sizes_loc(3) = p_lso_ds + 1
+                start_stat(3) = start_idx(3)/lso_down_sample_factor
+            end if
+            data_size = (m_lso_ds + 1)*(n_lso_ds + 1)*(p_lso_ds + 1)
+            m_MOK = int(m_glb_lso_ds + 1, MPI_OFFSET_KIND)
+            n_MOK = int(n_glb_lso_ds + 1, MPI_OFFSET_KIND)
+            p_MOK = int(p_glb_lso_ds + 1, MPI_OFFSET_KIND)
+        else
+            m_loc = m; n_loc = n; p_loc = p
+            sizes_glb(1) = m_glb + 1
+            sizes_loc(1) = m + 1
+            start_stat(1) = start_idx(1)
+            if (num_dims >= 2) then
+                sizes_glb(2) = n_glb + 1
+                sizes_loc(2) = n + 1
+                start_stat(2) = start_idx(2)
+            end if
+            if (num_dims == 3) then
+                sizes_glb(3) = p_glb + 1
+                sizes_loc(3) = p + 1
+                start_stat(3) = start_idx(3)
+            end if
+            data_size = (m + 1)*(n + 1)*(p + 1)
+            m_MOK = int(m_glb + 1, MPI_OFFSET_KIND)
+            n_MOK = int(n_glb + 1, MPI_OFFSET_KIND)
+            p_MOK = int(p_glb + 1, MPI_OFFSET_KIND)
+        end if
+
+        WP_MOK = int(storage_size(0._stp)/8, MPI_OFFSET_KIND)
+        MOK = int(1._wp, MPI_OFFSET_KIND)
+
+        if (present(fname)) then
+            write (file_loc, '(A,I0,A)') trim(fname), t_step, '.dat'
+        else
+            write (file_loc, '(A,I0,A)') 'lso_stat_', t_step, '.dat'
+        end if
+        file_loc = trim(case_dir) // '/restart_data' // trim(mpiiofs) // trim(file_loc)
+        inquire (FILE=trim(file_loc), EXIST=file_exist)
+        if (file_exist .and. proc_rank == 0) then
+            call MPI_FILE_DELETE(file_loc, mpi_info_int, ierr)
+        end if
+        call MPI_FILE_OPEN(MPI_COMM_WORLD, file_loc, ior(MPI_MODE_WRONLY, MPI_MODE_CREATE), mpi_info_int, ifile, ierr)
+
+        ! Funnel the interior block through a contiguous buffer so the write doesn't
+        ! pick up ghost cells when q_stat_vf is allocated with full bounds.
+        allocate (stat_io_buf(0:m_loc,0:n_loc,0:p_loc))
+
+        do i = 1, n_stat
+            do l = 0, p_loc
+                do k = 0, n_loc
+                    do j = 0, m_loc
+                        stat_io_buf(j, k, l) = q_stat_vf(i)%sf(j, k, l)
+                    end do
+                end do
+            end do
+
+            call MPI_TYPE_CREATE_SUBARRAY(num_dims, sizes_glb, sizes_loc, start_stat, MPI_ORDER_FORTRAN, mpi_p, mpi_view, ierr)
+            call MPI_TYPE_COMMIT(mpi_view, ierr)
+
+            var_MOK = int(i, MPI_OFFSET_KIND)
+            disp = m_MOK*max(MOK, n_MOK)*max(MOK, p_MOK)*WP_MOK*(var_MOK - 1)
+
+            call MPI_FILE_SET_VIEW(ifile, disp, mpi_p, mpi_view, 'native', mpi_info_int, ierr)
+            call MPI_FILE_WRITE_ALL(ifile, stat_io_buf, data_size*mpi_io_type, mpi_io_p, status, ierr)
+
+            call MPI_TYPE_FREE(mpi_view, ierr)
+        end do
+
+        deallocate (stat_io_buf)
+
+        call MPI_FILE_CLOSE(ifile, ierr)
+#endif
+
+    end subroutine s_write_lso_stat_file
 
 end module m_data_output
