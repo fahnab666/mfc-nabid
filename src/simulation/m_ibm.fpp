@@ -139,9 +139,10 @@ module m_ibm
 
     !> Packed (i, j, k, T_cond) per ghost for the T_cond restart file, so only these four reals per ghost cross to the host
     real(wp), dimension(:,:), allocatable :: gp_tc_rec
-    !> per-i-slab ghost-point counts/offsets for the ordered gather (AMR)
-    integer, allocatable, dimension(:) :: gp_slab
-    $:GPU_DECLARE(create='[gp_slab]')
+    !> per-(i,j)-column and per-i-row ghost-point counts/offsets for the ordered gather
+    integer, allocatable, dimension(:,:) :: gp_col
+    integer, allocatable, dimension(:)   :: gp_slab
+    $:GPU_DECLARE(create='[gp_col, gp_slab]')
 
     !> Surface record per ghost point from the latest s_ibm_correct_state, kept when ib_surface_wrt: (1) area weight, (2) wall
     !! temperature, (3) gasified mass flux. Only ghost points within two cells of the surface carry a weight, so summing weight*flux
@@ -195,11 +196,7 @@ module m_ibm
     $:GPU_DECLARE(create='[ib_shell, ib_markers_prev]')
     integer :: ib_slot_cap = 0  !< slots of ib_heat and ib_part: a bound on the bodies one rank holds
     integer :: num_gps          !< Number of ghost points
-#if defined(MFC_OpenACC)
-    $:GPU_DECLARE(create='[gp_layers, num_gps]')
-#elif defined(MFC_OpenMP)
     $:GPU_DECLARE(create='[num_gps]')
-#endif
     logical :: moving_immersed_boundary_flag
     !> Cells per direction in the image-point interpolation stencil: 2 (inverse distance, bilinear) or 3 (TSC)
     integer :: ib_ip_width
@@ -222,6 +219,11 @@ module m_ibm
     real(wp), allocatable :: ib_send_bufs(:,:), ib_recv_bufs(:,:)
     private :: ib_rec_len, n_ib_nbrs, ib_nbrs, ib_send_counts, ib_reqs, ib_stats, ib_send_bufs, ib_recv_bufs, ib_reply_slots, &
         & ib_reply_counts
+
+    ! s_handoff_ib_ownership buffers, allocated on its first call
+    character(len=1), allocatable :: ho_send_buf(:), ho_recv_bufs(:,:)
+    integer, allocatable          :: ho_reqs(:), ho_recv_nbrs(:), ho_gain_gid(:), ho_gain_from(:), ho_gain_slot(:)
+    private :: ho_send_buf, ho_recv_bufs, ho_reqs, ho_recv_nbrs, ho_gain_gid, ho_gain_from, ho_gain_slot
 
     !> Force (1:3) and torque (4:6) on each local IB from the fluid-body face fluxes of the last RHS evaluation
     real(wp), allocatable, dimension(:,:) :: ib_face_ft
@@ -342,7 +344,8 @@ contains
             $:GPU_UPDATE(device='[patch_ib(i)]')
         end do
 
-        ! after the markers and centroid offsets: bodies without an analytic moment sum it over their marked cells
+        ! after the markers and centroid offsets: bodies without an analytic moment take it from their cells' second moment
+        call s_sum_ib_inertia_tensors()
         $:GPU_PARALLEL_LOOP(private='[i]')
         do i = 1, num_ibs
             if (patch_ib(i)%moving_ibm /= 0) call s_compute_moment_of_inertia(patch_ib(i), patch_ib(i)%angular_vel, &
@@ -417,9 +420,8 @@ contains
             ib_markers_prev%sf = ib_markers%sf
             $:GPU_UPDATE(device='[ib_markers_prev%sf]')
         end if
-        if (allocated(ib_fine)) then
-            @:ALLOCATE(gp_slab(0:max(m, mkr_hi(1)) + 1))
-        end if
+        @:ALLOCATE(gp_col(0:max(m, mkr_hi(1)) + 1, 0:max(n, mkr_hi(2)) + 1))
+        @:ALLOCATE(gp_slab(0:max(m, mkr_hi(1)) + 1))
         ! AMR-IB: device-resident park for the coarse/fine ghost-point swap (move_alloc + GPU_ENTER_DATA, the amr_cg idiom)
         if (allocated(ib_fine)) then
             ! the coarse list plus every fine list a rank can hold. Fixed bodies: lists keep their length between resets, so
@@ -496,9 +498,9 @@ contains
 
         k_u2 = 0._wp
         select case (patch_ib(gp_patch_id)%geometry)
-        case (2, 8)
+        case (ib_circle, ib_sphere)
             k_u2 = sum(u_t**2)/patch_ib(gp_patch_id)%radius
-        case (10)
+        case (ib_cylinder)
             axis = patch_ib(gp_patch_id)%rotation_matrix(:,1)
             if (abs(dot_product(n, axis)) < 0.5_wp) k_u2 = (sum(u_t**2) - dot_product(u_t, axis)**2)/patch_ib(gp_patch_id)%radius
         end select
@@ -628,7 +630,6 @@ contains
         real(wp) :: rho, gamma, pi_inf, dyn_pres  !< Mixture variables
         real(wp) :: vel_sum_g, E_ghost  !< Ghost-point velocity magnitude and energy
         real(wp), dimension(2) :: Re_K
-        real(wp) :: G_K
         real(wp) :: qv_K
         real(wp) :: pres_IP, pres_GP
         real(wp), dimension(3) :: vel_IP
@@ -637,13 +638,11 @@ contains
         integer :: nf1, nf2, nf3  !< Per-call fill-tier tallies
 
         #:if not MFC_CASE_OPTIMIZATION and USING_AMD
-            real(wp), dimension(3)  :: Gs
             real(wp), dimension(3)  :: alpha_rho_IP, alpha_IP, alpha_rho_GP
             real(wp), dimension(3)  :: r_IP, v_IP, pb_IP, mv_IP
             real(wp), dimension(18) :: nmom_IP
             real(wp), dimension(12) :: presb_IP, massv_IP
         #:else
-            real(wp), dimension(num_fluids) :: Gs
             real(wp), dimension(num_fluids) :: alpha_rho_IP, alpha_IP, alpha_rho_GP
             real(wp), dimension(nb)         :: r_IP, v_IP, pb_IP, mv_IP
             real(wp), dimension(nb*nmom)    :: nmom_IP
@@ -719,11 +718,11 @@ contains
             $:END_GPU_PARALLEL_LOOP()
             $:GPU_PARALLEL_LOOP(private='[i, physical_loc, dyn_pres, alpha_rho_IP, alpha_IP, alpha_rho_GP, pres_IP, pres_GP, &
                                 & vel_IP, vel_g, r_IP, v_IP, pb_IP, mv_IP, nmom_IP, presb_IP, massv_IP, rho, gamma, pi_inf, Re_K, &
-                                & G_K, Gs, gp, norm, buf, radial_vector, j, k, l, q, qv_K, c_IP, nbub, patch_id, Ys_IP, &
-                                & W_species, T_IP, mw_IP, e_IP, Ys_g, Ys_s, T_s, T_g, T_adv, mw_s, mw_g, rho_s, rho_g, mdot_s, &
-                                & v_stefan, d, surface_converged, vel_sum_g, E_ghost, alpha_q, alpha_rho_q, e_q, mdot_k, h_w, &
-                                & e_s, nrm_l, wf, h_IP, dh_ccst, p_ratio, use_ccst]', reduction='[[n_not_converged, n_ill_posed, &
-                                & nf1, nf2, nf3]]', reductionOp='[+]', present='[ghost_points]')
+                                & gp, norm, buf, radial_vector, j, k, l, q, qv_K, c_IP, nbub, patch_id, Ys_IP, W_species, T_IP, &
+                                & mw_IP, e_IP, Ys_g, Ys_s, T_s, T_g, T_adv, mw_s, mw_g, rho_s, rho_g, mdot_s, v_stefan, d, &
+                                & surface_converged, vel_sum_g, E_ghost, alpha_q, alpha_rho_q, e_q, mdot_k, h_w, e_s, nrm_l, wf, &
+                                & h_IP, dh_ccst, p_ratio, use_ccst]', reduction='[[n_not_converged, n_ill_posed, nf1, nf2, &
+                                & nf3]]', reductionOp='[+]', present='[ghost_points]')
             do i = 1, num_gps
                 if (record_surface) then
                     $:GPU_LOOP(parallelism='[seq]')
@@ -872,13 +871,7 @@ contains
                     alpha_rho_IP(1) = alpha_IP(1)*rho_g
                 end if
 
-                ! If in simulation, use acc mixture subroutines
-                if (hypoelasticity) then
-                    call s_convert_species_to_mixture_variables_kernel(rho, gamma, pi_inf, qv_K, alpha_IP, alpha_rho_IP, Re_K, &
-                        & G_K, Gs)
-                else
-                    call s_convert_species_to_mixture_variables_kernel(rho, gamma, pi_inf, qv_K, alpha_IP, alpha_rho_IP, Re_K)
-                end if
+                call s_convert_species_to_mixture_variables_kernel(rho, gamma, pi_inf, qv_K, alpha_IP, alpha_rho_IP, Re_K)
 
                 if (surface_tension) gp_prim_new(eqn_idx%c, i) = c_IP
 
@@ -1906,9 +1899,9 @@ contains
         curv = 1._wp
         if (R > 0._wp) curv = R/max(R - d, 0.5_wp*R)
         select case (patch_ib(gp%ib_patch_id)%geometry)
-        case (2, 8)
+        case (ib_circle, ib_sphere)
             gp_surf(1, i) = gp_surf(1, i)*curv**(num_dims - 1)
-        case (10)
+        case (ib_cylinder)
             ! A cylinder's axis is its body-frame x, which rotation_matrix maps to its first column in the lab frame. A normal
             ! along the axis is a flat cap, which needs no correction.
             axis(:) = patch_ib(gp%ib_patch_id)%rotation_matrix(:,1)
@@ -1990,9 +1983,9 @@ contains
         type(ib_patch_parameters), intent(in) :: ib_patch
 
         select case (ib_patch%geometry)
-        case (2)
+        case (ib_circle)
             f_ib_volume = pi*ib_patch%radius**2
-        case (8)
+        case (ib_sphere)
             f_ib_volume = 4._wp/3._wp*pi*ib_patch%radius**3
         case default
             f_ib_volume = pi*ib_patch%radius**2*max(ib_patch%length_x, ib_patch%length_y, ib_patch%length_z)
@@ -2418,9 +2411,9 @@ contains
 
     end subroutine s_fill_uncovered_cells
 
-    !> Ghost-point indices ordered by grid location, so per-point output does not inherit the discovery order. s_find_ghost_points
-    !! assigns slots from a GPU atomic, so that order is the thread schedule's and differs between CPU and GPU builds
-    !! (MFlowCode/MFC#2039). Heapsort, since a GPU run's input is unordered and a particle array carries O(10^5) ghost points.
+    !> Ghost-point indices ordered by grid location, so per-point output is sorted whatever order the list holds
+    !! (s_find_ghost_points gathers in location order, but later list edits need not keep it). Heapsort: a particle array carries
+    !! O(10^5) ghost points.
     pure subroutine s_sort_gps_by_location(order)
 
         integer, allocatable, intent(out) :: order(:)
@@ -2591,8 +2584,8 @@ contains
         gp_layers_z = gp_layers
         if (p == 0) gp_layers_z = 0
 
-        $:GPU_PARALLEL_LOOP(private='[i, j, k, ii, jj, kk, is_gp]', copy='[num_gps_local]', firstprivate='[gp_layers, &
-                            & gp_layers_z]', copyin='[ib_markers%sf]', collapse=3)
+        $:GPU_PARALLEL_LOOP(private='[i, j, k, ii, jj, kk, is_gp]', copy='[num_gps_local]', firstprivate='[gp_layers_z]', &
+                            & copyin='[ib_markers%sf]', collapse=3)
         do i = 0, m
             do j = 0, n
                 do k = 0, p
@@ -2623,96 +2616,10 @@ contains
 
     end subroutine s_find_num_ghost_points
 
-    !> Locate all ghost points in the domain
+    !> Find the ghost points (solid cells within gp_layers of a fluid cell) in lexicographic (i,j,k) order on every backend, so the
+    !! list and anything reduced over it do not depend on the thread schedule (#2039): count them per (i,j) column, scan the counts
+    !! into column offsets (per i-row in parallel, then the row totals), then fill each column in k order.
     subroutine s_find_ghost_points()
-
-        ! operates on the declare-target module-global ghost_points, so nothing crosses host<->device here
-        integer :: i, j, k, ii, jj, kk, gp_layers_z  !< Iterator variables
-        integer :: count, count_i, local_idx
-        integer :: patch_id, encoded_patch_id, neighborhood_patch_id, xp, yp, zp
-        integer :: min_id  !< smallest neighborhood id seen; <= 0 means a marker's body is not in this rank's list
-        logical :: is_gp
-
-        count = 0
-        count_i = 0
-        min_id = huge(1)
-        gp_layers_z = gp_layers
-        if (p == 0) gp_layers_z = 0
-
-        ! The atomic capture below fills slots in thread-completion order, so the GPU list order is nondeterministic and differs
-        ! from the CPU's; an order-sensitive consumer (e.g. the surface-force reduction) then gives backend-dependent results. AMR
-        ! therefore gathers in lexicographic (i,j,k) order (s_find_ghost_points_ordered).
-        if (amr) then
-            call s_find_ghost_points_ordered()
-            return
-        end if
-
-        $:GPU_PARALLEL_LOOP(private='[i, j, k, ii, jj, kk, is_gp, local_idx, patch_id, encoded_patch_id, neighborhood_patch_id, &
-                            & xp, yp, zp]', copyin='[count, count_i, glb_bounds, ib_markers%sf]', firstprivate='[gp_layers, &
-                            & gp_layers_z]', reduction='[[min_id]]', reductionOp='[min]', present='[ghost_points]', collapse=3)
-        do i = 0, m
-            do j = 0, n
-                do k = 0, p
-                    if (ib_markers%sf(i, j, k) /= 0) then
-                        is_gp = .false.
-                        marker_search: do ii = i - gp_layers, i + gp_layers
-                            do jj = j - gp_layers, j + gp_layers
-                                do kk = k - gp_layers_z, k + gp_layers_z
-                                    if (ib_markers%sf(ii, jj, kk) == 0) then
-                                        is_gp = .true.
-                                        exit marker_search
-                                    end if
-                                end do
-                            end do
-                        end do marker_search
-
-                        if (is_gp) then
-                            $:GPU_ATOMIC(atomic='capture')
-                            count = count + 1
-                            local_idx = count
-                            $:END_GPU_ATOMIC_CAPTURE()
-                            ghost_points(local_idx)%loc(1) = i
-                            ghost_points(local_idx)%loc(2) = j
-                            ghost_points(local_idx)%loc(3) = k
-                            ghost_points(local_idx)%T_cond = T_cond_unset
-                            encoded_patch_id = ib_markers%sf(i, j, k)
-                            call s_decode_patch_periodicity(encoded_patch_id, patch_id, xp, yp, zp)
-                            call s_get_neighborhood_idx(patch_id, neighborhood_patch_id)
-                            min_id = min(min_id, neighborhood_patch_id)
-                            neighborhood_patch_id = max(neighborhood_patch_id, 1)
-                            ghost_points(local_idx)%ib_patch_id = neighborhood_patch_id
-                            ghost_points(local_idx)%x_periodicity = xp
-                            ghost_points(local_idx)%y_periodicity = yp
-                            ghost_points(local_idx)%z_periodicity = zp
-                            ghost_points(local_idx)%slip = patch_ib(neighborhood_patch_id)%slip
-
-                            #:for X, ID, IDX in [('x', 1, 'i'), ('y', 2, 'j'), ('z', 3, 'k')]
-                                ghost_points(local_idx)%DB(${ID}$) = 0
-                                if (${ID}$ <= num_dims) then  ! Onlyrun the numeher of dimensions present
-                                    if (ib_bc_${X}$%beg /= BC_PERIODIC) then
-                                        if ((${X}$_cc(${IDX}$) - d${X}$(${IDX}$)) < glb_bounds(${ID}$)%beg) then
-                                            ! if the grid cell is in a wall on the "left"
-                                            ghost_points(local_idx)%DB(${ID}$) = -1
-                                        else if ((${X}$_cc(${IDX}$) + d${X}$(${IDX}$)) > glb_bounds(${ID}$)%end) then
-                                            ! if the grid cell is in a wall on the "right"
-                                            ghost_points(local_idx)%DB(${ID}$) = 1
-                                        end if
-                                    end if
-                                end if
-                            #:endfor
-                        end if
-                    end if
-                end do
-            end do
-        end do
-        $:END_GPU_PARALLEL_LOOP()
-        call s_check_gp_patch_ids(min_id)
-
-    end subroutine s_find_ghost_points
-
-    !> Gather the ghost points in lexicographic (i,j,k) order: count them per i-slab, scan the counts into slab offsets, then fill
-    !! each slab serially in (j,k) order. The serial-sweep order, reached in parallel over slabs and linear in the cell count.
-    subroutine s_find_ghost_points_ordered()
 
         integer :: i, j, k, ii, jj, kk, gp_layers_z, slab_n, run, c
         integer :: patch_id, encoded_patch_id, neighborhood_patch_id, xp, yp, zp
@@ -2724,11 +2631,11 @@ contains
         if (p == 0) gp_layers_z = 0
         slab_n = m
 
-        $:GPU_PARALLEL_LOOP(private='[i, j, k, ii, jj, kk, is_gp, c]', copyin='[ib_markers%sf]', firstprivate='[gp_layers, &
-                            & gp_layers_z]', present='[gp_slab]')
+        $:GPU_PARALLEL_LOOP(private='[i, j, k, ii, jj, kk, is_gp, c]', copyin='[ib_markers%sf]', firstprivate='[gp_layers_z]', &
+                            & present='[gp_col]', collapse=2)
         do i = 0, m
-            c = 0
             do j = 0, n
+                c = 0
                 do k = 0, p
                     if (ib_markers%sf(i, j, k) /= 0) then
                         is_gp = .false.
@@ -2745,12 +2652,23 @@ contains
                         if (is_gp) c = c + 1
                     end if
                 end do
+                gp_col(i, j) = c
             end do
-            gp_slab(i) = c
         end do
         $:END_GPU_PARALLEL_LOOP()
 
-        ! exclusive scan of the slab counts: one thread over m+1 entries
+        ! exclusive scan of each row's column counts, the row total into gp_slab; then of the row totals (and their sum), one thread
+        $:GPU_PARALLEL_LOOP(private='[i, j, run, c]', present='[gp_col, gp_slab]')
+        do i = 0, m
+            run = 0
+            do j = 0, n
+                c = gp_col(i, j)
+                gp_col(i, j) = run
+                run = run + c
+            end do
+            gp_slab(i) = run
+        end do
+        $:END_GPU_PARALLEL_LOOP()
         $:GPU_PARALLEL_LOOP(private='[i, run, c]', firstprivate='[slab_n]', present='[gp_slab]')
         do k = 1, 1
             run = 0
@@ -2759,15 +2677,22 @@ contains
                 gp_slab(i) = run
                 run = run + c
             end do
+            gp_slab(slab_n + 1) = run
         end do
         $:END_GPU_PARALLEL_LOOP()
 
         $:GPU_PARALLEL_LOOP(private='[i, j, k, ii, jj, kk, is_gp, c, patch_id, encoded_patch_id, neighborhood_patch_id, xp, yp, &
-                            & zp]', copyin='[ib_markers%sf, glb_bounds]', firstprivate='[gp_layers, gp_layers_z]', &
-                            & reduction='[[min_id]]', reductionOp='[min]', present='[ghost_points, gp_slab]')
+                            & zp]', copyin='[ib_markers%sf, glb_bounds]', firstprivate='[gp_layers_z]', reduction='[[min_id]]', &
+                            & reductionOp='[min]', present='[ghost_points, gp_slab, gp_col]', collapse=2)
         do i = 0, m
-            c = gp_slab(i)
             do j = 0, n
+                c = gp_slab(i) + gp_col(i, j)
+                ! skip a column the count pass found empty: its end is the next column's (or row's) start
+                if (j < n) then
+                    if (gp_slab(i) + gp_col(i, j + 1) == c) cycle
+                else
+                    if (gp_slab(i + 1) == c) cycle
+                end if
                 do k = 0, p
                     if (ib_markers%sf(i, j, k) /= 0) then
                         is_gp = .false.
@@ -2784,6 +2709,7 @@ contains
                         if (is_gp) then
                             c = c + 1
                             ghost_points(c)%loc = [i, j, k]
+                            ghost_points(c)%T_cond = T_cond_unset
                             encoded_patch_id = ib_markers%sf(i, j, k)
                             call s_decode_patch_periodicity(encoded_patch_id, patch_id, xp, yp, zp)
                             call s_get_neighborhood_idx(patch_id, neighborhood_patch_id)
@@ -2817,7 +2743,7 @@ contains
         $:END_GPU_PARALLEL_LOOP()
         call s_check_gp_patch_ids(min_id)
 
-    end subroutine s_find_ghost_points_ordered
+    end subroutine s_find_ghost_points
 
     !> Abort if a ghost point's body was not in the rank's neighborhood list (s_get_neighborhood_idx returned -1). The setters clamp
     !! the id to 1 so no device read of patch_ib(id <= 0) happens before this check.
@@ -4095,7 +4021,8 @@ contains
 
         type(ib_patch_parameters), intent(in) :: patch
 
-        f_needs_centroid_offset = patch%moving_ibm /= 0 .and. any(patch%geometry == [4, 5, 11, 12])
+        f_needs_centroid_offset = patch%moving_ibm /= 0 .and. any(patch%geometry == [ib_airfoil_2d, ib_model_2d, ib_airfoil_3d, &
+            & ib_model_3d])
 
     end function f_needs_centroid_offset
 
@@ -4138,24 +4065,20 @@ contains
         type(ib_patch_parameters), intent(in) :: patch
         real(wp), dimension(3), intent(in)    :: axis
         real(wp), intent(out)                 :: moment
-        real(wp)                              :: distance_to_axis
-        real(wp), dimension(3)                :: position, closest_point_along_axis, vector_to_axis, normal_axis, centroid
-        integer                               :: i, j, k, count, gbl_id, xp, yp, zp
+        real(wp), dimension(3)                :: normal_axis, n_b
 
         ! if the IB is in 2D or a 3D sphere, we can compute this exactly
-        if (patch%geometry == 2) then  ! circle
+        if (patch%geometry == ib_circle) then  ! circle
             moment = 0.5_wp*patch%mass*(patch%radius)**2
-        else if (patch%geometry == 3) then  ! rectangle
+        else if (patch%geometry == ib_rectangle) then  ! rectangle
             moment = patch%mass*(patch%length_x**2 + patch%length_y**2)/12._wp
-        else if (patch%geometry == 6) then  ! ellipse
+        else if (patch%geometry == ib_ellipse) then  ! ellipse
             moment = 0.0625_wp*patch%mass*(patch%length_x**2 + patch %length_y**2)
-        else if (patch%geometry == 8) then  ! sphere
+        else if (patch%geometry == ib_sphere) then  ! sphere
             moment = 0.4_wp*patch%mass*(patch%radius)**2
-        else  ! we do not have an analytic moment of inertia calculation and need to approximate it directly via a sum
-            count = 0
-
+        else  ! no analytic moment: from the body-frame second moment summed at set-up (s_sum_ib_inertia_tensors)
             if (p == 0) then
-                normal_axis = [0, 0, 1]
+                normal_axis = [0._wp, 0._wp, 1._wp]
             else if (sqrt(sum(axis**2)) < sgm_eps) then
                 ! if the object is not actually rotating at this time, return a dummy value and exit
                 moment = 1._wp
@@ -4163,48 +4086,83 @@ contains
             else
                 normal_axis = axis/sqrt(sum(axis**2))
             end if
-
-            moment = 0._wp
-
-            do i = 0, m
-                do j = 0, n
-                    do k = 0, p
-                        if (ib_markers%sf(i, j, k) == 0) cycle
-                        call s_decode_patch_periodicity(ib_markers%sf(i, j, k), gbl_id, xp, yp, zp)
-                        if (gbl_id == patch%gbl_patch_id) then
-                            count = count + 1  ! increment the count of total cells in the boundary
-
-                            ! position relative to the centroid of the periodic image this cell belongs to
-                            centroid(1) = patch%x_centroid + real(xp, wp)*(glb_bounds(1)%end - glb_bounds(1)%beg)
-                            centroid(2) = patch%y_centroid + real(yp, wp)*(glb_bounds(2)%end - glb_bounds(2)%beg)
-                            if (num_dims < 3) then
-                                position = [x_cc(i) - centroid(1), y_cc(j) - centroid(2), 0._wp]
-                            else
-                                centroid(3) = patch%z_centroid + real(zp, wp)*(glb_bounds(3)%end - glb_bounds(3)%beg)
-                                position = [x_cc(i), y_cc(j), z_cc(k)] - centroid
-                            end if
-
-                            ! project the position along the axis to find the closest distance to the rotation axis
-                            closest_point_along_axis = normal_axis*dot_product(normal_axis, position)
-                            vector_to_axis = position - closest_point_along_axis
-                            distance_to_axis = dot_product(vector_to_axis, vector_to_axis)  ! saves the distance to the axis squared
-
-                            ! compute the position component of the moment
-                            moment = moment + distance_to_axis
-                        end if
-                    end do
-                end do
-            end do
-
-            ! uniform density: each of the count cells carries mass/count; a rank holding none of the body gets the dummy value
-            if (count > 0) then
-                moment = moment*patch%mass/count
-            else
-                moment = 1._wp
-            end if
+            ! sum over cells of the squared distance to the axis: trace(S) - n.S.n, with n in the body frame
+            n_b(1) = dot_product(patch%rotation_matrix(:,1), normal_axis)
+            n_b(2) = dot_product(patch%rotation_matrix(:,2), normal_axis)
+            n_b(3) = dot_product(patch%rotation_matrix(:,3), normal_axis)
+            moment = patch%mass*(patch%inertia_b(1)*(1._wp - n_b(1)**2) + patch%inertia_b(2)*(1._wp - n_b(2)**2) &
+                                 & + patch%inertia_b(3)*(1._wp - n_b(3)**2) - 2._wp*(n_b(1)*n_b(2)*patch%inertia_b(4) + n_b(1) &
+                                 & *n_b(3)*patch%inertia_b(5) + n_b(2)*n_b(3)*patch%inertia_b(6)))
+            ! a body too small to hold more than one cell keeps the dummy value
+            if (moment <= 0._wp) moment = 1._wp
         end if
 
     end subroutine s_compute_moment_of_inertia
+
+    !> Second moment about the centroid, per unit mass, of each moving body without an analytic moment, in its body frame. Every
+    !! rank sums its own cells (periodic images measured from their own centroid); the owner adds the partials and returns the
+    !! totals (s_communicate_ib_forces), so every rank holding the body gets the same tensor. Once at set-up: the rotating body then
+    !! needs no per-step cell sum, only n.R S R^T.n.
+    impure subroutine s_sum_ib_inertia_tensors()
+
+        real(wp), dimension(num_ibs, 3) :: s_diag, s_off, cnt, dummy
+        real(wp), dimension(3)          :: r, centroid
+        real(wp), dimension(3, 3)       :: s_w, s_b
+        integer                         :: i, j, k, l, gbl_id, xp, yp, zp
+
+        s_diag = 0._wp
+        s_off = 0._wp
+        cnt = 0._wp
+        dummy = 0._wp
+        do l = 0, p
+            do k = 0, n
+                do j = 0, m
+                    if (ib_markers%sf(j, k, l) == 0) cycle
+                    call s_decode_patch_periodicity(ib_markers%sf(j, k, l), gbl_id, xp, yp, zp)
+                    call s_get_neighborhood_idx(gbl_id, i)
+                    if (i <= 0) cycle
+                    if (.not. f_needs_cell_moment(patch_ib(i))) cycle
+                    centroid(1) = patch_ib(i)%x_centroid + real(xp, wp)*(glb_bounds(1)%end - glb_bounds(1)%beg)
+                    centroid(2) = patch_ib(i)%y_centroid + real(yp, wp)*(glb_bounds(2)%end - glb_bounds(2)%beg)
+                    r = [x_cc(j) - centroid(1), y_cc(k) - centroid(2), 0._wp]
+                    if (num_dims == 3) then
+                        centroid(3) = patch_ib(i)%z_centroid + real(zp, wp)*(glb_bounds(3)%end - glb_bounds(3)%beg)
+                        r(3) = z_cc(l) - centroid(3)
+                    end if
+                    s_diag(i,:) = s_diag(i,:) + r**2
+                    s_off(i,:) = s_off(i,:) + [r(1)*r(2), r(1)*r(3), r(2)*r(3)]
+                    cnt(i, 1) = cnt(i, 1) + 1._wp
+                end do
+            end do
+        end do
+
+        call s_communicate_ib_forces(s_diag, s_off)
+        call s_communicate_ib_forces(cnt, dummy)
+
+        do i = 1, num_ibs
+            patch_ib(i)%inertia_b = 0._wp
+            if (.not. f_needs_cell_moment(patch_ib(i)) .or. cnt(i, 1) < 1._wp) cycle
+            s_w = reshape([s_diag(i, 1), s_off(i, 1), s_off(i, 2), s_off(i, 1), s_diag(i, 2), s_off(i, 3), s_off(i, 2), s_off(i, &
+                          & 3), s_diag(i, 3)], [3, 3])/cnt(i, 1)
+            ! rotation_matrix maps body-frame vectors to the lab frame, so S_body = R^T S_lab R
+            s_b = matmul(transpose(patch_ib(i)%rotation_matrix), matmul(s_w, patch_ib(i)%rotation_matrix))
+            patch_ib(i)%inertia_b = [s_b(1, 1), s_b(2, 2), s_b(3, 3), s_b(1, 2), s_b(1, 3), s_b(2, 3)]
+        end do
+        do i = 1, num_ibs
+            $:GPU_UPDATE(device='[patch_ib(i)]')
+        end do
+
+    end subroutine s_sum_ib_inertia_tensors
+
+    !> A moving body whose moment of inertia is not analytic (everything but circle, rectangle, ellipse and sphere)
+    pure logical function f_needs_cell_moment(patch)
+
+        type(ib_patch_parameters), intent(in) :: patch
+
+        f_needs_cell_moment = patch%moving_ibm /= 0 .and. .not. any(patch%geometry == [ib_circle, ib_rectangle, ib_ellipse, &
+            & ib_sphere])
+
+    end function f_needs_cell_moment
 
     !> Wrap immersed boundary positions across periodic domain boundaries
     subroutine s_wrap_periodic_ibs()
@@ -4511,35 +4469,31 @@ contains
     !> @brief Swaps ownership of IBs and passes ownership of IBs to neighbor processors
     subroutine s_handoff_ib_ownership()
 
-        integer                                         :: i, j, k, output_idx, local_output_idx
-        integer                                         :: old_num_local_ibs, num_ibs_old, num_ibs_pre
-        integer                                         :: new_count, recv_count
-        integer                                         :: pack_pos, unpack_pos, buf_size, patch_bytes
-        integer                                         :: send_neighbor, recv_neighbor, ierr
-        integer                                         :: dx, dy, dz, tag, nbr_idx, nreqs
-        real(wp), dimension(3)                          :: centroid
-        logical                                         :: is_new
-        type(ib_patch_parameters)                       :: tmp_patch
-        integer, allocatable                            :: local_ib_idx_old(:)
-        integer, dimension(num_ib_patches_max_namelist) :: old_to_new  ! old patch_ib slot -> slot after compaction
+        integer                     :: i, j, k, output_idx, local_output_idx
+        integer                     :: num_ibs_old, num_ibs_pre
+        integer                     :: recv_count
+        integer                     :: pack_pos, unpack_pos, buf_size, patch_bytes
+        integer                     :: send_neighbor, recv_neighbor, ierr
+        integer                     :: dx, dy, dz, tag, nbr_idx, nreqs
+        real(wp), dimension(3)      :: centroid
+        type(ib_patch_parameters)   :: tmp_patch
+        integer, dimension(num_ibs) :: old_to_new  ! old patch_ib slot -> slot after compaction
         ! (2R+1)^num_dims - 1 neighbors in the radius-R neighborhood; each gets its own recv buffer
-        integer                       :: max_nbrs
-        character(len=1), allocatable :: send_buf(:), recv_bufs(:,:)
-        integer, allocatable          :: requests(:), recv_neighbor_list(:)
-        integer                       :: n_gain, slot
-        integer, allocatable          :: gain_gid(:), gain_from(:)
+        integer :: max_nbrs
+        integer :: n_gain, slot
 
 #ifdef MFC_MPI
         call nvtxStartRange("HANDOFF-IB-OWNERSHIP")
 
         if (num_procs > 1) then
-            ! save a copy of the local IB's global indices to cross-reference for later.
-            allocate (local_ib_idx_old(num_local_ibs_max))
-            local_ib_idx_old = 0
-            old_num_local_ibs = num_local_ibs
-            do i = 1, num_local_ibs
-                local_ib_idx_old(i) = patch_ib(local_ib_patch_ids(i))%gbl_patch_id
-            end do
+            patch_bytes = storage_size(tmp_patch)/8
+            ! a rank can hand off at most every global patch, so size by num_gbl_ibs, not num_local_ibs_max
+            buf_size = storage_size(0)/8 + patch_bytes*max(1, min(num_local_ibs_max, num_gbl_ibs))
+            max_nbrs = (2*ib_neighborhood_radius + 1)**num_dims - 1
+            if (.not. allocated(ho_send_buf)) then
+                allocate (ho_send_buf(buf_size), ho_recv_bufs(buf_size, max_nbrs), ho_reqs(2*max_nbrs), ho_recv_nbrs(max_nbrs))
+                allocate (ho_gain_gid(num_local_ibs_max), ho_gain_from(num_local_ibs_max), ho_gain_slot(num_local_ibs_max))
+            end if
 
             ! Sync GPU-updated fields (angles, angular_vel, centroids) to host before
             ! compaction and MPI packing, which read from host memory.
@@ -4550,7 +4504,6 @@ contains
             output_idx = 0
             local_output_idx = 0
             n_gain = 0
-            allocate (gain_gid(num_local_ibs_max), gain_from(num_local_ibs_max))
             do i = 1, num_ibs
                 old_to_new(i) = -1
                 centroid = [patch_ib(i)%x_centroid, patch_ib(i)%y_centroid, 0._wp]
@@ -4573,8 +4526,9 @@ contains
                         if (patch_ib(output_idx)%owner_rank /= proc_rank) then
                             ! gained from a neighbor, which sends the ib_mass_relax bank (s_ib_migrate_banks)
                             n_gain = n_gain + 1
-                            gain_gid(n_gain) = patch_ib(output_idx)%gbl_patch_id
-                            gain_from(n_gain) = patch_ib(output_idx)%owner_rank
+                            ho_gain_gid(n_gain) = patch_ib(output_idx)%gbl_patch_id
+                            ho_gain_from(n_gain) = patch_ib(output_idx)%owner_rank
+                            ho_gain_slot(n_gain) = output_idx
                         end if
                         patch_ib(output_idx)%owner_rank = proc_rank
                     end if
@@ -4586,38 +4540,13 @@ contains
             $:GPU_UPDATE(device='[patch_ib(1:num_ibs), num_ibs]')
             call s_compact_ib_lookup(old_to_new, num_ibs_old)
 
-            ! Broadcast newly-owned patches to all neighborhood neighbors
-            patch_bytes = storage_size(tmp_patch)/8
-            ! a rank can hand off at most every global patch, so size by num_gbl_ibs, not num_local_ibs_max
-            buf_size = storage_size(0)/8 + patch_bytes*max(1, min(num_local_ibs_max, num_gbl_ibs))
-            max_nbrs = (2*ib_neighborhood_radius + 1)**num_dims - 1
-            allocate (send_buf(buf_size), recv_bufs(buf_size, max_nbrs), requests(2*max_nbrs), recv_neighbor_list(max_nbrs))
-
-            ! Write placeholder count at position 0
+            ! Broadcast newly-owned patches (the ones gained above, in local order) to all neighborhood neighbors
             pack_pos = 0
-            call MPI_PACK(0, 1, MPI_INTEGER, send_buf, buf_size, pack_pos, MPI_COMM_WORLD, ierr)
-
-            ! pack new patches and count them
-            new_count = 0
-            do i = 1, num_local_ibs
-                k = local_ib_patch_ids(i)
-                is_new = .true.
-                do j = 1, old_num_local_ibs
-                    if (patch_ib(k)%gbl_patch_id == local_ib_idx_old(j)) then
-                        is_new = .false.
-                        exit
-                    end if
-                end do
-                if (is_new) then
-                    call MPI_PACK(patch_ib(k), patch_bytes, MPI_BYTE, send_buf, buf_size, pack_pos, MPI_COMM_WORLD, ierr)
-                    new_count = new_count + 1
-                end if
+            call MPI_PACK(n_gain, 1, MPI_INTEGER, ho_send_buf, buf_size, pack_pos, MPI_COMM_WORLD, ierr)
+            do i = 1, n_gain
+                call MPI_PACK(patch_ib(ho_gain_slot(i)), patch_bytes, MPI_BYTE, ho_send_buf, buf_size, pack_pos, MPI_COMM_WORLD, &
+                              & ierr)
             end do
-
-            ! Overwrite the placeholder with the real count
-            pack_pos = 0
-            call MPI_PACK(new_count, 1, MPI_INTEGER, send_buf, buf_size, pack_pos, MPI_COMM_WORLD, ierr)
-            pack_pos = storage_size(0)/8 + new_count*patch_bytes
 
             ! Post all receives first, then sends
             nreqs = 0
@@ -4631,12 +4560,12 @@ contains
                         tag = 200 + ((dx + ib_neighborhood_radius)*(2*ib_neighborhood_radius + 1) + (dy + ib_neighborhood_radius)) &
                                      & *(2*ib_neighborhood_radius + 1) + (dz + ib_neighborhood_radius)
                         recv_neighbor = ib_neighbor_ranks(-dx, -dy, -dz)
-                        recv_neighbor_list(nbr_idx) = MPI_PROC_NULL
+                        ho_recv_nbrs(nbr_idx) = MPI_PROC_NULL
                         if (recv_neighbor < 0) cycle
-                        recv_neighbor_list(nbr_idx) = recv_neighbor
+                        ho_recv_nbrs(nbr_idx) = recv_neighbor
                         nreqs = nreqs + 1
-                        call MPI_IRECV(recv_bufs(:,nbr_idx), buf_size, MPI_PACKED, recv_neighbor, tag, MPI_COMM_WORLD, &
-                                       & requests(nreqs), ierr)
+                        call MPI_IRECV(ho_recv_bufs(:,nbr_idx), buf_size, MPI_PACKED, recv_neighbor, tag, MPI_COMM_WORLD, &
+                                       & ho_reqs(nreqs), ierr)
                     end do
                 end do
             end do
@@ -4651,23 +4580,23 @@ contains
                         send_neighbor = ib_neighbor_ranks(dx, dy, dz)
                         if (send_neighbor < 0) cycle
                         nreqs = nreqs + 1
-                        call MPI_ISEND(send_buf, pack_pos, MPI_PACKED, send_neighbor, tag, MPI_COMM_WORLD, requests(nreqs), ierr)
+                        call MPI_ISEND(ho_send_buf, pack_pos, MPI_PACKED, send_neighbor, tag, MPI_COMM_WORLD, ho_reqs(nreqs), ierr)
                     end do
                 end do
             end do
 
-            call MPI_WAITALL(nreqs, requests, MPI_STATUSES_IGNORE, ierr)
+            call MPI_WAITALL(nreqs, ho_reqs, MPI_STATUSES_IGNORE, ierr)
 
             ! Unpack all received buffers
             num_ibs_pre = num_ibs
             ib_send_counts = 0
             do nbr_idx = 1, max_nbrs
-                if (recv_neighbor_list(nbr_idx) == MPI_PROC_NULL) cycle
+                if (ho_recv_nbrs(nbr_idx) == MPI_PROC_NULL) cycle
                 unpack_pos = 0
-                call MPI_UNPACK(recv_bufs(:,nbr_idx), buf_size, unpack_pos, recv_count, 1, MPI_INTEGER, MPI_COMM_WORLD, ierr)
+                call MPI_UNPACK(ho_recv_bufs(:,nbr_idx), buf_size, unpack_pos, recv_count, 1, MPI_INTEGER, MPI_COMM_WORLD, ierr)
                 do i = 1, recv_count
-                    call MPI_UNPACK(recv_bufs(:,nbr_idx), buf_size, unpack_pos, tmp_patch, patch_bytes, MPI_BYTE, MPI_COMM_WORLD, &
-                                    & ierr)
+                    call MPI_UNPACK(ho_recv_bufs(:,nbr_idx), buf_size, unpack_pos, tmp_patch, patch_bytes, MPI_BYTE, &
+                                    & MPI_COMM_WORLD, ierr)
                     call s_get_neighborhood_idx(tmp_patch%gbl_patch_id, j, num_ibs_pre)
                     ! A rank filling several table slots (periodicity, few ranks) sends each arrival once per slot, and the map
                     ! holds only the num_ibs_pre older entries: look among this call's arrivals too
@@ -4697,9 +4626,7 @@ contains
             end do
 
             @:PROHIBIT(num_ibs > num_gbl_ibs, "IB handoff duplicated a patch: num_ibs exceeds num_gbl_ibs.")
-            deallocate (send_buf, recv_bufs, requests, recv_neighbor_list)
-            if (ib_mass_relax > 0) call s_ib_migrate_banks(n_gain, gain_gid, gain_from, num_ibs_pre)
-            deallocate (gain_gid, gain_from, local_ib_idx_old)
+            if (ib_mass_relax > 0) call s_ib_migrate_banks(n_gain, ho_gain_gid, ho_gain_from, num_ibs_pre)
             $:GPU_UPDATE(device='[patch_ib(1:num_ibs), num_ibs]')
             call s_merge_ib_lookup(num_ibs_pre)
             @:PROHIBIT(ib_slot_cap > 0 .and. num_ibs > ib_slot_cap, &
@@ -4779,18 +4706,28 @@ contains
         fine_gps_cap = int(mkr_hi(1) - mkr_lo(1) + 1, 8)*int(mkr_hi(2) - mkr_lo(2) + 1, 8)*int(max(mkr_hi(3) - mkr_lo(3) + 1, 1), 8)
 
         ! Extra slot (nslots+1) parks the coarse markers during a fine swap (see ib_coarse_slot). markers%sf is host-only park
-        ! storage; fine ghost-point lists park on-device in gp_park.
+        ! storage, allocated on a slot's first swap (s_ibm_fine_markers_ensure); fine ghost-point lists park on-device in gp_park.
         ib_coarse_slot = nslots + 1
         allocate (ib_fine(1:ib_coarse_slot))
         do islot = 1, ib_coarse_slot
-            allocate (ib_fine(islot)%markers%sf(mkr_lo(1):mkr_hi(1),mkr_lo(2):mkr_hi(2),mkr_lo(3):mkr_hi(3)))
-            ib_fine(islot)%markers%sf = 0
             ib_fine(islot)%num_gps = 0
             ib_fine(islot)%off = 0_8
             ib_fine(islot)%cap = 0_8
         end do
 
     end subroutine s_ibm_alloc_fine
+
+    !> Allocate slot islot's host marker copy (zeroed) on first use: a copy per possible slot would be amr_max_blocks + 1 full
+    !! deepest-level fields per rank, nearly all unused (#2219).
+    impure subroutine s_ibm_fine_markers_ensure(islot)
+
+        integer, intent(in) :: islot
+
+        if (associated(ib_fine(islot)%markers%sf)) return
+        allocate (ib_fine(islot)%markers%sf(mkr_lo(1):mkr_hi(1),mkr_lo(2):mkr_hi(2),mkr_lo(3):mkr_hi(3)))
+        ib_fine(islot)%markers%sf = 0
+
+    end subroutine s_ibm_fine_markers_ensure
 
     !> Note the fine IB state's memory for the end-of-run AMR table.
     impure subroutine s_ibm_note_fine_memory()
@@ -4800,6 +4737,7 @@ contains
         if (.not. allocated(ib_fine)) return
         call s_mem_note(MEM_IB, storage_size(gp_park, kind=8)/8_8*size(gp_park, kind=8))
         do islot = 1, ib_coarse_slot
+            if (.not. associated(ib_fine(islot)%markers%sf)) cycle
             call s_mem_note(MEM_IBHOST, storage_size(ib_fine(islot)%markers%sf, kind=8)/8_8*size(ib_fine(islot)%markers%sf, kind=8))
         end do
 
@@ -4883,6 +4821,7 @@ contains
 
         ib_markers_fine%sf(0:m,0:n,0:p) = 0
         do ibm = 1, nb
+            if (.not. associated(ib_fine(slots(ibm))%markers%sf)) cycle  ! never swapped in: no body markers
             o = 0; o(sd) = (ibm - 1)*w
             ib_markers_fine%sf(o(1):o(1) + mext(1, ibm),o(2):o(2) + mext(2, ibm),o(3):o(3) + mext(3, &
                                & ibm)) = ib_fine(slots(ibm))%markers%sf(0:mext(1, ibm),0:mext(2, ibm),0:mext(3, ibm))
@@ -4904,6 +4843,8 @@ contains
         ! host copy; on the correct/moving path copy this slot's fine markers in and push. On the setup path s_ibm_setup_fine
         ! rebuilds them in place.
 
+        call s_ibm_fine_markers_ensure(ib_coarse_slot)
+        call s_ibm_fine_markers_ensure(islot)
         $:GPU_UPDATE(host='[ib_markers%sf]')
         ib_fine(ib_coarse_slot)%markers%sf = ib_markers%sf
         if (gps_on_device) then
@@ -4949,6 +4890,7 @@ contains
         ! Mirror s_ibm_swap_to_fine: save this slot's fine markers to its host store, copy the parked coarse markers back to the
         ! device ib_markers, and restore the ghost-point lists between gp_park and ghost_points on-device.
 
+        call s_ibm_fine_markers_ensure(islot)
         $:GPU_UPDATE(host='[ib_markers%sf]')
         ib_fine(islot)%markers%sf = ib_markers%sf
         ib_markers%sf = ib_fine(ib_coarse_slot)%markers%sf
@@ -5128,6 +5070,8 @@ contains
 #ifdef MFC_MPI
         if (allocated(ib_nbrs)) deallocate (ib_nbrs, ib_send_counts, ib_reqs, ib_stats, ib_send_bufs, ib_recv_bufs, &
             & ib_reply_slots, ib_reply_counts)
+        if (allocated(ho_send_buf)) deallocate (ho_send_buf, ho_recv_bufs, ho_reqs, ho_recv_nbrs, ho_gain_gid, ho_gain_from, &
+            & ho_gain_slot)
 #endif
 
     end subroutine s_finalize_ibm_module

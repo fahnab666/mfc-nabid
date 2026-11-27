@@ -21,7 +21,7 @@ module m_rhs
         & recon_type_muscl, coupling_two_way
     use m_muscl
     use m_riemann_solvers
-    use m_riemann_state, only: flux_rsx_vf, flux_src_rsx_vf, flux_gsrc_rsx_vf
+    use m_riemann_state, only: flux_rsx_vf, flux_src_rsx_vf, flux_gsrc_rsx_vf, flux_axis_vf, axis_face_split, s_split_axis_flux
     use m_cbc
     use m_bubbles_EE
     use m_bubbles_EL
@@ -338,6 +338,9 @@ contains
                                    & idwbuff_alloc(2)%beg:idwbuff_alloc(2)%end, idwbuff_alloc(3)%beg:idwbuff_alloc(3)%end))
                         @:ALLOCATE(qR_prim(i)%vf(l)%sf(idwbuff_alloc(1)%beg:idwbuff_alloc(1)%end, &
                                    & idwbuff_alloc(2)%beg:idwbuff_alloc(2)%end, idwbuff_alloc(3)%beg:idwbuff_alloc(3)%end))
+                        ! Zeroed: the gradient's outer ghost cells read faces the reconstruction never writes
+                        qL_prim(i)%vf(l)%sf = 0._wp
+                        qR_prim(i)%vf(l)%sf = 0._wp
                     end do
                 end if
                 @:ACC_SETUP_VFs(qL_prim(i), qR_prim(i))
@@ -669,11 +672,14 @@ contains
                             do i = eqn_idx%adv%beg, eqn_idx%adv%end - 1
                                 alf_sum%sf(j, k, l) = alf_sum%sf(j, k, l) + q_cons_qp%vf(i)%sf(j, k, l)
                             end do
-                            $:GPU_LOOP(parallelism='[seq]')
-                            do i = eqn_idx%adv%beg, eqn_idx%adv%end - 1
-                                q_cons_qp%vf(i)%sf(j, k, l) = q_cons_qp%vf(i)%sf(j, k, &
-                                             & l)*(1._wp - q_cons_qp%vf(eqn_idx%alf)%sf(j, k, l))/alf_sum%sf(j, k, l)
-                            end do
+                            ! Zero only in ghost cells not yet filled before the first step; they are refilled below
+                            if (alf_sum%sf(j, k, l) > 0._wp) then
+                                $:GPU_LOOP(parallelism='[seq]')
+                                do i = eqn_idx%adv%beg, eqn_idx%adv%end - 1
+                                    q_cons_qp%vf(i)%sf(j, k, l) = q_cons_qp%vf(i)%sf(j, k, &
+                                                 & l)*(1._wp - q_cons_qp%vf(eqn_idx%alf)%sf(j, k, l))/alf_sum%sf(j, k, l)
+                                end do
+                            end if
                         end do
                     end do
                 end do
@@ -779,9 +785,11 @@ contains
                     ! refluxing sees the total advection+diffusion flux
                     if (chemistry .and. chem_params%diffusion) then
                         call nvtxStartRange("RHS-CHEM-DIFFUSION")
+                        if (id == 2 .and. viscous) call s_split_axis_flux(-1._wp)
                         call s_compute_chemistry_diffusion_flux(id, q_prim_qp%vf, flux_src_rsx_vf, irx, iry, irz, q_T_sf, &
                                                                 & ib_markers, ib_wall_src(ibw_a), merge(merge(2, 1, &
                                                                 & ib_flux_wall), 0, ib))
+                        if (id == 2 .and. viscous) call s_split_axis_flux(1._wp)
                         call nvtxEndRange
                     end if
 
@@ -1125,9 +1133,18 @@ contains
             if (weno_Re_flux_compact) call s_compact_normal_viscous_gradients(q_prim_qp%vf, id, &
                 & dqL_prim_dx_n(id)%vf(iv%beg:iv%end), dqR_prim_dx_n(id)%vf(iv%beg:iv%end), dqL_prim_dy_n(id)%vf(iv%beg:iv%end), &
                 & dqR_prim_dy_n(id)%vf(iv%beg:iv%end), dqL_prim_dz_n(id)%vf(iv%beg:iv%end), dqR_prim_dz_n(id)%vf(iv%beg:iv%end))
-            if (ib_visc_compact) call s_compact_ib_viscous_gradients(q_prim_qp%vf, ib_markers, id, &
-                & dqL_prim_dx_n(id)%vf(iv%beg:iv%end), dqR_prim_dx_n(id)%vf(iv%beg:iv%end), dqL_prim_dy_n(id)%vf(iv%beg:iv%end), &
-                & dqR_prim_dy_n(id)%vf(iv%beg:iv%end), dqL_prim_dz_n(id)%vf(iv%beg:iv%end), dqR_prim_dz_n(id)%vf(iv%beg:iv%end))
+            ! a fine block (or batched slab) tests its own markers ib_markers_fine, not the coarse ib_markers
+            if (ib_visc_compact .and. amr_in_fine_advance) then
+                call s_compact_ib_viscous_gradients(q_prim_qp%vf, ib_markers_fine, id, dqL_prim_dx_n(id)%vf(iv%beg:iv%end), &
+                                                    & dqR_prim_dx_n(id)%vf(iv%beg:iv%end), dqL_prim_dy_n(id)%vf(iv%beg:iv%end), &
+                                                    & dqR_prim_dy_n(id)%vf(iv%beg:iv%end), dqL_prim_dz_n(id)%vf(iv%beg:iv%end), &
+                                                    & dqR_prim_dz_n(id)%vf(iv%beg:iv%end))
+            else if (ib_visc_compact) then
+                call s_compact_ib_viscous_gradients(q_prim_qp%vf, ib_markers, id, dqL_prim_dx_n(id)%vf(iv%beg:iv%end), &
+                                                    & dqR_prim_dx_n(id)%vf(iv%beg:iv%end), dqL_prim_dy_n(id)%vf(iv%beg:iv%end), &
+                                                    & dqR_prim_dy_n(id)%vf(iv%beg:iv%end), dqL_prim_dz_n(id)%vf(iv%beg:iv%end), &
+                                                    & dqR_prim_dz_n(id)%vf(iv%beg:iv%end))
+            end if
         end if
 
         if (particles_lagrange) call s_compute_particle_gradients(qL_rsx_vf, qR_rsx_vf, id)
@@ -1191,6 +1208,14 @@ contains
             irx%beg = 0; iry%beg = 0; irz%beg = -1
         end if
         irx%end = m; iry%end = n; irz%end = p
+
+        if (ib) then
+            if (amr_in_fine_advance) then
+                call s_body_faces_take_cell_states(ib_markers_fine, id)
+            else
+                call s_body_faces_take_cell_states(ib_markers, id)
+            end if
+        end if
 
         ! Computing Riemann Solver Flux and Source Flux
         call nvtxStartRange("RHS-RIEMANN-SOLVER")
@@ -2044,6 +2069,22 @@ contains
                     $:END_GPU_PARALLEL_LOOP()
                 end if
 
+                ! Face form of the split-off axis flux, divergence and geometric term (the r = 0 face has no area)
+                if (axis_face_split) then
+                    $:GPU_PARALLEL_LOOP(private='[i, j, l]', collapse=2)
+                    do l = 0, p
+                        do j = 0, m
+                            $:GPU_LOOP(parallelism='[seq]')
+                            do i = eqn_idx%mom%beg, eqn_idx%E
+                                rhs_vf(i)%sf(j, 0, l) = rhs_vf(i)%sf(j, 0, l) - (1._wp/dy(0) + 5.e-1_wp/y_cc(0))*flux_axis_vf(j, &
+                                       & l, i)
+                                flux_axis_vf(j, l, i) = 0._wp
+                            end do
+                        end do
+                    end do
+                    $:END_GPU_PARALLEL_LOOP()
+                end if
+
                 $:GPU_PARALLEL_LOOP(private='[i, j, k, l]', collapse=3)
                 do l = 0, p
                     do k = 1, n
@@ -2059,8 +2100,8 @@ contains
                 $:END_GPU_PARALLEL_LOOP()
 
                 ! Species diffusion uses the face form down to the axis cell: its r = 0 face flux cancels against the geometric
-                ! source below. Without viscosity the axis cell's energy row takes the same form; with viscosity it takes only the
-                ! cell-centred viscous stress, so the diffusive energy flux through face 0 is missing there (#2513).
+                ! source below. Without viscosity the axis cell's energy row takes the same form; with viscosity its diffusive
+                ! energy flux comes through flux_axis_vf above.
                 if (chem_params%diffusion) then
                     $:GPU_PARALLEL_LOOP(private='[i, j, k, l]', collapse=3)
                     do l = 0, p
@@ -2592,6 +2633,35 @@ contains
     end subroutine s_finalize_rhs_module
 
     !> Zero the RHS at the body cells of the installed grid frame (marker /= 0).
+    !> A face between two body cells takes its cells' own states. Only body cells see it, and s_zero_rhs_at_body discards their RHS,
+    !! but a reconstruction across a thin body can give unphysical states there (a negative WENO density, #2510).
+    subroutine s_body_faces_take_cell_states(mk, id)
+
+        type(integer_field), intent(in) :: mk
+        integer, intent(in)             :: id
+        integer                         :: i, j, k, l, dj, dk, dl
+
+        dj = merge(1, 0, id == 1); dk = merge(1, 0, id == 2); dl = merge(1, 0, id == 3)
+
+        ! The face between cells c and c + e_id: the solver's left state is qR_rsx_vf(c), its right state qL_rsx_vf(c + e_id)
+        $:GPU_PARALLEL_LOOP(private='[i, j, k, l]', collapse=3, copyin='[dj, dk, dl]')
+        do l = 0, p - dl
+            do k = 0, n - dk
+                do j = 0, m - dj
+                    if (mk%sf(j, k, l) /= 0 .and. mk%sf(j + dj, k + dk, l + dl) /= 0) then
+                        $:GPU_LOOP(parallelism='[seq]')
+                        do i = 1, sys_size
+                            qR_rsx_vf(j, k, l, i) = q_prim_qp%vf(i)%sf(j, k, l)
+                            qL_rsx_vf(j + dj, k + dk, l + dl, i) = q_prim_qp%vf(i)%sf(j + dj, k + dk, l + dl)
+                        end do
+                    end if
+                end do
+            end do
+        end do
+        $:END_GPU_PARALLEL_LOOP()
+
+    end subroutine s_body_faces_take_cell_states
+
     subroutine s_zero_rhs_at_body(mk, rhs_vf)
 
         type(integer_field), intent(in)                        :: mk

@@ -1179,6 +1179,9 @@ def list_cases() -> typing.List[TestCaseBuilder]:
 
         # Uniform volume fractions isolate the azimuthal terms from each solver's mixture handling.
         uniform_mixture = {f"patch_icpp({i})%{q}({f})": v for i in range(1, 5) for f in (1, 2) for q, v in (("alpha", 0.5), ("alpha_rho", 0.25))}
+        # Capillary stress (#2513): the wedge's interface has theta faces and crosses the axis ring
+        capillary = {"model_eqns": 2, "riemann_solver": 2, "surface_tension": "T", "sigma": 1.0e-3, **{f"patch_icpp({i})%cf_val": int(i == 4) for i in range(1, 5)}}
+        cases.append(define_case_d(stack, "capillary=T", {**theta_wedge, **uniform_mixture, **capillary}))
         stack.push("Azimuthal", {**theta_wedge, **uniform_mixture, "patch_icpp(4)%pres": 1.0, **{f"patch_icpp({i})%vel(3)": 0.1 for i in range(1, 5)}})
         cases.append(define_case_d(stack, "HLL", {"riemann_solver": 1}))
         cases.append(define_case_d(stack, "HLLC", {"riemann_solver": 2}))
@@ -1418,6 +1421,12 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                 cases.append(define_case_d(stack, f"{shape} -> weno_Re_flux -> ib_visc_compact", {**geom, "weno_Re_flux": "T", "weno_avg": "T", "ib_visc_compact": "T"}))
                 # the opt-out: the WENO viscous gradient next to the body, the path every weno_Re_flux IB run took before the default
                 cases.append(define_case_d(stack, f"{shape} -> weno_Re_flux -> ib_visc_compact=F", {**geom, "weno_Re_flux": "T", "weno_avg": "T", "ib_visc_compact": "F"}))
+                if len(dimInfo[0]) == 2:
+                    # without either compact gradient the WENO chain reads 2*weno_polyn + 2 solid layers, all filled (#2041):
+                    # both opted out, and axisymmetric (where neither applies), the body off the axis
+                    wide = {**geom, "weno_Re_flux": "T", "weno_avg": "T"}
+                    cases.append(define_case_d(stack, f"{shape} -> weno_Re_flux -> ib_visc_compact=F weno_Re_flux_compact=F", {**wide, "ib_visc_compact": "F", "weno_Re_flux_compact": "F"}))
+                    cases.append(define_case_d(stack, f"{shape} -> weno_Re_flux -> axisymmetric", {**wide, "cyl_coord": "T", "y_domain%beg": 0.0, "bc_y%beg": -2}))
 
             stack.pop()
 
@@ -1490,6 +1499,42 @@ def list_cases() -> typing.List[TestCaseBuilder]:
                         "patch_icpp(2)%vel(1)": 0.001,
                         "patch_icpp(3)%vel(1)": 0.001,
                     },
+                )
+            )
+
+        if len(dimInfo[0]) == 3 and not viscous and num_fluids == 1:
+            # A two-way spinning cuboid split across the rank seam: its moment of inertia is summed over its cells, and every rank
+            # holding it must get the same whole-body value (#1994)
+            cases.append(
+                define_case_d(
+                    stack,
+                    "IBM -> Two-way Spinning Cuboid -> 2 MPI Ranks",
+                    {
+                        "m": 29,
+                        "n": 29,
+                        "p": 49,
+                        "ib": "T",
+                        "num_ibs": 1,
+                        "fd_order": 2,
+                        "ib_state_wrt": "T",
+                        "patch_ib(1)%geometry": 9,
+                        "patch_ib(1)%x_centroid": 0.5123,
+                        "patch_ib(1)%y_centroid": 0.4871,
+                        "patch_ib(1)%z_centroid": 0.5037,
+                        "patch_ib(1)%length_x": 0.3,
+                        "patch_ib(1)%length_y": 0.2,
+                        "patch_ib(1)%length_z": 0.25,
+                        "patch_ib(1)%slip": "F",
+                        "patch_ib(1)%moving_ibm": 2,
+                        "patch_ib(1)%mass": 1.0,
+                        "patch_ib(1)%angular_vel(1)": 0.3,
+                        "patch_ib(1)%angular_vel(2)": -0.2,
+                        "patch_ib(1)%angular_vel(3)": 1.0,
+                        "patch_icpp(1)%vel(1)": 0.001,
+                        "patch_icpp(2)%vel(1)": 0.001,
+                        "patch_icpp(3)%vel(1)": 0.001,
+                    },
+                    ppn=2,
                 )
             )
 
@@ -4752,6 +4797,11 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         cases.append(define_case_d(stack, "2D Axisymmetric", cyl_2d, override_tol=10 ** (-10)))
         cases.append(define_case_d(stack, "3D Cylindrical", cyl_3d, override_tol=10 ** (-10)))
         cases.append(define_case_d(stack, "3D Cylindrical -> Unity Lewis", {**cyl_3d, "chem_params%transport_model": 2}, override_tol=10 ** (-10)))
+        # With viscosity the axis cell's energy takes the species-diffusion face flux beside the cell-centred stress (#2513); the
+        # H2-rich block fills the axis ring only
+        visc = {"viscous": "T", "fluid_pp(1)%Re(1)": 5.0e4, "patch_icpp(2)%y_centroid": 0.0, "patch_icpp(2)%length_y": 0.06e-3}
+        cases.append(define_case_d(stack, "2D Axisymmetric -> Viscous", {**cyl_2d, **visc, "m": 25, "n": 25}, override_tol=10 ** (-10)))
+        cases.append(define_case_d(stack, "3D Cylindrical -> Viscous", {**cyl_3d, **visc, "patch_icpp(2)%z_centroid": 0.0, "patch_icpp(2)%length_z": 0.06e-3}, override_tol=10 ** (-10)))
         stack.pop()
 
     foreach_dimension()
@@ -4867,6 +4917,8 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         # rank 1 sub-stepping a garbage count, which a single-rank golden cannot see.
         stack.push("substeps", {"rburn%substeps": 10})
         cases.append(define_case_d(stack, "", {}, ppn=2))
+        # the fine block takes the split burn too, before the fold (the field is uniform: level 0 matches the run without a block)
+        cases.append(define_case_d(stack, "AMR", {"amr": "T", "amr_block_beg(1)": 30, "amr_block_end(1)": 69, "amr_regrid_int": 0, "amr_max_grid_size": 64, "mpp_lim": "T"}))
         stack.pop()
         # Same burn on 2 MPI ranks: the rburn parameters must be broadcast to non-root ranks, or
         # rank 1's half of the domain burns with the sentinel default and diverges. The single-rank
@@ -5931,6 +5983,8 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             cases.append(define_convergence_case(f"Convergence -> amr_check -> 1D -> {label}", spec))
 
         stack.push("AMR -> 1D -> static block", {**amr_1d_base, "amr_regrid_int": 0, "amr_max_grid_size": 64})
+        # non-reflecting subsonic buffer at both ends: the coarse grid applies it, the block's edges are coarse/fine faces
+        cases.append(define_case_d(stack, "CBC", {"bc_x%beg": -6, "bc_x%end": -6}))
         cases.append(define_case_d(stack, "teno", {"teno": "T", "teno_CT": 1.0e-6}))
         cases.append(define_case_d(stack, "wenoz", {"wenoz": "T"}))
         cases.append(define_case_d(stack, "null_weights", {"null_weights": "T"}))
@@ -6069,6 +6123,8 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         cases.append(define_case_d(stack, "stiffened gas at a static block face", stiff))
         # the subcycled state reflux takes alpha from the step-start state
         cases.append(define_case_d(stack, "stiffened gas at a static block face -> subcycle", {**stiff, "amr_subcycle": "T"}))
+        # HLL Method 1: the source is u*(alpha*_l - alpha*_r)/dx with the interface alphas, which the registers carry per fluid
+        cases.append(define_case_d(stack, "stiffened gas at a static block face -> HLL", {**stiff, "riemann_solver": 1}))
         stack.pop()
 
         # hypoelasticity: 1D hypoelastic shock config on a static 2:1 block; the fine swap recomputes the
@@ -6302,6 +6358,10 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             chk_ib.update(mod)
         spec = ConvergenceSpec(runner=run_amr_check, case_path="", expected_order=0.0, tol=1.0e-8, params=chk_ib)
         cases.append(define_convergence_case("Convergence -> amr_check -> 2D -> immersed body", spec))
+        # ib_visc_compact (default T with weno_Re_flux) on the fine block reads the fine markers, so the compact faces match
+        visc_ib = {"viscous": "T", "fluid_pp(1)%Re(1)": 1000.0, "weno_Re_flux": "T", "weno_avg": "T", "ib_visc_compact": "T"}
+        spec = ConvergenceSpec(runner=run_amr_check, case_path="", expected_order=0.0, tol=1.0e-8, params={**chk_ib, **visc_ib})
+        cases.append(define_convergence_case("Convergence -> amr_check -> 2D -> immersed body -> ib_visc_compact", spec))
         # Body force and torque from the face fluxes: taken on the fine block, which covers the body, so D/ib_forces.dat is the
         # fine-grid force (the coarse faces under the block are skipped)
         cases.append(define_case_d(stack, "ib forces", {"amr_max_grid_size": 32, "ib_state_wrt": "T", "ib_force_wrt": "T"}))
@@ -6320,11 +6380,14 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         # ghost-state options of the slip and viscous walls, both checked with ./mfc.sh amr_check
         cases.append(define_case_d(stack, "slip -> ib_slip_ccst", {"amr_max_grid_size": 32, "patch_ib(1)%slip": "T", "ib_slip_ccst": "T"}))
         cases.append(define_case_d(stack, "viscous", {"amr_max_grid_size": 32, "viscous": "T", "fluid_pp(1)%Re(1)": 1000.0}))
+        cases.append(define_case_d(stack, "viscous -> ib_visc_compact", {"amr_max_grid_size": 32, **visc_ib}))
         cases.append(define_case_d(stack, "ib_second_order_vel", {"amr_max_grid_size": 32, "ib_second_order_vel": "T", "ib_ip_min_dist": 1.5}))
         cases.append(define_case_d(stack, "many_ib_patch_parallelism", {"amr_max_grid_size": 32, "many_ib_patch_parallelism": "T"}))
         # dynamic regrid with a static body: boxes expand to contain the body + margin and the fine IB state rebuilds each regrid
         stack.push("dynamic regrid", {"amr_regrid_int": 2, "amr_tag_eps": 1.0e-4, "amr_buf": 2, "t_step_stop": 20, "t_step_save": 20})
         cases.append(define_case_d(stack, "", {"amr_max_grid_size": 32}))
+        # a non-box body: the containment box is the bounding radius the marker drawing uses (#2241)
+        cases.append(define_case_d(stack, "ellipse", {"amr_max_grid_size": 32, "patch_ib(1)%geometry": 6, "patch_ib(1)%length_x": 0.26, "patch_ib(1)%length_y": 0.14}))
         # quartic prolongation next to a body: the admissibility fallback to limited linear guards the fills
         cases.append(define_case_d(stack, "quartic prolongation", {"amr_prolong": 2}))
         # The only distributed AMR+IB coverage: at ppn=1 the level-1 tag path and per-level (index, parent) gather are skipped.
@@ -6734,6 +6797,24 @@ def list_cases() -> typing.List[TestCaseBuilder]:
             "amr_block_beg(2)": 8,
             "amr_block_end(2)": 23,
         }
+        # a two-fluid shear layer (u = +0.5 below y = 0.5, -0.5 above; uniform alpha and p) across the static block's x-faces, so
+        # the face velocity varies along them: the reflux corrects the alt_soundspeed K*div(u) term and the 6-equation internal
+        # energies' alpha_k*p*div(u) with the volume fractions' alpha*div(u)
+        shear = {k: v for k, v in amr_2d_base.items() if not k.startswith("patch_icpp(3)")}
+        shear.update({"num_patches": 2, "num_fluids": 2, "mpp_lim": "T", "amr_regrid_int": 0})
+        shear.update({"fluid_pp(2)%gamma": 1.0 / 3.4, "fluid_pp(2)%pi_inf": 4.4 * 2.0 / 3.4, "fluid_pp(2)%cv": 0.0, "fluid_pp(2)%qv": 0.0, "fluid_pp(2)%qvp": 0.0})
+        # the jump at y = 0.51 sits inside coarse cell 16, whose center takes the upper value while its two fine cells take one
+        # each, so the fine faces' velocity average differs from the coarse face's from the first step (an aligned jump stays
+        # steady with no difference at all)
+        for i, (yc, ly, u) in enumerate(((0.255, 0.51, 0.5), (0.755, 0.49, -0.5)), start=1):
+            shear.update({f"patch_icpp({i})%x_centroid": 0.5, f"patch_icpp({i})%length_x": 1.0, f"patch_icpp({i})%y_centroid": yc, f"patch_icpp({i})%length_y": ly})
+            shear.update({f"patch_icpp({i})%vel(1)": u, f"patch_icpp({i})%vel(2)": 0.0, f"patch_icpp({i})%pres": 1.0})
+            shear.update({f"patch_icpp({i})%alpha_rho(1)": 0.5, f"patch_icpp({i})%alpha_rho(2)": 0.25, f"patch_icpp({i})%alpha(1)": 0.5, f"patch_icpp({i})%alpha(2)": 0.5})
+        stack.push("AMR -> 2D -> two-fluid shear layer", shear)
+        cases.append(define_case_d(stack, "alt_soundspeed", {"alt_soundspeed": "T"}))
+        cases.append(define_case_d(stack, "6eq", {"model_eqns": 3}))
+        stack.pop()
+
         stack.push(
             "AMR -> 2D -> multi-level static np=2",
             {**amr_2d_base, "amr_regrid_int": 0, "amr_max_level": 2, "amr_max_blocks": 16},
@@ -6741,6 +6822,12 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         cases.append(define_case_d(stack, "", {"amr_max_grid_size": 16}, ppn=2))
         # the per-level memory table (rank_time_wrt): a static multi-level layout is recorded without a regrid
         cases.append(define_case_d(stack, "rank_time_wrt", {"amr_max_grid_size": 16, "rank_time_wrt": "T"}, ppn=2))
+        stack.pop()
+        # More blocks than the registers' initial 64 slots (12 x 12 tiles of a static block), so the first stage grows them
+        # through the device staging path (#2467: NVHPC aborted there with "rc(2:) not present")
+        reg_grow = {"m": 127, "n": 127, "amr_block_beg(1)": 8, "amr_block_end(1)": 55, "amr_block_beg(2)": 8, "amr_block_end(2)": 55}
+        stack.push("AMR -> 2D -> register growth", {**amr_2d_base, **reg_grow, "amr_regrid_int": 0})
+        cases.append(define_case_d(stack, "", {"amr_max_grid_size": 4}))
         stack.pop()
 
         # 2D dynamic regrid at np=2: a level-1 block whose owner holds none of its covered coarse cells, so the fold-back
@@ -7079,6 +7166,14 @@ def list_cases() -> typing.List[TestCaseBuilder]:
         # each joined pair's parents on one rank)
         turned = {f"patch_icpp({i})%{k}": v for i, yc, ly in ((1, 0.15, 0.3), (2, 0.5, 0.4), (3, 0.85, 0.3)) for k, v in (("x_centroid", 0.5), ("length_x", 1.0), ("y_centroid", yc), ("length_y", ly))}
         cases.append(define_case_d(stack, "features along x -> 2 MPI Ranks", turned, ppn=2))
+        stack.pop()
+        # A disc crossing the level-1 seam y = 28|29 near its top: the level-2 boxes on the two sides join across it, so level 2
+        # covers y = 13..44 without the unrefined strip of 2*amr_cpat_mar coarse cells (#2312)
+        disc = {k: v for k, v in seam_2d.items() if not (k.startswith("patch_icpp(3)") or k.startswith("patch_icpp(2)%length"))}
+        disc.update({"num_patches": 2, "patch_icpp(1)%x_centroid": 0.5, "patch_icpp(1)%length_x": 1.0})
+        disc.update({"patch_icpp(2)%geometry": 2, "patch_icpp(2)%x_centroid": 0.5, "patch_icpp(2)%y_centroid": 0.45, "patch_icpp(2)%radius": 0.15, "patch_icpp(2)%alter_patch(1)": "T"})
+        stack.push("AMR -> 2D -> multi-level seam -> oblique disc", disc)
+        cases.append(define_case_d(stack, "", {}))
         stack.pop()
 
         # Validation examples at small sizes (docs/documentation/validation_amr.md): Sod with two levels following the shock and the

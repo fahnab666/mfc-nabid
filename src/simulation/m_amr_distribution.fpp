@@ -20,6 +20,7 @@ module m_amr_distribution
     use m_constants, only: K_ib
     use m_mpi_proxy, only: s_mpi_abort
     use m_ibm, only: ib_markers
+    use m_ib_patches, only: s_get_ib_bound
     use m_amr_state
     use m_phase_timing, only: s_mem_note_level
 
@@ -592,7 +593,8 @@ contains
                 fill(nb) = product(merge(real((amr_region_hi_all(:,k) - amr_region_lo_all(:,k) + 1)*amr_ref_ratio**lev, &
                      & wp)/real(mbuf_hi - mbuf_lo + 1, wp), 1._wp, amr_dim))
             end do
-            if (nb > 0) call s_mem_note_level(lev, nint(maxval(rc)), fill(1:nb), 2_8*f_amr_col_bytes())
+            if (nb > 0) call s_mem_note_level(lev, nint(maxval(rc)), fill(1:nb), 2_8*f_amr_col_bytes(), &
+                & 1._wp - product(merge(real(max_f + 1, wp), 1._wp, amr_dim))/product(real(mbuf_hi - mbuf_lo + 1, wp)))
         end do
 
     end subroutine s_amr_note_level_fill
@@ -709,22 +711,25 @@ contains
 
         integer, intent(in)  :: i, mrg
         integer, intent(out) :: blo(3), bhi(3)
-        real(wp)             :: c(3), half(3)
+        real(wp)             :: c(3), half(3), bnd
 
         c = [patch_ib(i)%x_centroid, patch_ib(i)%y_centroid, patch_ib(i)%z_centroid]
         select case (patch_ib(i)%geometry)
-        case (2, 8)  ! circle, sphere
+        case (ib_circle, ib_sphere)
             half = patch_ib(i)%radius
-        case (3, 9, 10)  ! rectangle, box, cylinder (axis x): body-frame half-extents, rotated by the body's angles
-            if (patch_ib(i)%geometry == 10) then
+        case (ib_rectangle, ib_cuboid, ib_cylinder)  ! cylinder axis x: body-frame half-extents, rotated by the body's angles
+            if (patch_ib(i)%geometry == ib_cylinder) then
                 half = [0.5_wp*patch_ib(i)%length_x, patch_ib(i)%radius, patch_ib(i)%radius]
             else
                 half = 0.5_wp*[patch_ib(i)%length_x, patch_ib(i)%length_y, patch_ib(i)%length_z]
             end if
             half = matmul(abs(patch_ib(i)%rotation_matrix), half)
+        case (4, 6, 11)  ! airfoils, ellipse: the bounding radius the marker drawing trusts (s_get_bounding_indices)
+            call s_get_ib_bound(patch_ib(i), bnd)
+            half = bnd
         case default
             call s_mpi_abort('amr dynamic regrid with ib: unsupported body geometry for the ' &
-                             & // 'containment bounding box (supported: circle/rectangle/sphere/box/cylinder)')
+                             & // 'containment bounding box (STL models are not supported)')
         end select
         call s_amr_phys_to_cells(c - half, c + half, mrg, blo, bhi)
 

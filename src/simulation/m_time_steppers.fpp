@@ -35,7 +35,7 @@ module m_time_steppers
     use m_stage_hooks, only: s_stage_hooks_pre_ib, s_stage_hooks_post_ib
     use m_derived_variables
     use m_constants, only: model_eqns_6eq, time_stepper_rk1, time_stepper_rk2, time_stepper_rk3, dflt_T_guess
-    use m_amr_stage, only: s_amr_stage_begin, s_amr_stage_fine, s_amr_step_fold, s_amr_subcycle_fine
+    use m_amr_stage, only: s_amr_stage_begin, s_amr_stage_fine, s_amr_step_fold, s_amr_subcycle_fine, s_amr_burn_fine
     use m_amr_advance, only: s_amr_fine_stage_ib
     use m_amr_registers, only: s_amr_set_rk_table
 
@@ -213,8 +213,10 @@ contains
 
             do i = 1, num_probe_ts
                 do j = 1, sys_size
+                    ! Zeroed: the acceleration probe reads all four levels from the first step, before they hold a state
                     @:ALLOCATE(q_prim_ts1(i)%vf(j)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                                & idwbuff(3)%beg:idwbuff(3)%end))
+                    q_prim_ts1(i)%vf(j)%sf = 0._wp
                 end do
                 @:ACC_SETUP_VFs(q_prim_ts1(i))
             end do
@@ -229,6 +231,7 @@ contains
                 do j = 1, sys_size
                     @:ALLOCATE(q_prim_ts2(i)%vf(j)%sf(idwbuff(1)%beg:idwbuff(1)%end, idwbuff(2)%beg:idwbuff(2)%end, &
                                & idwbuff(3)%beg:idwbuff(3)%end))
+                    q_prim_ts2(i)%vf(j)%sf = 0._wp
                 end do
                 @:ACC_SETUP_VFs(q_prim_ts2(i))
             end do
@@ -669,6 +672,7 @@ contains
         if (amr_sub_on) call s_amr_subcycle_fine(q_cons_ts(1)%vf, q_cons_ts(stor)%vf, rk_coef, q_T_sf, bc_type, pb_ts(1)%sf, &
             & rhs_pb, mv_ts(1)%sf, rhs_mv, t_step)
         amr_sub_on = .false.
+        if (amr .and. reactive_burn .and. rburn%substeps > 0) call s_amr_burn_fine()
         if (amr) call s_amr_step_fold(q_cons_ts(1)%vf)
 
         if (ib) then
@@ -714,13 +718,10 @@ contains
 
         integer, intent(in) :: stage
 
-        ! Before the first RHS the conservative ghosts are unset; Lagrange refills the primitive ones below
+        ! The interior only: before the first RHS the conservative ghosts are unset (a zero bubble number density
+        ! divides by zero there). The Euler source reads no ghost cell; Lagrange refills the primitive ones below.
 
-        if (bubbles_lagrange) then
-            call s_convert_conservative_to_primitive_variables(q_cons_ts(1)%vf, q_T_sf, q_prim_vf, idwint)
-        else
-            call s_convert_conservative_to_primitive_variables(q_cons_ts(1)%vf, q_T_sf, q_prim_vf, idwbuff)
-        end if
+        call s_convert_conservative_to_primitive_variables(q_cons_ts(1)%vf, q_T_sf, q_prim_vf, idwint)
 
         if (bubbles_euler) then
             call s_compute_bubble_EE_source(q_cons_ts(1)%vf, q_prim_vf, rhs_vf, divu)

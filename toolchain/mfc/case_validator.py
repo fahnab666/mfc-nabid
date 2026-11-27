@@ -452,6 +452,7 @@ AMR_VETTED_FLAGS = (
     "ib",
     "ib_second_order_vel",
     "ib_slip_ccst",
+    "ib_visc_compact",
     "many_ib_patch_parallelism",
     "patch_ib(*)%slip",
     "igr",
@@ -1558,6 +1559,11 @@ class CaseValidator:
         self.prohibit(sigma is not None and not surface_tension, "sigma is set but surface_tension is not enabled")
         self.prohibit(surface_tension and model_eqns not in [2, 3], "The surface tension model requires model_eqns = 2 or model_eqns = 3")
         self.prohibit(surface_tension and num_fluids != 2, "The surface tension model requires num_fluids = 2")
+        riemann_solver = self.get("riemann_solver")
+        self.prohibit(
+            surface_tension and riemann_solver is not None and riemann_solver != 2,
+            "The surface tension model requires the HLLC Riemann solver (riemann_solver = 2): only it adds the capillary stress flux",
+        )
 
     def check_mhd(self):
         """Checks constraints on MHD parameters"""
@@ -2303,11 +2309,6 @@ class CaseValidator:
             "amr is incompatible with chem_params%reaction_substeps > 0: the operator-split reaction integrates the coarse "
             "grid once per step, after the fine solution has been folded back, so the refined region would never react",
         )
-        self.prohibit(
-            (self.get("rburn%substeps") or 0) > 0,
-            "amr is incompatible with rburn%substeps > 0: the operator-split burn integrates the coarse grid once per step, "
-            "after the fine solution has been folded back, so the refined region would never burn",
-        )
         for d in ("x", "y", "z"):
             for e in ("beg", "end"):
                 bc = self.get(f"bc_{d}%{e}")
@@ -2390,11 +2391,6 @@ class CaseValidator:
             "amr with mhd is 1D-only " "(the coarse/fine seam is not divergence-preserving for B; in 1D div(B) = 0 by construction)",
         )
         num_dims = 1 + ((self.get("n", 0) or 0) > 0) + ((self.get("p", 0) or 0) > 0)
-        bc_characteristic = any(-12 <= (self.get(f"bc_{d}%{e}") or 0) <= -5 for d in "xyz"[:num_dims] for e in ("beg", "end"))
-        self.prohibit(
-            bc_characteristic,
-            "amr does not support characteristic (CBC) boundary conditions (bc = -5..-12): " "the fine-block advance would apply the boundary treatment at block edges inside the domain",
-        )
         self.prohibit(
             (amr_regrid_int or 0) == 0 and amr_max_level is not None and amr_max_level > 2,
             "static multi-level AMR (amr_regrid_int = 0) nests exactly one level-2 block in block 1, so it supports at most "
@@ -2425,11 +2421,11 @@ class CaseValidator:
             stl = any((self.get(f"patch_ib({i})%geometry")) in (5, 12) for i in range(1, num_ibs + 1))
             self.prohibit(stl, "amr with ib does not support STL-model geometry (not yet validated)")
             moving = any((self.get(f"patch_ib({i})%moving_ibm") or 0) != 0 for i in range(1, num_ibs + 1))
-            # Moving bodies and regrid size blocks from s_amr_body_bbox, which bounds only these geometries
-            bbox_geoms = (2, 3, 8, 9, 10)
+            # Moving bodies and regrid size blocks from s_amr_body_bbox, which bounds every analytic geometry (STL is rejected above)
+            bbox_geoms = (2, 3, 4, 6, 8, 9, 10, 11)
             self.prohibit(
                 any(((self.get(f"patch_ib({i})%moving_ibm") or 0) != 0 or (amr_regrid_int or 0) > 0) and self.get(f"patch_ib({i})%geometry") not in bbox_geoms for i in range(1, num_ibs + 1)),
-                "amr with a moving immersed body or dynamic regrid supports circle/rectangle/sphere/box/cylinder geometry only (the block containment bounding box)",
+                "amr with a moving immersed body or dynamic regrid supports analytic geometries only (the block containment bounding box)",
             )
             # The reacting-surface ghost reconstruction runs per fine block but has no AMR validation
             self.prohibit(
